@@ -7,11 +7,16 @@ import pytest
 from sqlalchemy import create_engine, select, delete
 from sqlalchemy.pool import StaticPool
 
-from my_agent_llms.learning.db import init_db, ExportRow, AttemptRow, EvidenceRow, AssessmentRow, LearnerStateRow, StateResetRow, LearningSpaceRow, IdempotencyRow, SourceChunkRow, MaterialVersionRow, MaterialRow, RunRow
+from my_agent_llms.learning.db import init_db, LearningMessageRow, ConversationRow, ExportRow, AttemptRow, EvidenceRow, AssessmentRow, LearnerStateRow, StateResetRow, LearningSpaceRow, IdempotencyRow, SourceChunkRow, MaterialVersionRow, MaterialRow, RunRow
 from my_agent_llms.learning.errors import DomainConflict
 from my_agent_llms.learning.materials import InMemoryMaterialRepository
 from my_agent_llms.learning.repositories import SqlAlchemyMaterialRepository
 from my_agent_llms.learning.state import LearningState
+
+
+class FixedAnswer:
+    def generate(self, snapshot):
+        return {"text": "Functions group reusable behavior.", "citation_ids": [snapshot["sources"][0]["chunk_id"]]}
 
 
 class FixedQuestions:
@@ -42,7 +47,7 @@ def workspace(request, tmp_path):
         init_db(engine)
     def factory(generator=None):
         repo = SqlAlchemyMaterialRepository(engine) if engine else memory
-        state = LearningState(repo, question_generator=generator or FixedQuestions())
+        state = LearningState(repo, question_generator=generator or FixedQuestions(), answer_generator=FixedAnswer())
         make_run = state.run_service.create
         def tracked_run(*args, **kwargs):
             run = make_run(*args, **kwargs)
@@ -51,6 +56,8 @@ def workspace(request, tmp_path):
         state.run_service.create = tracked_run
         execute = state.assessment_service._execute
         state.assessment_service._execute = lambda op, ident, body, key, change: execute(op, ident, body, label + key if key else None, change)
+        execute_message = state.message_service.commands._execute
+        state.message_service.commands._execute = lambda op, ident, body, key, change: execute_message(op, ident, body, label + key if key else None, change)
         return state
     first = factory()
     material = first.material_service.create(filename="notes.md", content=b"# Functions\n\nFunctions group reusable behavior.", idempotency_key=label + "material")
@@ -65,7 +72,7 @@ def workspace(request, tmp_path):
                 assessments = connection.execute(select(AssessmentRow.id, AssessmentRow.run_id, AssessmentRow.finalize_run_id).where(AssessmentRow.space_id == space["id"])).all()
                 assessment_ids = [a.id for a in assessments]
                 run_ids = [rid for a in assessments for rid in (a.run_id, a.finalize_run_id) if rid]
-                for cls in (ExportRow, EvidenceRow, LearnerStateRow, StateResetRow):
+                for cls in (LearningMessageRow, ConversationRow, ExportRow, EvidenceRow, LearnerStateRow, StateResetRow):
                     connection.execute(delete(cls).where(cls.space_id == space["id"]))
                 connection.execute(delete(AttemptRow).where(AttemptRow.assessment_id.in_(assessment_ids)))
                 connection.execute(delete(AssessmentRow).where(AssessmentRow.space_id == space["id"]))

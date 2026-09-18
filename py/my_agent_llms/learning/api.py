@@ -32,6 +32,8 @@ from .space_schemas import CreateSpace, UpdateSpace, SetScope, UpdateProfile, De
 from .spaces import topics_for_version
 from .assessment_schemas import CreateAssessment, RecordAttempt, FinalizeAssessment, ResetState, GradeReview
 from .question_generation import DashScopeQuestionGenerator
+from .message_generation import DashScopeAnswerGenerator
+from .message_schemas import SendMessage
 from .planner_schemas import CreatePlan, UpdateTask, StartSession, SessionEvent, EmptyObject
 
 
@@ -41,6 +43,7 @@ def create_app(
     *,
     run_service: RunService | None = None,
     question_generator=None,
+    answer_generator=None,
 ) -> FastAPI:
     service = service or MaterialService(InMemoryMaterialRepository())
     settings = settings or LearningSettings.from_env()
@@ -50,7 +53,8 @@ def create_app(
     if run_service is None and isinstance(service.repository, InMemoryMaterialRepository):
         run_service = RunService(service.repository.run_repository)
     state = LearningState(material_repository=service.repository, run_service=run_service,
-                          question_generator=question_generator if question_generator is not None else DashScopeQuestionGenerator(settings))
+                          question_generator=question_generator if question_generator is not None else DashScopeQuestionGenerator(settings),
+                          answer_generator=answer_generator if answer_generator is not None else DashScopeAnswerGenerator(settings))
     ingestion = MaterialIngestionService(service, state.run_service)
     app = FastAPI(title="Keel Learning", version="0.1.0")
     app.state.learning_state = state
@@ -508,9 +512,11 @@ def create_app(
             return _domain_error(exc)
 
     @app.post("/api/v1/learning-spaces/{space_id}/messages", status_code=202)
-    async def send_learning_message(space_id: str, payload: dict[str, Any]) -> JSONResponse:
+    def send_learning_message(space_id: str, payload: SendMessage, background_tasks: BackgroundTasks,
+                              idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None) -> JSONResponse:
         try:
-            return JSONResponse(status_code=202, content=state.send_message(space_id, payload))
+            return JSONResponse(status_code=202, content=state.send_message(space_id, payload.model_dump(), idempotency_key=idempotency_key,
+                                                                           dispatch=background_tasks.add_task))
         except (DomainNotFound, DomainConflict) as exc:
             return _domain_error(exc)
 

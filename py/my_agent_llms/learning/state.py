@@ -18,6 +18,7 @@ from .run_repository import SqlAlchemyRunRepository
 from .planner import PlanSessionService
 from .exports import ExportService
 from .space_deletion import SpaceDeletionService
+from .messages import MessageService
 
 
 def _now() -> str:
@@ -30,7 +31,7 @@ def _id(prefix: str) -> str:
 
 class LearningState:
     def __init__(self, material_repository: MaterialRepository | None = None, *,
-                 run_service: RunService | None = None, space_service: SpaceService | None = None, question_generator=None) -> None:
+                 run_service: RunService | None = None, space_service: SpaceService | None = None, question_generator=None, answer_generator=None) -> None:
         self.material_repository = material_repository or InMemoryMaterialRepository()
         self.material_service = MaterialService(self.material_repository)
         uow = getattr(self.material_repository, "unit_of_work", None)
@@ -45,6 +46,7 @@ class LearningState:
         self.space_service = space_service
         learning_repository = SqlAlchemyLearningRepository(uow) if uow else InMemoryLearningRepository(self.material_repository, self.run_service)
         self.assessment_service = AssessmentService(learning_repository, space_service, self.run_service, question_generator)
+        self.message_service = MessageService(learning_repository, space_service, self.assessment_service, self.run_service, answer_generator)
         self.spaces: dict[str, dict[str, Any]] = {}
         self.topics: dict[str, dict[str, Any]] = {}
         self.plans: dict[str, dict[str, Any]] = {}
@@ -169,21 +171,8 @@ class LearningState:
     def finish_session(self, session_id: str) -> dict[str, Any]:
         return self.plan_sessions.finish_session(session_id)
 
-    def send_message(self, space_id: str, payload: dict[str, Any]) -> dict[str, Any]:
-        with self.assessment_service.repository.transaction():
-            space = self.space_service.repository.get(space_id)
-            message = str(payload.get("message") or "").strip()
-            if not message:
-                raise DomainConflict("INVALID_REQUEST", "message 不能为空")
-            message_id = _id("message")
-            reference = {"type": "message", "id": message_id, "space_id": space_id}
-            run = self.run("message", status="running")
-            text = f"当前学习范围包含 {len(space['topic_ids']) or len(self.topics)} 个主题。你的请求是：{message}"
-            self.run_service.append_event(run["id"], "message.delta", {"delta": text})
-            self.run_service.append_event(run["id"], "message.completed",
-                                          {"message_id": message_id, "text": text, "citations": []})
-            completed = self.run_service.complete(run["id"], reference)
-            return {"run_id": run["id"], "session_id": payload.get("session_id"), "status": completed["status"]}
+    def send_message(self, space_id: str, payload: dict[str, Any], *, idempotency_key=None, dispatch=None) -> dict[str, Any]:
+        return self.message_service.send(space_id, payload, idempotency_key, dispatch=dispatch)
 
     def create_correction(self, space_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         with self.assessment_service.repository.transaction():

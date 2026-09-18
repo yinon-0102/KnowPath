@@ -258,6 +258,29 @@ class SessionEventRow(Base):
     received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
+class ConversationRow(Base):
+    __tablename__ = "learning_conversations"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    space_id: Mapped[str] = mapped_column(ForeignKey("learning_spaces.id"), nullable=False, index=True)
+    learning_session_id: Mapped[str | None] = mapped_column(ForeignKey("learning_sessions.id"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class LearningMessageRow(Base):
+    __tablename__ = "learning_messages"
+    __table_args__ = (UniqueConstraint("conversation_id", "sequence", name="uq_message_sequence"),)
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    space_id: Mapped[str] = mapped_column(ForeignKey("learning_spaces.id"), nullable=False, index=True)
+    conversation_id: Mapped[str] = mapped_column(ForeignKey("learning_conversations.id"), nullable=False, index=True)
+    run_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    message: Mapped[str] = mapped_column(Text, nullable=False)
+    sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    snapshot: Mapped[dict] = mapped_column(JSON, nullable=False)
+    response: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
 class KnowledgeCorrectionRow(Base):
     __tablename__ = "knowledge_corrections"
     id: Mapped[str] = mapped_column(String(36), primary_key=True)

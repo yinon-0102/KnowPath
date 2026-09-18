@@ -67,7 +67,8 @@ def test_learning_api_workflow_from_material_to_plan():
 
 
 def test_message_events_publish_text_before_terminal():
-    app = create_app()
+    from my_agent_llms.test.test_learning_state_persistence import FixedAnswer
+    app = create_app(answer_generator=FixedAnswer())
     with TestClient(app) as client:
         material = client.post(
             "/api/v1/materials",
@@ -88,7 +89,7 @@ def test_message_events_publish_text_before_terminal():
         run_id = response.json()["run_id"]
         stream = client.get(f"/api/v1/runs/{run_id}/events")
         names = [line.removeprefix("event: ") for line in stream.text.splitlines() if line.startswith("event: ")]
-        assert names == ["run.started", "message.delta", "message.completed", "run.completed"]
+        assert names == ["run.started", "tool.completed", "message.delta", "message.completed", "run.completed"]
         run = app.state.learning_state.get_run(run_id)
-        assert run["events"][2]["data"]["message_id"] == run["result_ref"]["id"]
-        assert "citations" in run["events"][2]["data"]
+        assert run["events"][3]["data"]["message_id"] == run["result_ref"]["id"]
+        assert "citations" in run["events"][3]["data"]

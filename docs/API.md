@@ -610,6 +610,8 @@ session_count=3—5，minutes_per_session=10—120，必须满足 profile 时间
 
 首版只接受 stream=true；message 为 1—8000 字。session_id 可空，为空时创建独立对话会话，不修改计划任务状态。202 返回 run_id/session_id/status，文本由 SSE message.delta 发送。活动测验内问答案应转为提示请求并记录 assisted，禁止隐式写入成绩。
 
+当前消息实现会持久化独立对话和来源快照，使用绑定资料版本及当前主题范围召回片段。同会话只允许一条消息生成中；相同幂等键重放原始响应，不再次调用模型。`tool.completed` 提供公开来源引用，`message.completed` 返回正文和引用。正文在模型响应完成并通过引用校验后分块发送；当前召回采用主题与关键词排序，尚未接入向量检索。范围或绑定在生成期间变化时 Run 失败为 `STALE_LEARNING_CONTEXT`；关联学习会话结束时为 `SESSION_FINISHED`。
+
 ## 9. 证据和知识更新接口
 
 ### `GET /learning-spaces/{space_id}/evidence`

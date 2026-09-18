@@ -28,8 +28,10 @@ class SpaceDeletionService:
             assessments = self.repository.records("assessments", space_id=space_id)
             plans = self.repository.records("plans", space_id=space_id)
             sessions = self.repository.records("sessions", space_id=space_id)
+            messages = self.repository.records("messages", space_id=space_id)
             ids = {space_id} | {r["id"] for r in assessments + plans + sessions}
             run_ids = {r[k] for r in assessments + plans for k in ("run_id", "finalize_run_id") if r.get(k)}
+            run_ids.update(m["run_id"] for m in messages)
             for assessment in assessments:
                 run_ids.update(r["run_id"] for r in assessment.get("grade_reviews", []))
             if self.uow is None:
@@ -44,7 +46,9 @@ class SpaceDeletionService:
 
     @staticmethod
     def _filters(space_id, assessments, plans, sessions):
-        return [("session_events", "session_id", {r["id"] for r in sessions}),
+        return [("messages", "space_id", {space_id}),
+                ("conversations", "space_id", {space_id}),
+                ("session_events", "session_id", {r["id"] for r in sessions}),
                 ("sessions", "space_id", {space_id}),
                 ("tasks", "plan_id", {r["id"] for r in plans}),
                 ("plans", "space_id", {space_id}),
