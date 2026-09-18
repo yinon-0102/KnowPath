@@ -48,7 +48,7 @@ def test_empty_database_upgrade_matches_current_schema(migration_database):
     config, engine = migration_database
     command.upgrade(config, "head")
     with engine.connect() as connection:
-        assert connection.scalar(sa.text("SELECT version_num FROM alembic_version")) == "0002_run_events"
+        assert connection.scalar(sa.text("SELECT version_num FROM alembic_version")) == "0003_space_profiles"
         context = MigrationContext.configure(connection, opts={"compare_type": True})
         assert compare_metadata(context, Base.metadata) == []
     assert "run_events" in sa.inspect(engine).get_table_names()
@@ -93,3 +93,31 @@ def test_baseline_does_not_create_future_orm_tables(migration_database):
         assert "future_revision_only" not in tables
     finally:
         Base.metadata.remove(future)
+
+
+def test_space_profile_backfill_preserves_existing_metadata(migration_database):
+    config, engine = migration_database
+    command.upgrade(config, "0002_run_events")
+    metadata = sa.MetaData()
+    spaces = sa.Table("learning_spaces", metadata, autoload_with=engine)
+    from datetime import datetime
+    with engine.begin() as connection:
+        connection.execute(spaces.insert().values(
+            id="existing-space", name="Existing", status="active", goal="Learn functions",
+            target_date="2026-10-01", weekly_minutes=180, bindings=[], topic_ids=[],
+            excluded_topic_ids=[], space_version=7, scope_version=3, profile_version=2,
+            state_version=4, created_at=datetime(2026, 9, 17), updated_at=datetime(2026, 9, 18)))
+    command.upgrade(config, "head")
+    spaces = sa.Table("learning_spaces", sa.MetaData(), autoload_with=engine)
+    with engine.connect() as connection:
+        row = connection.execute(sa.select(spaces)).mappings().one()
+        assert row["space_version"] == 7
+        assert row["profile_version"] == 2
+        assert row["state_version"] == 4
+        assert row["profile"]["goal"] == {"value": "Learn functions", "source": "explicit", "updated_at": "2026-09-18T00:00:00+00:00"}
+        assert row["profile"]["weekly_minutes"]["value"] == 180
+        assert row["profile"]["target_date"]["value"] == "2026-10-01"
+    command.downgrade(config, "0002_run_events")
+    with engine.connect() as connection:
+        assert connection.scalar(sa.text("SELECT goal FROM learning_spaces")) == "Learn functions"
+    command.upgrade(config, "head")

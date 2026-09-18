@@ -94,6 +94,7 @@ class LearningSpaceRow(Base):
     excluded_topic_ids: Mapped[list] = mapped_column(JSON, nullable=False)
     space_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     scope_version: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    profile: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
     profile_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     state_version: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
@@ -248,6 +249,7 @@ class IdempotencyRow(Base):
     resource_id: Mapped[str] = mapped_column(String(128), nullable=False)
     version_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     run_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    response: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
