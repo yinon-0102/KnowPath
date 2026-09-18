@@ -5,7 +5,8 @@ from __future__ import annotations
 import os
 from datetime import datetime
 
-from sqlalchemy import JSON, Boolean, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint, create_engine
+from sqlalchemy import JSON, Boolean, DateTime, Float, ForeignKey, Integer, LargeBinary, String, Text, UniqueConstraint, create_engine
+from sqlalchemy.dialects.mysql import LONGBLOB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -37,6 +38,13 @@ class MaterialVersionRow(Base):
     status: Mapped[str] = mapped_column(String(32), nullable=False)
     graph_version: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class MaterialRawRow(Base):
+    __tablename__ = "material_raw_files"
+    version_id: Mapped[str] = mapped_column(
+        ForeignKey("material_versions.id", ondelete="CASCADE"), primary_key=True)
+    content: Mapped[bytes] = mapped_column(LargeBinary().with_variant(LONGBLOB(), "mysql"), nullable=False)
 
 
 class SourceChunkRow(Base):
