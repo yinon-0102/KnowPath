@@ -15,6 +15,7 @@ from fastapi.responses import JSONResponse, StreamingResponse, Response
 
 from .config import LearningSettings
 from .material_schemas import UpdateMaterial
+from .graph_schemas import ReconcileGraph, PublishGraph
 from .ingestion import MaterialIngestionService
 from .repositories import SqlAlchemyMaterialRepository
 from .run_repository import SqlAlchemyRunRepository
@@ -372,23 +373,29 @@ def create_app(
             return _domain_error(exc)
 
     @app.post("/api/v1/materials/{material_id}/reconcile", status_code=202)
-    async def reconcile_material(material_id: str) -> JSONResponse:
-        if service.repository.get_material(material_id) is None:
-            return _error_response(404, "RESOURCE_NOT_FOUND", "资料不存在", {"material_id": material_id})
-        run = state.run("graph_reconcile", {"type": "material", "id": material_id})
-        return JSONResponse(status_code=202, content={"run_id": run["id"], "status": run["status"]})
+    def reconcile_material(material_id: str, payload: ReconcileGraph,
+                           idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None) -> JSONResponse:
+        try:
+            return JSONResponse(status_code=202, content=state.graph_service.reconcile(
+                material_id, payload.model_dump(mode="json"), idempotency_key))
+        except (DomainNotFound, DomainConflict) as exc:
+            return _domain_error(exc)
 
     @app.get("/api/v1/materials/{material_id}/graph-diff")
-    async def material_graph_diff(material_id: str) -> JSONResponse:
-        if service.repository.get_material(material_id) is None:
-            return _error_response(404, "RESOURCE_NOT_FOUND", "资料不存在", {"material_id": material_id})
-        return JSONResponse(status_code=200, content={"base_graph_version": 1, "candidate_revision_id": None, "added": [], "changed": [], "removed": [], "conflicts": [], "affected_topic_ids": []})
+    def material_graph_diff(material_id: str, revision_id: str | None = None, include_unchanged: bool = False) -> JSONResponse:
+        try:
+            return JSONResponse(status_code=200, content=state.graph_service.diff(material_id, revision_id, include_unchanged))
+        except (DomainNotFound, DomainConflict) as exc:
+            return _domain_error(exc)
 
     @app.post("/api/v1/materials/{material_id}/graph-revisions/{revision_id}/publish")
-    async def publish_graph(material_id: str, revision_id: str, payload: dict[str, Any]) -> JSONResponse:
-        if service.repository.get_material(material_id) is None:
-            return _error_response(404, "RESOURCE_NOT_FOUND", "资料不存在", {"material_id": material_id})
-        return JSONResponse(status_code=200, content={"graph_version": 2, "material_version_id": revision_id, "published_at": _now_for_api()})
+    def publish_graph(material_id: str, revision_id: str, payload: PublishGraph,
+                      idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None) -> JSONResponse:
+        try:
+            return JSONResponse(status_code=200, content=state.graph_service.publish(
+                material_id, revision_id, payload.model_dump(mode="json"), idempotency_key))
+        except (DomainNotFound, DomainConflict) as exc:
+            return _domain_error(exc)
 
     @app.get("/api/v1/learning-spaces")
     def list_learning_spaces() -> dict[str, Any]:
@@ -640,7 +647,7 @@ def create_app(
     @app.delete("/api/v1/materials/{material_id}", status_code=202)
     async def delete_material(material_id: str, payload: dict[str, Any] | None = None) -> JSONResponse:
         def delete_atomically():
-            with service.repository.transaction():
+            with state.graph_service.repository.transaction():
                 material = service.repository.get_material(material_id)
                 if material is None:
                     raise DomainNotFound("material", material_id)
@@ -648,6 +655,7 @@ def create_app(
                                 for space in state.list_spaces())
                 if referenced:
                     raise DomainConflict("MATERIAL_IN_USE", "资料仍被学习空间引用；请先删除引用空间，级联删除尚未实现")
+                state.graph_service.delete_history(material_id)
                 service.repository.delete_material(material_id)
         try:
             await asyncio.to_thread(delete_atomically)

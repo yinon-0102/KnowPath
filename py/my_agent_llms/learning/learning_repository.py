@@ -8,14 +8,14 @@ from uuid import uuid4
 
 from sqlalchemy import select, exists
 
-from .db import AssessmentRow, AttemptRow, EvidenceRow, LearnerStateRow, StateResetRow, IdempotencyRow, StudyPlanRow, StudyTaskRow, SessionRow, SessionEventRow, ConversationRow, LearningMessageRow
+from .db import AssessmentRow, AttemptRow, EvidenceRow, LearnerStateRow, StateResetRow, IdempotencyRow, StudyPlanRow, StudyTaskRow, SessionRow, SessionEventRow, ConversationRow, LearningMessageRow, GraphRevisionRow, OutboxEventRow
 from .errors import DomainConflict, DomainNotFound
 from .space_repository import InMemorySpaceRepository, SqlAlchemySpaceRepository
 
 
 TABLES = {"assessments": AssessmentRow, "attempts": AttemptRow, "evidence": EvidenceRow,
           "states": LearnerStateRow, "resets": StateResetRow,
-          "plans": StudyPlanRow, "tasks": StudyTaskRow, "sessions": SessionRow, "session_events": SessionEventRow, "conversations": ConversationRow, "messages": LearningMessageRow}
+          "plans": StudyPlanRow, "tasks": StudyTaskRow, "sessions": SessionRow, "session_events": SessionEventRow, "conversations": ConversationRow, "messages": LearningMessageRow, "graph_revisions": GraphRevisionRow, "outbox": OutboxEventRow}
 DATE_FIELDS = {"created_at", "last_assessed_at", "next_review_at", "defer_until", "started_at", "finished_at", "received_at"}
 
 

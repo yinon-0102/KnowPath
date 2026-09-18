@@ -280,7 +280,7 @@ Run/SSE 当前支持递增事件 ID、UTC 时间戳、Last-Event-ID 续传、15 
 
 创建空间与设置范围必须提供 Idempotency-Key；修改空间基础字段、画像的 PATCH 可选提供该键，提供后也保存并重放原响应。资源变化与响应快照在同一事务中提交。PATCH 和范围修改必须携带 expected_version；画像检查 profile_version，基础字段和范围检查 space_version。范围更新同时递增 scope_version，并将旧范围计划标记为 needs_replan。绑定版本在上传新版本后保持不变；范围只接受绑定版本中的实际主题。当前主题来自文本标题/片段，真实 Neo4j 图谱和有来源的前置关系尚未接入，因此不自动扩展前置主题。
 
-删除资料会在事务中检查持久空间引用；有引用时返回 409，即使请求 cascade=true 也不能绕过。完整级联删除、删除接口的确认/版本约束及业务清理仍待实现。幂等重放还覆盖测验创建、追加答案和状态重置；交卷依据测验终态复用原 Run。计划、学习会话事件、评分复核、导出和对话也支持幂等重放；图谱相关写入及 24 小时幂等记录清理仍待实现。事件轮询和追加目前读取整个 Run 历史，尚未进行长对话负载优化；过期载荷在读取时清除，保留事件序号和时间用于判断续传是否过期。
+删除资料会在事务中检查持久空间引用；有引用时返回 409，即使请求 cascade=true 也不能绕过。完整级联删除、删除接口的确认/版本约束及业务清理仍待实现。幂等重放还覆盖测验创建、追加答案和状态重置；交卷依据测验终态复用原 Run。计划、学习会话事件、评分复核、导出和对话也支持幂等重放；图谱候选 reconcile 也已支持事务性幂等重放；真实图谱发布及 24 小时幂等记录清理仍待实现。事件轮询和追加目前读取整个 Run 历史，尚未进行长对话负载优化；过期载荷在读取时清除，保留事件序号和时间用于判断续传是否过期。
 
 测验和来源约束对话默认使用 DashScope，需要在服务进程配置 `DASHSCOPE_API_KEY`（请勿提交密钥）；默认聊天模型为 `qwen-plus`，Embedding 保持 `text-embedding-v3`。可设置 `LEARNING_CHAT_BASE_URL` 指向 DashScope 兼容服务。测试注入固定题集或模拟 HTTP，不消费真实模型额度。模型输出通过题数、题型、难度配额、答案键及来源引用校验后才发布；这些结构校验不能保证所有题意和答案在语义上正确，仍需人工评估。
 
@@ -306,7 +306,7 @@ uv run python -m my_agent_llms.learning.vector_indexing --version-id "<material_
 
 全部绑定版本建好索引后，在 `py/.env` 设置 `LEARNING_RETRIEVAL_BACKEND=qdrant` 并重启服务。索引不完整返回 `VECTOR_INDEX_NOT_READY`，不会降级成关键词；失败的 Run 保留原结果，修复索引后使用新的 Idempotency-Key 重试。客户端连接超时为 Qdrant 30 秒、Embedding 每批 60 秒，不自动重试或跟随模型重定向。新版本需要重新建索引，原来固定的旧版本仍可查询。
 
-这个命令是自动摄入前的维护入口。完整 GraphService、跨存储 outbox、自动重试和物理删除清理仍待实现；索引与资料删除并发时可能留下不可通过当前来源白名单检索的孤儿向量，后续删除流程仍须负责物理清理，不能把该命令当作完整发布/删除工作流。
+这个命令是自动摄入前的维护入口。GraphService 的候选快照和 graph.prepare outbox 事件已持久化；跨存储 worker、真实发布、自动重试和物理删除清理仍待实现；索引与资料删除并发时可能留下不可通过当前来源白名单检索的孤儿向量，后续删除流程仍须负责物理清理，不能把该命令当作完整发布/删除工作流。
 
 运行学习模块回归测试（PowerShell 先展开测试文件）：
 
@@ -332,3 +332,10 @@ Questions or ideas? Feel free to open an [Issue](https://github.com/HHHH-LK/keel
 ---
 
 如果你想要的不是"问一句答一句"的工具,而是一个**记得住、做得完、不闯祸**的长期 AI 伙伴——那就是 Keel。
+
+
+### 图谱候选审核（0010 迁移）
+
+执行 `uv run alembic upgrade head` 后，reconcile 接口要求 `version_id` 和 `expected_graph_version`，并与候选快照、queued Run、待处理事件及幂等响应一起提交。首次正式发布前基版本是 0；旧空间使用的临时 graph_version=1 投影不代表已经发布的图谱。graph-diff 返回真实节点/来源差异，支持指定 revision_id 和 include_unchanged。
+
+本增量只完成候选持久化和审核读取。还没有执行 graph.prepare 的 worker，Run 不会自行完成；服务启动时现有恢复逻辑会把残留活跃任务标记为 RUN_INTERRUPTED，候选记录保留，可用新幂等键重新生成任务。publish 已取消占位成功响应，未就绪返回 409 REVISION_NOT_READY，不会切换任何空间绑定。详情见 ../docs/implementation/2026-09-18-graph-reconciliation.md。

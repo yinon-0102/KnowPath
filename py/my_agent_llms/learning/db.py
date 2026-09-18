@@ -281,6 +281,26 @@ class LearningMessageRow(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
+class GraphRevisionRow(Base):
+    __tablename__ = "graph_revisions"
+    __table_args__ = (
+        UniqueConstraint("material_id", "sequence", name="uq_graph_revision_sequence"),
+        UniqueConstraint("material_id", "graph_version", name="uq_graph_published_version"),
+    )
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    material_id: Mapped[str] = mapped_column(ForeignKey("materials.id"), nullable=False, index=True)
+    material_version_id: Mapped[str] = mapped_column(ForeignKey("material_versions.id"), nullable=False)
+    sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    base_graph_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    graph_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    run_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    snapshot: Mapped[dict] = mapped_column(JSON, nullable=False)
+    snapshot_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    diff: Mapped[dict] = mapped_column(JSON, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
 class KnowledgeCorrectionRow(Base):
     __tablename__ = "knowledge_corrections"
     id: Mapped[str] = mapped_column(String(36), primary_key=True)

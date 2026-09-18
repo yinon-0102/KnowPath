@@ -19,6 +19,8 @@ from .planner import PlanSessionService
 from .exports import ExportService
 from .space_deletion import SpaceDeletionService
 from .messages import MessageService
+from .graph_reconciliation import GraphReconciliationService
+from .graph_repository import InMemoryGraphRepository, SqlAlchemyGraphRepository
 
 
 def _now() -> str:
@@ -45,6 +47,8 @@ class LearningState:
             space_service = SpaceService(repository, self.material_repository)
         self.space_service = space_service
         learning_repository = SqlAlchemyLearningRepository(uow) if uow else InMemoryLearningRepository(self.material_repository, self.run_service)
+        graph_repository = SqlAlchemyGraphRepository(uow) if uow else InMemoryGraphRepository(self.material_repository, self.run_service)
+        self.graph_service = GraphReconciliationService(graph_repository, self.material_repository, self.run_service)
         self.assessment_service = AssessmentService(learning_repository, space_service, self.run_service, question_generator)
         self.message_service = MessageService(learning_repository, space_service, self.assessment_service, self.run_service, answer_generator, source_retriever)
         self.spaces: dict[str, dict[str, Any]] = {}
