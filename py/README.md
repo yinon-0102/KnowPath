@@ -254,10 +254,36 @@ See the design docs under `docs/superpowers/specs/` and `docs/superpowers/plans/
 
 ## Learning backend
 
-The first learning backend slice is exposed by `my_agent_llms.learning.main:app`.
-After installing dependencies, run it with `uvicorn my_agent_llms.learning.main:app`.
-The SQLAlchemy schema is created with `uv run alembic upgrade head`; local MySQL,
-Neo4j and Qdrant services are defined in `../infra/docker-compose.yml`.
+后端工作目录是 `py/`，虚拟环境是 `py/.venv/`。在本目录执行：
+
+```powershell
+uv sync
+uv run uvicorn my_agent_llms.learning.main:app --host 127.0.0.1 --port 8000
+```
+
+默认使用内存仓储。要保存资料、Run 状态与事件，先启动项目 MySQL，再在 `py/` 执行：
+
+```powershell
+$env:DATABASE_URL = "mysql+pymysql://keel:keel@127.0.0.1:3306/keel_learning"
+uv run alembic upgrade head
+$env:LEARNING_PERSISTENCE = "sql"
+uv run uvicorn my_agent_llms.learning.main:app --host 127.0.0.1 --port 8000 --workers 1
+```
+
+SQL 模式要求先完成迁移；启动时不再用 `create_all()` 隐式建表。`.env.example` 只是配置示例，以上命令显式设置环境变量。Docker 配置见 `../infra/docker-compose.yml`。
+
+Run/SSE 当前支持递增事件 ID、UTC 时间戳、Last-Event-ID 续传、15 秒心跳、终态关闭和七天历史过期检查。取消请求先进入 `cancelling`，执行器确认停止后才能变成 `cancelled`；此期间拒绝发布迟到的结果和消息。SQL 启动时将残留的 queued/running/cancelling 任务标记为 `failed / RUN_INTERRUPTED`，不自动重放业务操作。
+
+当前 SQL 模式只支持单个服务进程；多个进程同时启动会错误地将彼此任务判断为中断。学习空间、测验、计划等业务对象仍保存在内存中，Run 的结果引用不会使这些对象自动持久化。现有业务流程多数同步完成，消息响应仍是占位文本；本模块没有实现后台 worker 或真实模型生成。资料上传的幂等记录已保存到 SQL，但上传请求与 Run 的关联仍在内存中，跨重启重试可能创建新的 run_id；完整的跨重启幂等重放尚未完成。事件轮询和追加目前读取整个 Run 历史，尚未进行长对话负载优化；过期载荷在读取时清除，保留事件序号和时间用于判断续传是否过期。
+
+运行学习模块回归测试（PowerShell 先展开测试文件）：
+
+```powershell
+$learningTests = Get-ChildItem .\my_agent_llms\test\test_learning_*.py -File | ForEach-Object { $_.FullName }
+uv run python -m pytest @learningTests -q
+```
+
+可选 MySQL 集成测试需要已迁移的本地测试库。先设置 `$env:LEARNING_TEST_MYSQL_URL = $env:DATABASE_URL`，再运行同一测试命令；该测试验证两个仓储实例的并发写入和接口续传，并清理自身创建的 Run。未设置此变量时会跳过这一项。
 
 ---
 
