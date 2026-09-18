@@ -380,3 +380,24 @@ POST /api/v1/materials/{material_id}/ingest 要求 Idempotency-Key，JSON 仅包
 相同幂等键重放原 Run；失败/取消后使用新键重试。候选 ID 在解析前为 null，完成后可在 Run.result_ref 查询。重启后 worker 可接管到期租约；过期、取消或删除中的任务不能补写来源。相同内容按解析格式去重，修正错误扩展名允许重新解析。已有归档状态、发布快照与学习空间绑定不会被后台解析覆盖。
 
 旧资料若无原文件但有已解析来源，仍可准备图谱；若两者都缺失则返回 MATERIAL_SOURCE_MISSING，需重新上传。运行生产 worker 前需配置数据库、Neo4j、Qdrant 与 DashScope，默认 Embedding 为 text-embedding-v3（1024 维）。详见 ../docs/implementation/2026-09-18-automatic-material-ingest.md。
+
+
+### 学习服务完整启动与本地安全配置
+
+后端和虚拟环境均位于 `py/`。`.env` 使用 `LEARNING_PERSISTENCE=sql`，数据库、Neo4j、Qdrant 连接与现有本地环境一致；不要覆盖已有配置。先执行 `uv run alembic upgrade head`，再在三个终端分别启动：
+
+```powershell
+uv run uvicorn my_agent_llms.learning.main:app --host 127.0.0.1 --port 8000
+uv run python -m my_agent_llms.learning.graph_worker_cli
+uv run python -m my_agent_llms.learning.model_worker_cli
+```
+
+API 与 worker 自动加载后端 `.env`。生产入口使用 `LEARNING_LOCAL_TOKEN`；为空时生成并持久保存 `py/.learning-token.local`，前端读取配置后通过 `X-Local-Token` 传入，SSE 同样使用请求头。不要提交或在日志中打印令牌。`LEARNING_ALLOWED_ORIGINS` 配置允许访问的浏览器 Origin。未认证 health 只有基本状态；带令牌才能查询真实 MySQL/Neo4j/Qdrant 探测和模型配置状态。健康探测不执行付费模型请求。
+
+`LEARNING_CONFIG_FILE` 可指向 JSON 配置，结构见接口文档 1.3；环境变量覆盖文件，文件覆盖默认值。默认聊天 qwen-plus、Embedding text-embedding-v3（1024 维）。默认 keyword 召回可用于本地功能验证；正式向量召回设置 `LEARNING_RETRIEVAL_BACKEND=qdrant`，索引由 graph worker 在发布前准备。
+
+测验和消息任务通过 outbox 持久化，重启和限流重试保留原 run_id。默认最多认领 3 次，重试间隔 2、4 秒。异步错误通过 Run/SSE 查询，已返回的 202 不会变成另一个 HTTP 响应。模型能力不支持在入队前拒绝。model worker 的 `--once` 只尝试领取一个到期任务；要持续执行退避重试需保持常驻进程。
+
+资料 DELETE 必须带 expected_version 和 confirm=true；被空间引用时还需 cascade=true。事务内清理学习数据并撤销相关模型任务，外部 Neo4j/Qdrant 清理由 graph worker 执行并读回验证。资料删除 Run 成功前，不能视为外部物理清理完成。空间删除保留其他空间共享资料。
+
+接口验收及仍有的性能、部署限制见 `../docs/implementation/2026-09-19-api-completion.md`。学习接口代码未调用 Shell 或任意代码工具；现有 CLI agent 是另一个入口。

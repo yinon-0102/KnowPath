@@ -1,13 +1,13 @@
 # Keel Learning 后端接口设计
 
-版本：v0.1-draft  
-日期：2026-09-17  
+版本：v0.1；日期：2026-09-18
+
 协议：REST JSON + Server-Sent Events（SSE）  
 基础路径：`/api/v1`
 
 本文档定义学习助手后端的业务接口。首版按本地单用户设计，不包含账号和权限接口；接口中的资源标识仍保留，便于后续扩展多人服务。
 
-性质：接口契约，正在按模块实现；实际进度及限制见第 14 节；架构和算法规则见 [ARCHITECTURE.md](ARCHITECTURE.md)。所有示例值仅用于说明，不代表真实测量结果。
+性质：接口契约；实际验收记录见 implementation/2026-09-19-api-completion.md，运行语义及限制见第 14 节；架构和算法规则见 [ARCHITECTURE.md](ARCHITECTURE.md)。所有示例值仅用于说明，不代表真实测量结果。
 
 存储选型已确认：业务数据采用 MySQL，知识图谱采用 Neo4j，向量检索采用 Qdrant。资源 ID 和 REST 路径保持与存储实现解耦。所有“同一事务”特指 MySQL 内部业务写入；图谱/向量的同步采用 outbox 与幂等后台任务，在就绪之前不发布版本，不能假设跨三个存储原子提交。
 
@@ -610,7 +610,7 @@ session_count=3—5，minutes_per_session=10—120，必须满足 profile 时间
 
 首版只接受 stream=true；message 为 1—8000 字。session_id 可空，为空时创建独立对话会话，不修改计划任务状态。202 返回 run_id/session_id/status，文本由 SSE message.delta 发送。活动测验内问答案应转为提示请求并记录 assisted，禁止隐式写入成绩。
 
-当前消息实现会持久化独立对话和来源快照，使用绑定资料版本及当前主题范围召回片段。同会话只允许一条消息生成中；相同幂等键重放原始响应，不再次调用模型。`tool.completed` 提供公开来源引用，`message.completed` 返回正文和引用。正文在模型响应完成并通过引用校验后分块发送；召回可配置为 `keyword`（默认）或 `qdrant`。Qdrant 模式使用 DashScope `text-embedding-v3`（1024 维、Cosine），只查询当前范围内固定资料版本、图版本与正文哈希匹配的片段，正文从数据库快照读取。向量索引由显式维护命令预先构建；任一候选片段未索引时 Run 失败为 `VECTOR_INDEX_NOT_READY`，不会静默退回关键词。Embedding 或向量服务不可用分别返回 `EMBEDDING_UNAVAILABLE` / `VECTOR_UNAVAILABLE`；`tool.completed` 在检索成功且再次确认上下文有效后写入。自动摄入/outbox 和真实图谱发布尚未接入此流程。范围或绑定在生成期间变化时 Run 失败为 `STALE_LEARNING_CONTEXT`；关联学习会话结束时为 `SESSION_FINISHED`。
+当前消息实现会持久化独立对话和来源快照，使用绑定资料版本及当前主题范围召回片段。同会话只允许一条消息生成中；相同幂等键重放原始响应，不再次调用模型。`tool.completed` 提供公开来源引用，`message.completed` 返回正文和引用。正文在模型响应完成并通过引用校验后分块发送；召回可配置为 `keyword`（默认）或 `qdrant`。Qdrant 模式使用 DashScope `text-embedding-v3`（1024 维、Cosine），只查询当前范围内固定资料版本、图版本与正文哈希匹配的片段，正文从数据库快照读取。向量索引在自动摄入的 graph.prepare 阶段准备，亦可通过显式维护命令重建；任一候选片段未索引时任务记录 `VECTOR_INDEX_NOT_READY` 并有限重试，不会静默退回关键词。Embedding 或向量服务不可用分别返回 `EMBEDDING_UNAVAILABLE` / `VECTOR_UNAVAILABLE`；`tool.completed` 在检索成功且再次确认上下文有效后写入。消息与测验生成通过持久化 outbox 执行；进程重启后继续原 Run，只有通过检索、模型输出和来源校验的结果才能发布。范围或绑定在生成期间变化时 Run 失败为 `STALE_LEARNING_CONTEXT`；关联学习会话结束时为 `SESSION_FINISHED`。
 
 ## 9. 证据和知识更新接口
 
@@ -728,7 +728,7 @@ replace 必须带非空 proposed_value 字段补丁：node 支持 name、descrip
 
 采纳原子递增 space_version、scope_version；有主题变化时递增 state_version。按来源正文与审核字段比较主题，未变化主题可跨资料版本复用证据，受影响主题分配新的证据版本并保留历史分数为 stale。显式学习范围保持原选择，移除节点不自动扩大范围。旧计划持久化为 needs_replan 且 plan version 递增；通过现有 local_replan 显式创建新计划和独立 Run，已过期主题的历史完成/跳过任务保留为 historical 并重新安排验证。stale 状态的重测不受 include_review=false 影响。采纳本身不自动生成计划，此时 plan_replan_run_id=null。
 
-run 完成结果包含 space_id、space_version、affected_topic_ids、stale_state_count、plan_replan_run_id。所有后台生成任务都记录启动时的绑定版本，提交结果时发现已变化则标记 STALE_INPUT，保留结果供历史查看，但不得更新新快照的掌握度或计划。
+run 完成结果包含 space_id、space_version、affected_topic_ids、stale_state_count、plan_replan_run_id。采纳同事务保存不可变 knowledge_updated 时间线记录，包含前后 bindings、空间/状态版本、失效主题和计划。所有后台生成任务都记录启动时的绑定版本，提交结果时发现已变化则标记 STALE_INPUT，保留结果供历史查看，但不得更新新快照的掌握度或计划。
 
 ## 14. 关键响应契约与限制
 
@@ -738,7 +738,11 @@ TopicNode 和图谱边响应增加 revision_id、material_version_id、graph_ver
 
 graph-diff 返回 base_graph_version、candidate_revision_id、added/changed/removed 数组、conflicts 数组和 affected_topic_ids。reconcile 请求包含 version_id、expected_graph_version，首次发布基版本为 0。候选图谱与索引由 worker 准备就绪，再允许 publish 在 MySQL 中原子切换发布状态；未就绪返回 409 REVISION_NOT_READY。只有自动规则确认的无冲突首次提取可直接 ready；其他结果 needs_review，等待 publish。knowledge-corrections 请求 kind=node/relation、target_id、action=reject/replace、reason、source_ref；replace 需要 proposed_value。201 返回 correction_id、status=pending、candidate_revision_id。confirm 不改变学习空间绑定。
 
-**当前实现进度（0012 迁移）**：reconcile 事务性保存候选、queued Run、graph.prepare outbox 事件及幂等响应；graph-diff 读取持久化差异，条目为 `{kind,id,before,after}`。独立 SQL worker 已实现持久租约、过期接管、失败重试、Neo4j 来源图和 Qdrant 向量准备读回；准备成功才原子进入 pending_review。publish 已实现就绪校验、冲突决策审计、原子发布和旧快照 superseded；未决冲突返回 GRAPH_CONFLICTS_PENDING。keep_both 当前保守排除整个冲突主题的自动出题。已有空间保持绑定，新空间优先绑定最新正式 revision；缺少 graph_revision_id 的旧空间保留临时投影，首次正式 reconcile 基版本仍为 0。提取器仍只投影标题和片段，关系数组为空；0012 已实现纠错持久化、确认入队及 worker 自动发布，确认记录、候选和 Run 均可重启恢复；空间删除阻止尚未完成的纠错发布。空间更新采纳已实现（见第 13 节）；上传后的自动摄入编排和外部物理清理仍待实现。
+**当前实现（0013 迁移）**：reconcile 事务性保存候选、queued Run、graph.prepare outbox 及幂等响应；graph-diff 读取持久化差异，条目为 `{kind,id,before,after}`。独立 SQL worker 使用租约、过期接管、失败重试及 Neo4j/Qdrant 写入读回验证；准备成功才进入 pending_review。publish 校验就绪状态、保存冲突决策并原子发布，旧快照保留为 superseded；未决冲突返回 GRAPH_CONFLICTS_PENDING。keep_both 保守排除整个冲突主题的自动出题。已有空间保持绑定，新建空间必须绑定已发布 revision；旧空间缺少 graph_revision_id 时保留兼容投影。
+
+提取器建立章节 contains 关系和来源明确的 prerequisite_of、related_to 候选；非结构关系需审核，发布前校验来源与先修无环。Neo4j 以版本隔离的节点和原生关系保存全部七种合法关系类型及来源，关系写入具有幂等校验。纠错确认、候选与 Run 可重启恢复；空间删除取消尚未发布的纠错。上传自动入库、原文件持久保存、资料级联业务清理及 Neo4j/Qdrant 外部清理均使用持久任务；外部删除未读回确认前，删除 Run 不会虚报成功。
+
+HTTP 图查询目前读取 MySQL 的不可变审核快照，在服务内完成深度和范围查询。Neo4j 保存可重建的版本关系并参与准备与删除验收；架构文档中将路径计算下推 Neo4j 的规划尚未落地，不作为已完成的性能优化声明。
 
 ### 14.2 版本字段的含义
 
@@ -769,3 +773,13 @@ source_refs 统一结构为 `{material_id,material_version_id,chunk_id,page,line
 验收必须覆盖：同一 finalize 重试不重复计分；评分时切换资料版本不污染新状态；生成题目校验失败不对用户发布；SSE 断线可重连；协作取消后不会补写结果；删除后检索和图谱无法恢复已删除内容；所有 API 与 Agent 工具均无任意命令执行路径。
 
 删除学习空间后，关联命令的幂等记录只保留请求指纹与删除标记；重放相同请求返回 410 RESOURCE_DELETED，不能返回旧学习内容或重新创建空间。当前空间删除在事务中同步完成，202 响应 status 为 succeeded，run_id 可查询。
+
+### 14.5 持久化模型任务与部署
+
+HTTP 创建测验或消息时，资源、queued Run、outbox 和幂等响应同事务保存，返回 202。后台唤醒只认领该事件；独立 model_worker_cli 承担退避重试和重启恢复。默认最多认领 3 次，暂时不可用或限流按 2、4 秒退避，始终保留同一资源与 run_id；模型能力不支持在入队前返回 422 UNSUPPORTED_MODEL。已经接受的异步请求不能事后改变 HTTP 状态，最终错误通过 Run.error/SSE 查询。
+
+默认租约为 300 秒，每 100 秒由独立事务校验 token 后续租。每次领取的续租与结果发布预算默认为 1200 秒，可用 model_worker_cli 的 `--max-execution-seconds` 设置为 1–3600 秒；预算耗尽停止续租并拒绝迟到结果，保存 `MODEL_TASK_TIMEOUT`，由租约到期后的领取重试或失败收尾。该预算按尝试计算，不是整个 Run 的总时限；总尝试次数仍受 max_attempts 限制。同步底层调用不能强制终止，单 worker 若一直阻塞，需要另一个健康 worker 或重启后继续处理。取消在下一次心跳被观察后停止续租，提交时仍再次检查取消状态。
+
+网络调用在业务事务外执行，结果提交时重新核验租约、取消、资源存在性和学习上下文。空间/资料删除撤销关联模型任务；旧执行器无法发布迟到结果。升级前没有 outbox 的中断任务标记 RUN_INTERRUPTED，有持久事件的任务留给 worker 恢复。
+
+完整持久服务需同时运行 API、graph_worker_cli、model_worker_cli，并配置 MySQL、Neo4j、Qdrant 和模型认证。创建应用工厂供隔离测试注入；生产 ASGI 入口从环境生成/读取本地令牌。健康检查不调用付费模型，模型状态 configured 只表示认证配置存在，不代表外部模型已实测可用。部分列表采用内存游标分页，尚未进行大规模负载测试。
