@@ -81,8 +81,8 @@ class PlanSessionService:
                                 for t in topics for ref in t.get("source_refs", [])]}
 
     def _planning_states(self, space_id):
-        states = {row["topic_id"]: row for row in self.repository.records("states", space_id=space_id, lock=False)}
-        evidence = self.repository.records("evidence", space_id=space_id, lock=False)
+        states = {row["topic_id"]: row for row in self.repository.records("states", space_id=space_id)}
+        evidence = self.repository.records("evidence", space_id=space_id)
         for topic_id, state in states.items():
             valid = [e for e in evidence if e["topic_id"] == topic_id and e.get("eligible") and not e.get("assisted")
                      and e.get("topic_revision_id") == state.get("topic_revision_id") and e["id"] in state.get("evidence_ids", [])]
@@ -124,6 +124,15 @@ class PlanSessionService:
         for topic in topics:
             visit(topic["id"])
         rank = {"needs_review": 0, "unstable": 1, "learning": 2, "mastered": 3, "unseen": 4}
+        today = datetime.fromisoformat(now()).date()
+        def priority(topic):
+            state = state_rows.get(topic["id"], {})
+            status = state.get("status", "unseen")
+            due_at = state.get("review_due_at") or state.get("next_review_at")
+            if status == "mastered" and due_at and datetime.fromisoformat(due_at).date() <= today:
+                status = "needs_review"
+            return (rank.get(status, 4), -len(state.get("error_tags") or []),
+                    state.get("last_assessed_at") or "9999", topic["id"])
         # Kahn traversal: only currently-ready nodes are priority sorted, so
         # a weak dependent can never leap over an unmet prerequisite.
         remaining = {t["id"]: t for t in ordered}
@@ -132,9 +141,7 @@ class PlanSessionService:
             ready = [t for t in remaining.values() if all(p not in remaining for p in (t.get("prerequisites") or []))]
             if not ready:
                 raise DomainConflict("PLAN_CONSTRAINT_UNSATISFIABLE", "知识点前置关系存在环")
-            ready.sort(key=lambda t: (rank.get(state_rows.get(t["id"], {}).get("status", "unseen"), 4),
-                                      -(len(state_rows.get(t["id"], {}).get("error_tags") or [])),
-                                      state_rows.get(t["id"], {}).get("last_assessed_at") or "9999", t["id"]))
+            ready.sort(key=priority)
             topic = ready[0]
             result.append(topic)
             remaining.pop(topic["id"], None)
@@ -196,7 +203,7 @@ class PlanSessionService:
                 raise DomainNotFound("plan", plan_id)
             task_query = select(StudyTaskRow).where(StudyTaskRow.plan_id == plan_id).order_by(StudyTaskRow.id)
             if lock and self.uow.active:
-                task_query = task_query.with_for_update()
+                task_query = task_query.with_for_update().execution_options(populate_existing=True)
             tasks = list(session.scalars(task_query))
             tasks.sort(key=lambda task: ((task.context or {}).get("position", 10**9), task.id))
             return plan, tasks
@@ -323,6 +330,12 @@ class PlanSessionService:
             self.repository.materials.assessment_data["plans"][plan_id] = copy.deepcopy(plan)
             return copy.deepcopy(task) | {"plan_id": plan_id, "plan_version": plan["version"]}
 
+    def _validate_active_task(self, space, task):
+        current_topics = {t["id"] for t in self.assessments._topics(space)}
+        if (task["status"] in {"completed", "skipped"} or task.get("context", {}).get("historical")
+                or not set(task["topic_ids"]).issubset(current_topics)):
+            raise DomainConflict("TASK_NOT_ACTIVE", "历史、范围外、已完成或跳过的任务不能开始会话")
+
     def start_session(self, plan_id, task_id, idempotency_key=None):
         payload = {"task_id": task_id}
         def change():
@@ -337,8 +350,7 @@ class PlanSessionService:
                 task = next((t for t in tasks if t.id == task_id), None)
                 if task is None:
                     raise DomainNotFound("task", task_id)
-                if task.status in {"completed", "skipped"}:
-                    raise DomainConflict("TASK_NOT_ACTIVE", "已完成或跳过的任务不能开始会话")
+                self._validate_active_task(space, self._task_payload(task))
                 session = self.uow._current.get()
                 active = session.scalar(select(SessionRow).where(SessionRow.space_id == space["id"], SessionRow.status == "active").with_for_update())
                 if active is not None:
@@ -355,8 +367,7 @@ class PlanSessionService:
             task = next((t for t in plan["tasks"] if t["id"] == task_id), None)
             if task is None:
                 raise DomainNotFound("task", task_id)
-            if task["status"] in {"completed", "skipped"}:
-                raise DomainConflict("TASK_NOT_ACTIVE", "已完成或跳过的任务不能开始会话")
+            self._validate_active_task(space, task)
             if any(s["space_id"] == space["id"] and s["status"] == "active" for s in self.repository.materials.assessment_data["sessions"].values()):
                 raise DomainConflict("SESSION_ACTIVE", "学习空间已有活动会话")
             session = {"id": uid(), "session_id": None, "plan_id": plan_id, "space_id": space["id"], "task_id": task_id, "status": "active", "started_at": now(), "finished_at": None, "events": [], "context": self._safe_context(space, task)}
@@ -372,7 +383,7 @@ class PlanSessionService:
         session = self.uow._current.get()
         query = select(SessionRow).where(SessionRow.id == session_id)
         if lock:
-            query = query.with_for_update()
+            query = query.with_for_update().execution_options(populate_existing=True)
         row = session.scalar(query)
         if row is None:
             raise DomainNotFound("session", session_id)

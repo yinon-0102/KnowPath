@@ -69,7 +69,7 @@ def build_tasks(topics, states, config, space, old_tasks, timestamp, policy):
         if previous:
             context["origin_task_id"] = previous["id"]
         tasks.append({"id": str(uuid4()), "topic_ids": [topic["id"]], "kind": kind,
-                      "status": "pending", "estimated_minutes": min(estimate, config["minutes_per_session"]),
+                      "status": "pending", "estimated_minutes": estimate,
                       "reason": reason, "note": None, "defer_until": None, "context": context})
     # Historical tasks remain traceable even when their topics leave the scope.
     for previous in old_tasks:
@@ -79,6 +79,29 @@ def build_tasks(topics, states, config, space, old_tasks, timestamp, policy):
             task["context"].update(origin_task_id=previous["id"], historical=True)
             tasks.append(task)
     active = [t for t in tasks if t["status"] not in {"completed", "skipped", "deferred"} and not t["context"].get("historical")]
+    by_topic = {t["topic_ids"][0]: t for t in tasks if not t["context"].get("historical")}
+    # A deferred unmet prerequisite has no executable slot in this plan. Reject
+    # instead of silently scheduling any transitive dependent ahead of it.
+    def deferred_ancestor(topic_id, visited):
+        if topic_id in visited:
+            return None
+        visited.add(topic_id)
+        candidate = by_topic.get(topic_id)
+        if not candidate or states.get(topic_id, {}).get("status") == "mastered":
+            return None
+        if candidate["status"] == "deferred":
+            return topic_id
+        for parent in candidate["context"].get("prerequisites", []):
+            blocked = deferred_ancestor(parent, visited)
+            if blocked:
+                return blocked
+        return None
+
+    for task in active:
+        blocked = deferred_ancestor(task["topic_ids"][0], set())
+        if blocked:
+            conflict("任务依赖的前置知识已延期，无法在当前计划中安排",
+                     ["deferred_prerequisite", blocked], ["完成前置学习后重新规划", "缩小依赖该前置的范围"])
     total = sum(t["estimated_minutes"] for t in active)
     weekly = space.get("weekly_minutes")
     if weekly is not None and total > weekly:
