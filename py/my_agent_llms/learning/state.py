@@ -16,6 +16,7 @@ from .learning_repository import InMemoryLearningRepository, SqlAlchemyLearningR
 from .assessments import AssessmentService
 from .run_repository import SqlAlchemyRunRepository
 from .planner import PlanSessionService
+from .exports import ExportService
 
 
 def _now() -> str:
@@ -48,9 +49,9 @@ class LearningState:
         self.plans: dict[str, dict[str, Any]] = {}
         self.sessions: dict[str, dict[str, Any]] = {}
         self.corrections: dict[str, dict[str, Any]] = {}
-        self.exports: dict[str, dict[str, Any]] = {}
         self.changes: list[dict[str, Any]] = []
         self.plan_sessions = PlanSessionService(learning_repository, space_service, self.run_service, self.assessment_service, self.plans, self.sessions)
+        self.export_service = ExportService(learning_repository, space_service, self.assessment_service, self.plan_sessions, self.run_service)
 
     def run(self, kind: str, result_ref: dict[str, str] | None = None, *, status: str = "succeeded") -> dict[str, Any]:
         return self.run_service.create(kind, result_ref, status=status)
@@ -219,24 +220,14 @@ class LearningState:
         return self.assessment_service.reset(space_id, {"topic_ids": topic_ids, "reason": reason,
             "expected_state_version": expected_state_version}, idempotency_key)
 
-    def create_export(self, space_id: str) -> dict[str, Any]:
-        with self.assessment_service.repository.transaction():
-            space = copy.deepcopy(self.get_space(space_id))
-            durable_state = self.get_state(space_id)
-            space["state"] = {item["topic_id"]: item for item in durable_state["items"]}
-            space["state_version"] = durable_state["state_version"]
-            evidence = self.evidence_for(space_id)
-        export_id = _id("export")
-        payload = {"space": copy.deepcopy(space), "evidence": evidence, "created_at": _now()}
-        self.exports[export_id] = {"id": export_id, "space_id": space_id, "status": "ready", "payload": payload, "expires_at": _now()}
-        run = self.run("export", {"type": "export", "id": export_id})
-        return {"run_id": run["id"], "export_id": export_id, "status": "processing"}
+    def create_export(self, space_id, payload=None, idempotency_key=None):
+        return self.export_service.create(space_id, payload, idempotency_key)
 
-    def export_payload(self, export_id: str) -> dict[str, Any]:
-        export = self.exports.get(export_id)
-        if export is None:
-            raise DomainNotFound("export", export_id)
-        return copy.deepcopy(export["payload"])
+    def export_payload(self, export_id):
+        return self.export_service.payload(export_id)
+
+    def export_archive(self, export_id):
+        return self.export_service.archive(export_id)
 
     def delete_space(self, space_id: str) -> dict[str, Any]:
         with self.assessment_service.repository.transaction():
@@ -244,6 +235,7 @@ class LearningState:
             if any(self.assessment_service.repository.exists(table, space_id=space_id)
                    for table in ("assessments", "states", "evidence", "resets")) or self.plan_sessions.has_history(space_id):
                 raise DomainConflict("SPACE_HAS_LEARNING_HISTORY", "空间有学习记录，级联删除尚未实现")
+            self.export_service.delete_for_space(space_id)
             self.space_service.delete(space_id)
         self.spaces.pop(space_id, None)
         return {"status": "succeeded", "space_id": space_id}

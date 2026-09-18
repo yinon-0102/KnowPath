@@ -10,7 +10,7 @@ from typing import Annotated, Any
 
 from fastapi import BackgroundTasks, FastAPI, File, Form, Header, Query, Request, UploadFile
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse, Response
 
 from .config import LearningSettings
 from .ingestion import MaterialIngestionService
@@ -579,17 +579,18 @@ def create_app(
             return _domain_error(exc)
 
     @app.post("/api/v1/learning-spaces/{space_id}/exports", status_code=202)
-    async def create_export(space_id: str, payload: dict[str, Any]) -> JSONResponse:
+    def create_export(space_id: str, payload: dict[str, Any], idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None) -> JSONResponse:
         try:
-            return JSONResponse(status_code=202, content=state.create_export(space_id))
-        except DomainNotFound as exc:
+            return JSONResponse(status_code=202, content=state.create_export(space_id, payload, idempotency_key))
+        except (DomainNotFound, DomainConflict) as exc:
             return _domain_error(exc)
 
     @app.get("/api/v1/exports/{export_id}/download")
-    async def download_export(export_id: str) -> JSONResponse:
+    def download_export(export_id: str) -> Response:
         try:
-            return JSONResponse(status_code=200, content=state.export_payload(export_id))
-        except DomainNotFound as exc:
+            return Response(content=state.export_archive(export_id), media_type="application/zip",
+                            headers={"Content-Disposition": 'attachment; filename="learning-space.zip"'})
+        except (DomainNotFound, DomainConflict) as exc:
             return _domain_error(exc)
 
     @app.patch("/api/v1/materials/{material_id}")
@@ -661,6 +662,8 @@ def _domain_error(exc: Exception) -> JSONResponse:
         return _error_response(410, exc.code, str(exc))
     if isinstance(exc, DomainConflict):
         status = 422 if exc.code.startswith("INVALID_") or exc.code.endswith("_REQUIRED") else 409
+        if exc.code == "EXPORT_EXPIRED":
+            status = 410
         if exc.code == "PLAN_CONSTRAINT_UNSATISFIABLE":
             status = 422
         return _error_response(status, exc.code, str(exc), exc.details)

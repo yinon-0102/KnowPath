@@ -48,7 +48,7 @@ def test_empty_database_upgrade_matches_current_schema(migration_database):
     config, engine = migration_database
     command.upgrade(config, "head")
     with engine.connect() as connection:
-        assert connection.scalar(sa.text("SELECT version_num FROM alembic_version")) == "0005_plans_sessions"
+        assert connection.scalar(sa.text("SELECT version_num FROM alembic_version")) == "0006_exports"
         context = MigrationContext.configure(connection, opts={"compare_type": True})
         assert compare_metadata(context, Base.metadata) == []
     assert "run_events" in sa.inspect(engine).get_table_names()
@@ -121,3 +121,17 @@ def test_space_profile_backfill_preserves_existing_metadata(migration_database):
     with engine.connect() as connection:
         assert connection.scalar(sa.text("SELECT goal FROM learning_spaces")) == "Learn functions"
     command.upgrade(config, "head")
+
+
+def test_exports_upgrade_and_downgrade_preserve_existing_data(migration_database):
+    config, engine = migration_database
+    command.upgrade(config, "0005_plans_sessions")
+    _seed_run(engine)
+    command.upgrade(config, "0006_exports")
+    assert "learning_exports" in sa.inspect(engine).get_table_names()
+    _assert_original_run(engine)
+    with engine.connect() as connection:
+        assert compare_metadata(MigrationContext.configure(connection), Base.metadata) == []
+    command.downgrade(config, "0005_plans_sessions")
+    assert "learning_exports" not in sa.inspect(engine).get_table_names()
+    _assert_original_run(engine)

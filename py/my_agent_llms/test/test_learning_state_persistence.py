@@ -7,7 +7,7 @@ import pytest
 from sqlalchemy import create_engine, select, delete
 from sqlalchemy.pool import StaticPool
 
-from my_agent_llms.learning.db import init_db, AttemptRow, EvidenceRow, AssessmentRow, LearnerStateRow, StateResetRow, LearningSpaceRow, IdempotencyRow, SourceChunkRow, MaterialVersionRow, MaterialRow, RunRow
+from my_agent_llms.learning.db import init_db, ExportRow, AttemptRow, EvidenceRow, AssessmentRow, LearnerStateRow, StateResetRow, LearningSpaceRow, IdempotencyRow, SourceChunkRow, MaterialVersionRow, MaterialRow, RunRow
 from my_agent_llms.learning.errors import DomainConflict
 from my_agent_llms.learning.materials import InMemoryMaterialRepository
 from my_agent_llms.learning.repositories import SqlAlchemyMaterialRepository
@@ -65,7 +65,7 @@ def workspace(request, tmp_path):
                 assessments = connection.execute(select(AssessmentRow.id, AssessmentRow.run_id, AssessmentRow.finalize_run_id).where(AssessmentRow.space_id == space["id"])).all()
                 assessment_ids = [a.id for a in assessments]
                 run_ids = [rid for a in assessments for rid in (a.run_id, a.finalize_run_id) if rid]
-                for cls in (EvidenceRow, LearnerStateRow, StateResetRow):
+                for cls in (ExportRow, EvidenceRow, LearnerStateRow, StateResetRow):
                     connection.execute(delete(cls).where(cls.space_id == space["id"]))
                 connection.execute(delete(AttemptRow).where(AttemptRow.assessment_id.in_(assessment_ids)))
                 connection.execute(delete(AssessmentRow).where(AssessmentRow.space_id == space["id"]))

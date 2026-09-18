@@ -266,9 +266,10 @@ class PlanSessionService:
             return copy.deepcopy(result)
         return self.assessments._execute("plan.create", space_id, payload, idempotency_key, change)
 
-    def get_plan(self, plan_id):
+    def get_plan(self, plan_id, *, lock=False):
+        # Callers requesting current reads already hold the owning space lock.
         if self.sql:
-            plan, tasks = self._get_plan_sql(plan_id)
+            plan, tasks = self._get_plan_sql(plan_id, lock=lock)
             result = self._plan_payload(plan, tasks)
         else:
             plan = self._load_plan_memory(plan_id)
