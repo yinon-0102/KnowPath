@@ -232,6 +232,13 @@ class PlanSessionService:
             if not topics:
                 raise DomainConflict("PLAN_CONSTRAINT_UNSATISFIABLE", "当前学习范围没有可安排的知识点", {"conflicts": ["empty_scope"], "adjustable_constraints": ["选择至少一个知识点"]})
             old_tasks = ([self._task_payload(t) for t in base[1]] if self.sql else base.get("tasks", [])) if base else []
+            if base:
+                base_config = base[0].config if self.sql else base.get("config", {})
+                invalidated = set(base_config.get("invalidated_topic_ids", []))
+                old_tasks = copy.deepcopy(old_tasks)
+                for task in old_tasks:
+                    if invalidated.intersection(task["topic_ids"]):
+                        task.setdefault("context", {})["knowledge_invalidated"] = True
             tasks = build_tasks(topics, states, config, space, old_tasks, now(), self.policy)
             config["snapshot"] = self._snapshot(space, states)
             plan_id = uid()

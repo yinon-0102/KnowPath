@@ -22,7 +22,7 @@ def uid():
 
 
 def revision(topic):
-    return sha256(json.dumps(topic["source_refs"], sort_keys=True).encode()).hexdigest()
+    return topic.get("learning_revision_id") or sha256(json.dumps(topic["source_refs"], sort_keys=True).encode()).hexdigest()
 
 
 class AssessmentService:
@@ -101,7 +101,9 @@ class AssessmentService:
             error = {"code": exc.code, "message": str(exc), "details": {}, "retryable": exc.code == "MODEL_UNAVAILABLE"}
         with self.repository.transaction():
             try:
+                # Match answer, message and deletion commands: assessment -> space.
                 current = self.repository.get_record("assessments", assessment_id)
+                space = self.spaces.repository.get(current["space_id"])
             except DomainNotFound:
                 return  # Discard output generated while the space was deleted.
             if current["status"] != "generating":
@@ -115,6 +117,9 @@ class AssessmentService:
             elif error:
                 self.runs.fail(run["id"], error)
                 current["status"] = "failed"
+            elif space["bindings"] != snapshot["bindings"]:
+                current.update(status="stale", questions=questions)
+                self.runs.fail(run["id"], {"code": "STALE_INPUT", "message": "生成期间空间知识绑定已变化，结果仅供历史查看", "details": {}, "retryable": False})
             else:
                 current.update(status="ready", questions=questions)
                 self.runs.complete(run["id"], {"type": "assessment", "id": assessment_id})

@@ -722,6 +722,10 @@ replace 必须带非空 proposed_value 字段补丁：node 支持 name、descrip
 }
 ```
 
+采纳请求的 bindings 必须是当前空间全部资料的完整集合，每项只传 material_id、material_version_id、graph_version，不接收响应中的 graph_revision_id 或内部证据版本映射。只允许已正式发布（含被后续版本替代但仍保留发布记录）的快照；不允许回退。重复资料或缺少必填字段返回 422，增删资料返回 409 BINDING_MISMATCH，未发布返回 409 GRAPH_NOT_PUBLISHED，无变化返回 409 NO_KNOWLEDGE_UPDATES。Idempotency-Key 与采纳结果持久保存，重试复用同一 Run。
+
+采纳原子递增 space_version、scope_version；有主题变化时递增 state_version。按来源正文与审核字段比较主题，未变化主题可跨资料版本复用证据，受影响主题分配新的证据版本并保留历史分数为 stale。显式学习范围保持原选择，移除节点不自动扩大范围。旧计划持久化为 needs_replan 且 plan version 递增；通过现有 local_replan 显式创建新计划和独立 Run，已过期主题的历史完成/跳过任务保留为 historical 并重新安排验证。stale 状态的重测不受 include_review=false 影响。采纳本身不自动生成计划，此时 plan_replan_run_id=null。
+
 run 完成结果包含 space_id、space_version、affected_topic_ids、stale_state_count、plan_replan_run_id。所有后台生成任务都记录启动时的绑定版本，提交结果时发现已变化则标记 STALE_INPUT，保留结果供历史查看，但不得更新新快照的掌握度或计划。
 
 ## 14. 关键响应契约与限制

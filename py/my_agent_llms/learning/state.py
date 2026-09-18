@@ -19,6 +19,7 @@ from .space_deletion import SpaceDeletionService
 from .messages import MessageService
 from .graph_reconciliation import GraphReconciliationService
 from .corrections import CorrectionService
+from .knowledge_updates import KnowledgeUpdateService
 from .graph_repository import InMemoryGraphRepository, SqlAlchemyGraphRepository
 
 
@@ -43,6 +44,7 @@ class LearningState:
         self.graph_service = GraphReconciliationService(graph_repository, self.material_repository, self.run_service)
         self.space_service.graphs = self.graph_service
         self.correction_service = CorrectionService(self.graph_service, self.space_service)
+        self.knowledge_update_service = KnowledgeUpdateService(learning_repository, space_service, self.graph_service, self.run_service)
         self.assessment_service = AssessmentService(learning_repository, space_service, self.run_service, question_generator)
         self.message_service = MessageService(learning_repository, space_service, self.assessment_service, self.run_service, answer_generator, source_retriever)
         self.spaces: dict[str, dict[str, Any]] = {}
@@ -178,20 +180,10 @@ class LearningState:
         return self.correction_service.confirm(space_id, correction_id, payload, idempotency_key)
 
     def knowledge_updates(self, space_id: str) -> dict[str, Any]:
-        space = self.get_space(space_id)
-        return {"space_id": space_id, "bindings": copy.deepcopy(space["bindings"]), "available_updates": [], "affected_topic_ids": [], "invalidated_question_ids": [], "plan_impact": None}
+        return self.knowledge_update_service.preview(space_id)
 
-    def apply_knowledge_updates(self, space_id: str, payload: dict[str, Any]) -> dict[str, Any]:
-        with self.assessment_service.repository.transaction():
-            space = self.space_service.repository.get(space_id)
-            expected = payload.get("expected_space_version")
-            if expected is not None and expected != space["space_version"]:
-                raise DomainConflict("VERSION_CONFLICT", "学习空间版本已变化")
-            space["space_version"] += 1
-            self.space_service.repository.put(space)
-            new_version = space["space_version"]
-            run = self.run("knowledge_update_apply", {"type": "learning_space", "id": space_id})
-        return {"run_id": run["id"], "space_id": space_id, "space_version": new_version, "affected_topic_ids": [], "stale_state_count": 0, "plan_replan_run_id": None}
+    def apply_knowledge_updates(self, space_id, payload, *, idempotency_key=None):
+        return self.knowledge_update_service.apply(space_id, payload, idempotency_key)
 
     def grade_review(self, assessment_id, payload, idempotency_key=None):
         return self.assessment_service.review_grade(assessment_id, payload, idempotency_key)

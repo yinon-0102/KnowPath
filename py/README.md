@@ -274,7 +274,7 @@ SQL 模式要求先完成迁移；启动时不再用 `create_all()` 隐式建表
 
 Run/SSE 当前支持递增事件 ID、UTC 时间戳、Last-Event-ID 续传、15 秒心跳、终态关闭和七天历史过期检查。取消请求先进入 `cancelling`，执行器确认停止后才能变成 `cancelled`；此期间拒绝发布迟到的结果和消息。SQL 启动时将残留的非 graph_reconcile / knowledge_publish 类 queued/running/cancelling 任务标记为 `failed / RUN_INTERRUPTED`；graph_reconcile 和已确认 knowledge_publish 由独立持久 worker 按租约恢复和重试。
 
-当前 SQL 模式只支持单个服务进程；多个进程同时启动会错误地将彼此任务判断为中断。学习空间的基础字段、固定资料版本绑定、学习范围、画像及 space/scope/profile 版本号已持久化到 MySQL。测验冻结快照、答题修订、证据、掌握度、状态重置和 state_version 已随 0004 迁移持久化；重启后可恢复测验、评分结果、Run 和证据。计划、任务、学习会话、会话事件、评分复核审计和导出快照也已持久化。0009 迁移增加独立对话与消息表；出题和对话在事务提交后通过 FastAPI 后台任务调用 DashScope，模型不可用会将对应 Run 标记为 failed。0011/0012 已实现图谱持久 worker、真实图谱发布和知识纠错；空间版本采用及其他异步任务的持久重试仍待实现。
+当前 SQL 模式只支持单个服务进程；多个进程同时启动会错误地将彼此任务判断为中断。学习空间的基础字段、固定资料版本绑定、学习范围、画像及 space/scope/profile 版本号已持久化到 MySQL。测验冻结快照、答题修订、证据、掌握度、状态重置和 state_version 已随 0004 迁移持久化；重启后可恢复测验、评分结果、Run 和证据。计划、任务、学习会话、会话事件、评分复核审计和导出快照也已持久化。0009 迁移增加独立对话与消息表；出题和对话在事务提交后通过 FastAPI 后台任务调用 DashScope，模型不可用会将对应 Run 标记为 failed。0011/0012 已实现图谱持久 worker、真实图谱发布和知识纠错；空间版本采纳、受影响状态失效和局部重排已实现；其他异步任务的持久重试仍待实现。
 
 资料上传和新增版本把资料、版本、片段、幂等记录、Run 与事件写入同一个 SQL 事务；任一步失败会一起回滚。相同 key 和请求在重启后返回原 material/version/run，不同内容复用 key 返回 409。旧幂等记录尚未关联 Run 时，会在首次匹配重试中补建关联，并发重试仍复用同一 Run。MySQL 默认 REPEATABLE READ 隔离级别下，上传按文件哈希加锁去重；锁冲突导致的死锁会有限重试。
 
@@ -347,11 +347,11 @@ uv run alembic upgrade head
 uv run python -m my_agent_llms.learning.graph_worker_cli
 ```
 
-API 必须设置 LEARNING_PERSISTENCE=sql 才能与 worker 共用任务。可加 --once 处理至多一个可执行任务；job_claimed 只表示已领取，最终状态请查询对应 Run。真实 embedding 会使用 DashScope text-embedding-v3（1024 维）。当前标题/片段提取不推断语义关系，上传后的自动图谱编排、空间更新采纳和外部物理清理仍待实现。详情见 ../docs/implementation/2026-09-19-graph-worker-publication.md。
+API 必须设置 LEARNING_PERSISTENCE=sql 才能与 worker 共用任务。可加 --once 处理至多一个可执行任务；job_claimed 只表示已领取，最终状态请查询对应 Run。真实 embedding 会使用 DashScope text-embedding-v3（1024 维）。当前标题/片段提取不推断语义关系，上传后的自动图谱编排和外部物理清理仍待实现。详情见 ../docs/implementation/2026-09-19-graph-worker-publication.md。
 
 ### 知识纠错与确认发布（0012）
 
-两个 knowledge-corrections POST 均要求 Idempotency-Key。创建时校验空间绑定的正式快照、目标和来源，事务保存纠错事件、不可变候选及等待确认的 Run，返回 correction_id、status=pending、candidate_revision_id；尚不入队外部准备。source_ref 是当前快照的 chunk ID。旧空间必须先采用最新正式快照才能纠错；版本采纳接口仍待补齐，可新建空间绑定已发布快照进行当前流程验证。
+两个 knowledge-corrections POST 均要求 Idempotency-Key。创建时校验空间绑定的正式快照、目标和来源，事务保存纠错事件、不可变候选及等待确认的 Run，返回 correction_id、status=pending、candidate_revision_id；尚不入队外部准备。source_ref 是当前快照的 chunk ID。旧空间必须先采用最新正式快照才能纠错；可通过 knowledge-updates 预览并显式采纳已发布更新，再继续纠错。
 
 replace 的 proposed_value 为非空字段补丁：node 支持 name、description；relation 支持 from_id、to_id、type（见 API 关系类型）。拒绝修改目标 ID、来源、版本等审计字段。reject 保留历史并标记目标 rejected；关系端点必须同属快照，prerequisite_of 不允许成环。
 
@@ -360,3 +360,11 @@ confirm 要求 expected_graph_version 和非空 reason，保存确认审计并�
 同一资料版本再次 reconcile 保留已审核的有效快照，避免撤销已确认纠错；跨版本的节点审核字段变化需要显式解决冲突。
 
 确认和发布不会移动已有空间绑定。空间删除会取消尚未完成的纠错任务，删除空间所属纠错记录，并保留资料快照审计；取消和外部准备失败不会发布结果。旧纠错数据迁移时保留，缺少候选上下文的旧记录需要重新提交。详情见 ../docs/implementation/2026-09-18-knowledge-corrections.md。
+
+### 学习空间知识更新
+
+GET /api/v1/learning-spaces/{space_id}/knowledge-updates 预览最新正式发布快照、受影响主题、历史题目及待重排计划，保持原空间绑定和分数不变。POST 同路径 /apply 要求 Idempotency-Key、expected_space_version 以及空间全部资料的 bindings（每项 material_id、material_version_id、graph_version）；拒绝缺失/重复资料、未发布候选、版本回退和陈旧空间版本。未更换快照返回 409 NO_KNOWLEDGE_UPDATES。响应中的 graph_revision_id 与 topic_revision_ids 是服务端解析数据，提交 bindings 时只传上述三个字段。
+
+采纳在同一事务切换精确图谱绑定、递增 space/scope 版本、将受影响掌握度持久化为 stale / needs_review，并将旧计划持久化为 needs_replan、递增计划版本；Run 完成结果保存真实影响范围和 stale_state_count。未改变的主题跨资料版本沿用证据版本；变更或移除主题保留历史分数、题目和来源，但旧题与旧评分复核不能恢复新版本掌握度。显式学习范围保持选中的 ID，节点移除不会扩大为全部主题。无需新迁移，使用现有 JSON 绑定与计划配置列。
+
+已有计划通过 plans 的 local_replan 流程重建，使用失效后最新 expected_plan_version；返回独立 plan_build Run。旧完成/跳过任务保留为 historical，新版本安排 diagnostic；include_review=false 也不会跳过 stale 掌握度的重新验证。采纳接口本身不自动生成计划，plan_replan_run_id 为 null。出题期间绑定发生变化时，保留生成题目为 stale 历史并以 STALE_INPUT 结束 Run。详情见 ../docs/implementation/2026-09-18-knowledge-updates.md。

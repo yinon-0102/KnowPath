@@ -24,7 +24,7 @@ def conflict(message, constraints, adjustments):
 
 
 def topic_fingerprint(topic, state, config, policy):
-    inputs = {"topic": {k: topic.get(k) for k in ("id", "source_refs", "prerequisites", "status")},
+    inputs = {"topic": {k: topic.get(k) for k in ("id", "source_refs", "prerequisites", "status", "learning_revision_id")},
               "state": state, "include_review": config["include_review"], "policy": policy.version}
     return sha256(json.dumps(inputs, sort_keys=True, default=str).encode()).hexdigest()
 
@@ -40,7 +40,7 @@ def build_tasks(topics, states, config, space, old_tasks, timestamp, policy):
         fingerprint = topic_fingerprint(topic, state, config, policy)
         previous = old_by_topic.get(topic["id"])
         # Copy-on-write revisions preserve task history and explicit user choices.
-        if previous and (previous["status"] in {"completed", "skipped"} or
+        if previous and not previous.get("context", {}).get("knowledge_invalidated") and (previous["status"] in {"completed", "skipped"} or
                          previous.get("context", {}).get("input_fingerprint") == fingerprint):
             task = deepcopy(previous)
             task["id"] = str(uuid4())
@@ -50,7 +50,10 @@ def build_tasks(topics, states, config, space, old_tasks, timestamp, policy):
         status = state.get("status", "unseen")
         due_at = state.get("review_due_at") or state.get("next_review_at")
         due = due_at is not None and datetime.fromisoformat(due_at).date() <= today
-        if status in {"mastered", "needs_review"}:
+        if state.get("score_validity") == "stale" or (previous and previous.get("context", {}).get("knowledge_invalidated")):
+            kind, estimate = "diagnostic", policy.learn_minutes
+            reason = "知识版本已更新，需在新快照下重新验证；历史完成记录不作为当前掌握证据"
+        elif status in {"mastered", "needs_review"}:
             if not config["include_review"] or (status == "mastered" and not due):
                 continue
             kind, estimate = "review", policy.review_minutes
@@ -73,7 +76,8 @@ def build_tasks(topics, states, config, space, old_tasks, timestamp, policy):
                       "reason": reason, "note": None, "defer_until": None, "context": context})
     # Historical tasks remain traceable even when their topics leave the scope.
     for previous in old_tasks:
-        if previous["topic_ids"][0] not in selected or previous.get("context", {}).get("historical"):
+        if (previous["topic_ids"][0] not in selected or previous.get("context", {}).get("historical")
+                or previous.get("context", {}).get("knowledge_invalidated")):
             task = deepcopy(previous)
             task["id"] = str(uuid4())
             task["context"].update(origin_task_id=previous["id"], historical=True)

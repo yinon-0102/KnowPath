@@ -147,6 +147,8 @@ class SpaceService:
             for topic in bound:
                 if topic.get("status") == "rejected":
                     continue
+                topic["canonical_topic_id"] = topic["id"]
+                topic["learning_revision_id"] = binding.get("topic_revision_ids", {}).get(topic["id"])
                 topics[topic["id"]] = topic
                 slug = "".join(ch.lower() if ch.isalnum() else "_" for ch in topic["name"]).strip("_")
                 if slug and len(space["bindings"]) == 1:
@@ -154,6 +156,7 @@ class SpaceService:
                     if alias not in topics:
                         alias_topic = copy.deepcopy(topic)
                         alias_topic["id"] = alias
+                        alias_topic["learning_revision_id"] = binding.get("topic_revision_ids", {}).get(alias)
                         topics[alias] = alias_topic
         return list(topics.values())
 

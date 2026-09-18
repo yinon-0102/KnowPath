@@ -245,15 +245,14 @@ def test_plan_read_detects_scope_changed_by_another_application(workspace):
         assert client.get(f"/api/v1/plans/{plan['id']}").json()["status"] == "needs_replan"
 
 
-def test_existing_knowledge_update_stub_keeps_version_in_repository(workspace):
+def test_knowledge_update_requires_explicit_bindings(workspace):
     factory, material_id, _ = workspace
     with TestClient(factory()) as client:
         space = create_space(client, material_id).json()
         path = f"/api/v1/learning-spaces/{space['id']}"
         response = client.post(path + "/knowledge-updates/apply", json={"expected_space_version": 1}, headers={"Idempotency-Key": "knowledge"})
-        assert response.status_code == 202
-        assert response.json()["space_version"] == 2
-        assert client.get(path).json()["space_version"] == 2
+        assert response.status_code == 422
+        assert client.get(path).json()["space_version"] == 1
 
 
 def test_bound_topics_keep_material_identity_without_duplicate_aliases(workspace):

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from .knowledge_updates import ApplyKnowledgeUpdates
+
 import asyncio
 from contextlib import asynccontextmanager
 import re
@@ -588,13 +590,13 @@ def create_app(
     async def knowledge_updates(space_id: str) -> JSONResponse:
         try:
             return JSONResponse(status_code=200, content=state.knowledge_updates(space_id))
-        except DomainNotFound as exc:
+        except (DomainNotFound, DomainConflict) as exc:
             return _domain_error(exc)
 
     @app.post("/api/v1/learning-spaces/{space_id}/knowledge-updates/apply", status_code=202)
-    async def apply_knowledge_updates(space_id: str, payload: dict[str, Any]) -> JSONResponse:
+    async def apply_knowledge_updates(space_id: str, payload: ApplyKnowledgeUpdates, idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None) -> JSONResponse:
         try:
-            return JSONResponse(status_code=202, content=state.apply_knowledge_updates(space_id, payload))
+            return JSONResponse(status_code=202, content=state.apply_knowledge_updates(space_id, payload.model_dump(), idempotency_key=idempotency_key))
         except (DomainNotFound, DomainConflict) as exc:
             return _domain_error(exc)
 
