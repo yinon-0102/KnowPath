@@ -15,6 +15,7 @@ from .space_repository import InMemorySpaceRepository, SqlAlchemySpaceRepository
 from .learning_repository import InMemoryLearningRepository, SqlAlchemyLearningRepository
 from .assessments import AssessmentService
 from .run_repository import SqlAlchemyRunRepository
+from .planner import PlanSessionService
 
 
 def _now() -> str:
@@ -49,6 +50,7 @@ class LearningState:
         self.corrections: dict[str, dict[str, Any]] = {}
         self.exports: dict[str, dict[str, Any]] = {}
         self.changes: list[dict[str, Any]] = []
+        self.plan_sessions = PlanSessionService(learning_repository, space_service, self.run_service, self.assessment_service, self.plans, self.sessions)
 
     def run(self, kind: str, result_ref: dict[str, str] | None = None, *, status: str = "succeeded") -> dict[str, Any]:
         return self.run_service.create(kind, result_ref, status=status)
@@ -65,6 +67,7 @@ class LearningState:
     def _hydrate_space(self, metadata):
         space = self.spaces.setdefault(metadata["id"], {"state_version": 0, "state": {}, "active_session_id": None})
         space.update(copy.deepcopy(metadata))
+        space["active_session_id"] = self.plan_sessions.active_session_id(metadata["id"])
         return space
 
     def create_space(self, payload: dict[str, Any], *, idempotency_key: str | None = None) -> dict[str, Any]:
@@ -146,86 +149,23 @@ class LearningState:
     def evidence_for(self, space_id, **filters):
         return self.assessment_service.evidence(space_id, **filters)
 
-    def create_plan(self, space_id: str, payload: dict[str, Any]) -> dict[str, Any]:
-        space = self.get_space(space_id)
-        count = max(3, min(int(payload.get("session_count", 5)), 5))
-        minutes = max(10, min(int(payload.get("minutes_per_session", 30)), 120))
-        topic_ids = space["topic_ids"] or [topic["id"] for topic in self.topics_for_space(space_id)]
-        tasks = []
-        for index in range(count):
-            topic_id = topic_ids[index % len(topic_ids)]
-            tasks.append({"id": _id("task"), "topic_ids": [topic_id], "kind": "targeted_practice", "status": "pending", "estimated_minutes": minutes, "reason": "按当前学习范围生成"})
-        plan_id = _id("plan")
-        plan = {"plan_id": plan_id, "id": plan_id, "space_id": space_id, "version": 1, "scope_version": space["scope_version"], "tasks": tasks, "status": "ready", "created_at": _now()}
-        self.plans[plan_id] = plan
-        run = self.run("plan_build", {"type": "plan", "id": plan_id})
-        plan["run_id"] = run["id"]
-        return copy.deepcopy(plan)
+    def create_plan(self, space_id: str, payload: dict[str, Any], *, idempotency_key: str | None = None) -> dict[str, Any]:
+        return self.plan_sessions.create_plan(space_id, payload, idempotency_key)
 
     def get_plan(self, plan_id: str) -> dict[str, Any]:
-        plan = self.plans.get(plan_id)
-        if plan is None:
-            raise DomainNotFound("plan", plan_id)
-        try:
-            current_scope_version = self.get_space(plan["space_id"])["scope_version"]
-            if plan.get("scope_version", 0) != current_scope_version:
-                plan["status"] = "needs_replan"
-        except DomainNotFound:
-            pass
-        return copy.deepcopy(plan)
+        return self.plan_sessions.get_plan(plan_id)
 
     def update_task(self, plan_id: str, task_id: str, payload: dict[str, Any]) -> dict[str, Any]:
-        plan = self.plans.get(plan_id)
-        if plan is None:
-            raise DomainNotFound("plan", plan_id)
-        if payload.get("expected_plan_version") not in (None, plan["version"]):
-            raise DomainConflict("VERSION_CONFLICT", "计划版本已变化")
-        task = next((task for task in plan["tasks"] if task["id"] == task_id), None)
-        if task is None:
-            raise DomainNotFound("task", task_id)
-        status = payload.get("status")
-        if status not in {"completed", "skipped", "deferred"}:
-            raise DomainConflict("INVALID_TASK_STATUS", "任务状态不合法")
-        task["status"] = status
-        if "note" in payload:
-            task["note"] = payload["note"]
-        if "defer_until" in payload:
-            task["defer_until"] = payload["defer_until"]
-        plan["version"] += 1
-        return copy.deepcopy(task)
+        return self.plan_sessions.update_task(plan_id, task_id, payload)
 
-    def start_session(self, plan_id: str, task_id: str) -> dict[str, Any]:
-        plan = self.plans.get(plan_id)
-        if plan is None:
-            raise DomainNotFound("plan", plan_id)
-        space = self.get_space(plan["space_id"])
-        if space.get("active_session_id"):
-            raise DomainConflict("SESSION_ACTIVE", "学习空间已有活动会话")
-        session = {"id": _id("session"), "plan_id": plan_id, "space_id": space["id"], "task_id": task_id, "status": "active", "started_at": _now(), "events": []}
-        self.sessions[session["id"]] = session
-        space["active_session_id"] = session["id"]
-        return copy.deepcopy(session)
+    def start_session(self, plan_id: str, task_id: str, *, idempotency_key: str | None = None) -> dict[str, Any]:
+        return self.plan_sessions.start_session(plan_id, task_id, idempotency_key)
 
-    def add_session_event(self, session_id: str, payload: dict[str, Any]) -> dict[str, Any]:
-        session = self.sessions.get(session_id)
-        if session is None:
-            raise DomainNotFound("session", session_id)
-        event = {"id": _id("event"), "type": payload.get("type"), "topic_id": payload.get("topic_id"), "question_id": payload.get("question_id"), "received_at": _now()}
-        if payload.get("type") == "request_hint" and payload.get("question_id"):
-            self.assessment_service.mark_assisted(session["space_id"], payload["question_id"])
-        session["events"].append(event)
-        return copy.deepcopy(event)
+    def add_session_event(self, session_id: str, payload: dict[str, Any], *, idempotency_key: str | None = None) -> dict[str, Any]:
+        return self.plan_sessions.add_event(session_id, payload, idempotency_key=idempotency_key)
 
     def finish_session(self, session_id: str) -> dict[str, Any]:
-        session = self.sessions.get(session_id)
-        if session is None:
-            raise DomainNotFound("session", session_id)
-        if session["status"] == "finished":
-            return copy.deepcopy(session)
-        session["status"] = "finished"
-        session["finished_at"] = _now()
-        self.get_space(session["space_id"])["active_session_id"] = None
-        return copy.deepcopy(session)
+        return self.plan_sessions.finish_session(session_id)
 
     def send_message(self, space_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         space = self.get_space(space_id)
@@ -299,7 +239,7 @@ class LearningState:
         with self.assessment_service.repository.transaction():
             self.space_service.repository.get(space_id)
             if any(self.assessment_service.repository.exists(table, space_id=space_id)
-                   for table in ("assessments", "states", "evidence", "resets")):
+                   for table in ("assessments", "states", "evidence", "resets")) or self.plan_sessions.has_history(space_id):
                 raise DomainConflict("SPACE_HAS_LEARNING_HISTORY", "空间有学习记录，级联删除尚未实现")
             self.space_service.delete(space_id)
         self.spaces.pop(space_id, None)

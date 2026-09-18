@@ -180,11 +180,15 @@ class StudyPlanRow(Base):
     space_id: Mapped[str] = mapped_column(ForeignKey("learning_spaces.id"), nullable=False, index=True)
     version: Mapped[int] = mapped_column(Integer, nullable=False)
     status: Mapped[str] = mapped_column(String(32), nullable=False)
+    scope_version: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    run_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    config: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
 class StudyTaskRow(Base):
     __tablename__ = "study_tasks"
+    context: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     plan_id: Mapped[str] = mapped_column(ForeignKey("study_plans.id"), nullable=False, index=True)
     topic_ids: Mapped[list] = mapped_column(JSON, nullable=False)
@@ -192,6 +196,8 @@ class StudyTaskRow(Base):
     status: Mapped[str] = mapped_column(String(32), nullable=False)
     estimated_minutes: Mapped[int] = mapped_column(Integer, nullable=False)
     reason: Mapped[str] = mapped_column(Text, nullable=False)
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    defer_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class RunRow(Base):
@@ -217,6 +223,9 @@ class RunEventRow(Base):
 
 class SessionRow(Base):
     __tablename__ = "learning_sessions"
+    context: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    __table_args__ = (UniqueConstraint("active_space_id", name="uq_learning_sessions_active_space_id"),)
+    active_space_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     space_id: Mapped[str] = mapped_column(ForeignKey("learning_spaces.id"), nullable=False, index=True)
     plan_id: Mapped[str] = mapped_column(ForeignKey("study_plans.id"), nullable=False)

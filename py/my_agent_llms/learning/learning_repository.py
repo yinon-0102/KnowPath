@@ -8,14 +8,15 @@ from uuid import uuid4
 
 from sqlalchemy import select, exists
 
-from .db import AssessmentRow, AttemptRow, EvidenceRow, LearnerStateRow, StateResetRow, IdempotencyRow
+from .db import AssessmentRow, AttemptRow, EvidenceRow, LearnerStateRow, StateResetRow, IdempotencyRow, StudyPlanRow, StudyTaskRow, SessionRow, SessionEventRow
 from .errors import DomainConflict, DomainNotFound
 from .space_repository import InMemorySpaceRepository, SqlAlchemySpaceRepository
 
 
 TABLES = {"assessments": AssessmentRow, "attempts": AttemptRow, "evidence": EvidenceRow,
-          "states": LearnerStateRow, "resets": StateResetRow}
-DATE_FIELDS = {"created_at", "last_assessed_at", "next_review_at"}
+          "states": LearnerStateRow, "resets": StateResetRow,
+          "plans": StudyPlanRow, "tasks": StudyTaskRow, "sessions": SessionRow, "session_events": SessionEventRow}
+DATE_FIELDS = {"created_at", "last_assessed_at", "next_review_at", "defer_until", "started_at", "finished_at", "received_at"}
 
 
 class InMemoryLearningRepository(InMemorySpaceRepository):
@@ -28,7 +29,7 @@ class InMemoryLearningRepository(InMemorySpaceRepository):
         with self.materials.transaction(), self.runs.repository.transaction():
             yield
 
-    def get_record(self, table, identifier):
+    def get_record(self, table, identifier, *, lock=True):
         with self.materials._lock:
             row = self.materials.assessment_data[table].get(identifier)
             if row is None:
@@ -44,7 +45,7 @@ class InMemoryLearningRepository(InMemorySpaceRepository):
             return any(all(row.get(key) == value for key, value in filters.items())
                        for row in self.materials.assessment_data[table].values())
 
-    def records(self, table, **filters):
+    def records(self, table, *, lock=True, **filters):
         with self.materials._lock:
             rows = self.materials.assessment_data[table].values()
             return sorted([copy.deepcopy(row) for row in rows
@@ -53,11 +54,11 @@ class InMemoryLearningRepository(InMemorySpaceRepository):
 
 
 class SqlAlchemyLearningRepository(SqlAlchemySpaceRepository):
-    def get_record(self, table, identifier):
+    def get_record(self, table, identifier, *, lock=True):
         cls = TABLES[table]
         with self.unit_of_work.session() as session:
             query = select(cls).where(cls.id == identifier)
-            if self.unit_of_work.active:
+            if lock and self.unit_of_work.active:
                 query = query.with_for_update().execution_options(populate_existing=True)
             row = session.scalar(query)
             if row is None:
@@ -70,11 +71,11 @@ class SqlAlchemyLearningRepository(SqlAlchemySpaceRepository):
             query = select(exists().where(*[getattr(cls, key) == value for key, value in filters.items()]))
             return bool(session.scalar(query))
 
-    def records(self, table, **filters):
+    def records(self, table, *, lock=True, **filters):
         cls = TABLES[table]
         with self.unit_of_work.session() as session:
             query = select(cls).filter_by(**filters).order_by(cls.id)
-            if self.unit_of_work.active:
+            if lock and self.unit_of_work.active:
                 query = query.with_for_update().execution_options(populate_existing=True)
             rows = [self._decode(row) for row in session.scalars(query)]
             return sorted(rows, key=lambda row: (row.get("created_at", ""), row["id"]))

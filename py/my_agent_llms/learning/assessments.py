@@ -285,7 +285,7 @@ class AssessmentService:
 
     def mark_assisted(self, space_id, question_id):
         # Locate without taking every assessment lock; then lock only its owner.
-        candidates = self.repository.records("assessments", space_id=space_id)
+        candidates = self.repository.records("assessments", space_id=space_id, lock=False)
         owner = next((a["id"] for a in candidates if any(q["id"] == question_id for q in a["questions"])), None)
         if owner is None:
             raise DomainNotFound("question", question_id)

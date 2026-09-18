@@ -31,6 +31,7 @@ from .space_schemas import CreateSpace, UpdateSpace, SetScope, UpdateProfile
 from .spaces import topics_for_version
 from .assessment_schemas import CreateAssessment, RecordAttempt, FinalizeAssessment, ResetState
 from .question_generation import DashScopeQuestionGenerator
+from .planner_schemas import CreatePlan, UpdateTask, StartSession, SessionEvent, EmptyObject
 
 
 def create_app(
@@ -458,10 +459,10 @@ def create_app(
             return _domain_error(exc)
 
     @app.post("/api/v1/learning-spaces/{space_id}/plans", status_code=202)
-    async def create_plan(space_id: str, payload: dict[str, Any]) -> JSONResponse:
+    async def create_plan(space_id: str, payload: CreatePlan, idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None) -> JSONResponse:
         try:
-            plan = state.create_plan(space_id, payload)
-            return JSONResponse(status_code=202, content={"run_id": plan["run_id"], "plan_id": plan["plan_id"], "status": "queued"})
+            plan = state.create_plan(space_id, payload.model_dump(mode="json", exclude_none=True), idempotency_key=idempotency_key)
+            return JSONResponse(status_code=202, content={"run_id": plan["run_id"], "plan_id": plan["plan_id"], "status": plan["status"]})
         except (DomainNotFound, DomainConflict) as exc:
             return _domain_error(exc)
 
@@ -469,32 +470,34 @@ def create_app(
     async def get_plan(plan_id: str) -> JSONResponse:
         try:
             return JSONResponse(status_code=200, content=state.get_plan(plan_id))
-        except DomainNotFound as exc:
+        except (DomainNotFound, DomainConflict) as exc:
             return _domain_error(exc)
 
     @app.patch("/api/v1/plans/{plan_id}/tasks/{task_id}")
-    async def update_plan_task(plan_id: str, task_id: str, payload: dict[str, Any]) -> JSONResponse:
+    async def update_plan_task(plan_id: str, task_id: str, payload: UpdateTask) -> JSONResponse:
         try:
-            return JSONResponse(status_code=200, content=state.update_task(plan_id, task_id, payload))
+            return JSONResponse(status_code=200, content=state.update_task(plan_id, task_id, payload.model_dump(mode="json", exclude_none=True)))
         except (DomainNotFound, DomainConflict) as exc:
             return _domain_error(exc)
 
     @app.post("/api/v1/plans/{plan_id}/sessions", status_code=201)
-    async def start_learning_session(plan_id: str, payload: dict[str, Any]) -> JSONResponse:
+    async def start_learning_session(plan_id: str, payload: StartSession, idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None) -> JSONResponse:
         try:
-            return JSONResponse(status_code=201, content=state.start_session(plan_id, payload.get("task_id")))
+            return JSONResponse(status_code=201, content=state.start_session(plan_id, payload.task_id, idempotency_key=idempotency_key))
         except (DomainNotFound, DomainConflict) as exc:
             return _domain_error(exc)
 
     @app.post("/api/v1/sessions/{session_id}/events", status_code=201)
-    async def add_learning_event(session_id: str, payload: dict[str, Any]) -> JSONResponse:
+    async def add_learning_event(session_id: str, payload: SessionEvent, idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None) -> JSONResponse:
+        if not (idempotency_key or payload.event_id):
+            return _error_response(400, "IDEMPOTENCY_KEY_REQUIRED", "会话事件必须提供 Idempotency-Key 或 event_id")
         try:
-            return JSONResponse(status_code=201, content=state.add_session_event(session_id, payload))
+            return JSONResponse(status_code=201, content=state.add_session_event(session_id, payload.model_dump(mode="json", exclude_none=True), idempotency_key=idempotency_key))
         except (DomainNotFound, DomainConflict) as exc:
             return _domain_error(exc)
 
     @app.post("/api/v1/sessions/{session_id}/finish")
-    async def finish_learning_session(session_id: str) -> JSONResponse:
+    async def finish_learning_session(session_id: str, _: EmptyObject) -> JSONResponse:
         try:
             return JSONResponse(status_code=200, content=state.finish_session(session_id))
         except (DomainNotFound, DomainConflict) as exc:
@@ -659,7 +662,9 @@ def _domain_error(exc: Exception) -> JSONResponse:
         return _error_response(410, exc.code, str(exc))
     if isinstance(exc, DomainConflict):
         status = 422 if exc.code.startswith("INVALID_") or exc.code.endswith("_REQUIRED") else 409
-        return _error_response(status, exc.code, str(exc))
+        if exc.code == "PLAN_CONSTRAINT_UNSATISFIABLE":
+            status = 422
+        return _error_response(status, exc.code, str(exc), exc.details)
     return _error_response(500, "INTERNAL_ERROR", str(exc))
 
 
@@ -675,4 +680,5 @@ def _requires_idempotency(path: str) -> bool:
         or path.startswith("/api/v1/runs/") and path.endswith("/cancel")
         or path.startswith("/api/v1/assessments/") and path.endswith("/finalize")
         or path.startswith("/api/v1/sessions/") and path.endswith("/finish")
+        or path.startswith("/api/v1/sessions/") and path.endswith("/events")
     )
