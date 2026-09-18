@@ -186,6 +186,15 @@ class RunRow(Base):
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
+class RunEventRow(Base):
+    __tablename__ = "run_events"
+    run_id: Mapped[str] = mapped_column(ForeignKey("runs.id", ondelete="CASCADE"), primary_key=True)
+    sequence: Mapped[int] = mapped_column(Integer, primary_key=True)
+    event: Mapped[str] = mapped_column(String(64), nullable=False)
+    data: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+
+
 class SessionRow(Base):
     __tablename__ = "learning_sessions"
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
