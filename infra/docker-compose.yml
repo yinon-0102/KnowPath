@@ -1,0 +1,35 @@
+services:
+  mysql:
+    image: mysql:8.4
+    environment:
+      MYSQL_DATABASE: keel_learning
+      MYSQL_USER: keel
+      MYSQL_PASSWORD: keel
+      MYSQL_ROOT_PASSWORD: root
+    ports:
+      - "3306:3306"
+    volumes:
+      - keel_mysql:/var/lib/mysql
+
+  neo4j:
+    image: neo4j:5.26-community
+    environment:
+      NEO4J_AUTH: neo4j/keel_learning
+    ports:
+      - "7474:7474"
+      - "7687:7687"
+    volumes:
+      - keel_neo4j:/data
+
+  qdrant:
+    image: qdrant/qdrant:v1.13.6
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - keel_qdrant:/qdrant/storage
+
+volumes:
+  keel_mysql:
+  keel_neo4j:
+  keel_qdrant:
