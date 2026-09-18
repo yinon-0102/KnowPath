@@ -1,0 +1,30 @@
+[project]
+name = "keel"
+version = "0.1.0"
+requires-python = ">=3.13"
+dependencies = [
+    "anthropic>=0.96.0",
+    "datetime>=6.0",
+    "google-genai>=1.73.1",
+    "google-search-results>=2.4.2",
+    "load-dotenv>=0.1.0",
+    "openai>=2.32.0",
+    "optional>=0.0.1",
+    "prompt-toolkit>=3.0.52",
+    "pydantic>=2.13.2",
+    "pytest>=9.0.3",
+    "python-dotenv>=1.2.2",
+    "rich>=15.0.0",
+    "serpapi>=1.0.2",
+    "tiktoken>=0.13.0",
+]
+
+[project.scripts]
+keel = "my_agent_llms.cli.app:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["my_agent_llms"]
