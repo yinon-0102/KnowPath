@@ -28,7 +28,7 @@ from .materials import (
 from .errors import DomainConflict, DomainNotFound, EventHistoryExpired
 from .runs import RunService, stream_run_events
 from .state import LearningState
-from .space_schemas import CreateSpace, UpdateSpace, SetScope, UpdateProfile
+from .space_schemas import CreateSpace, UpdateSpace, SetScope, UpdateProfile, DeleteSpace
 from .spaces import topics_for_version
 from .assessment_schemas import CreateAssessment, RecordAttempt, FinalizeAssessment, ResetState, GradeReview
 from .question_generation import DashScopeQuestionGenerator
@@ -610,11 +610,10 @@ def create_app(
             return _domain_error(exc)
 
     @app.delete("/api/v1/learning-spaces/{space_id}", status_code=202)
-    def delete_learning_space(space_id: str, payload: dict[str, Any] | None = None) -> JSONResponse:
+    def delete_learning_space(space_id: str, payload: DeleteSpace) -> JSONResponse:
         try:
-            state.delete_space(space_id)
-            run = state.run("space_delete", {"type": "learning_space", "id": space_id})
-            return JSONResponse(status_code=202, content={"run_id": run["id"], "status": "queued"})
+            result = state.delete_space(space_id, payload.model_dump())
+            return JSONResponse(status_code=202, content=result)
         except (DomainNotFound, DomainConflict) as exc:
             return _domain_error(exc)
 
@@ -667,7 +666,7 @@ def _domain_error(exc: Exception) -> JSONResponse:
         return _error_response(410, exc.code, str(exc))
     if isinstance(exc, DomainConflict):
         status = 422 if exc.code.startswith("INVALID_") or exc.code.endswith("_REQUIRED") else 409
-        if exc.code == "EXPORT_EXPIRED":
+        if exc.code in {"EXPORT_EXPIRED", "RESOURCE_DELETED"}:
             status = 410
         if exc.code == "PLAN_CONSTRAINT_UNSATISFIABLE":
             status = 422

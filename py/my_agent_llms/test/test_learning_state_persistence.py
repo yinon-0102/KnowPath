@@ -243,12 +243,12 @@ def test_cancel_during_generation_does_not_publish_questions(workspace):
     assert factory().get_run(assessment["run_id"])["status"] == "cancelled"
 
 
-def test_deleting_space_with_evidence_is_explicit_conflict(workspace):
+def test_stale_delete_keeps_space_and_assessments(workspace):
     factory, space_id, _, _ = workspace
     state = factory()
     create(state, space_id)
-    with pytest.raises(DomainConflict, match="级联"):
-        state.delete_space(space_id)
+    with pytest.raises(DomainConflict, match="版本"):
+        state.delete_space(space_id, {"confirm": True, "expected_version": 999})
     assert factory().get_space(space_id)["id"] == space_id
 
 
@@ -362,8 +362,9 @@ def test_mysql_generation_publication_locks_run_until_commit(workspace):
             assert conflict.value.orig.args[0] == 3572  # ER_LOCK_NOWAIT
 
 
-def test_mysql_delete_guard_does_not_wait_for_assessment_writer(workspace, monkeypatch):
+def test_mysql_delete_waits_for_assessment_writer_then_cleans(workspace, monkeypatch):
     from threading import Event
+    from my_agent_llms.learning.errors import DomainNotFound
     factory, space_id, _, engine = workspace
     if engine is None or engine.dialect.name != "mysql":
         pytest.skip("requires MySQL row locks")
@@ -371,32 +372,35 @@ def test_mysql_delete_guard_does_not_wait_for_assessment_writer(workspace, monke
     assessment = create(state, space_id)
     answer(state, assessment)
     writer, deleter = factory(), factory()
-    locked, delete_done = Event(), Event()
+    locked, release, deleting_started = Event(), Event(), Event()
+    expected = state.get_space(space_id)["space_version"]
     repo = writer.assessment_service.repository
     original = repo.get_record
     entered = []
-    def held(table, identifier):
-        result = original(table, identifier)
+    def held(table, identifier, **kwargs):
+        result = original(table, identifier, **kwargs)
         if table == "assessments" and not entered:
             entered.append(True)
             locked.set()
-            assert delete_done.wait(5), "delete guard blocked on the assessment lock"
+            assert release.wait(10)
         return result
     monkeypatch.setattr(repo, "get_record", held)
-    def delete_space():
-        try:
-            with pytest.raises(DomainConflict) as conflict:
-                deleter.delete_space(space_id)
-            assert conflict.value.code == "SPACE_HAS_LEARNING_HISTORY"
-        finally:
-            delete_done.set()
+    def remove():
+        deleting_started.set()
+        return deleter.delete_space(space_id, {"confirm": True, "expected_version": expected})
     with ThreadPoolExecutor(max_workers=2) as pool:
         grading = pool.submit(writer.finalize_assessment, assessment["id"], {})
-        assert locked.wait(5)
-        deleting = pool.submit(delete_space)
-        deleting.result(timeout=10)
-        grading.result(timeout=10)
-    assert factory().get_assessment(assessment["id"])["status"] == "completed"
+        try:
+            assert locked.wait(5)
+            deleting = pool.submit(remove)
+            assert deleting_started.wait(5)
+        finally:
+            release.set()
+        grading.result(timeout=15)
+        result = deleting.result(timeout=15)
+    assert result["status"] == "succeeded"
+    with pytest.raises(DomainNotFound):
+        factory().get_assessment(assessment["id"])
 
 
 def test_first_family_score_survives_same_timestamp_later_submission(workspace, monkeypatch):

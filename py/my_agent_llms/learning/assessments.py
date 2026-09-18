@@ -85,7 +85,10 @@ class AssessmentService:
         return response
 
     def generate(self, assessment_id):
-        assessment = self.repository.get_record("assessments", assessment_id)
+        try:
+            assessment = self.repository.get_record("assessments", assessment_id)
+        except DomainNotFound:
+            return  # The owning space may have been deleted before dispatch.
         if assessment["status"] != "generating":
             return
         snapshot = assessment["snapshot"]
@@ -96,7 +99,10 @@ class AssessmentService:
         except QuestionGenerationError as exc:
             error = {"code": exc.code, "message": str(exc), "details": {}, "retryable": exc.code == "MODEL_UNAVAILABLE"}
         with self.repository.transaction():
-            current = self.repository.get_record("assessments", assessment_id)
+            try:
+                current = self.repository.get_record("assessments", assessment_id)
+            except DomainNotFound:
+                return  # Discard output generated while the space was deleted.
             if current["status"] != "generating":
                 return
             run = self.runs.get(current["run_id"])

@@ -68,3 +68,15 @@ class UpdateProfile(DatedContract):
         if any(field in self.model_fields_set and getattr(self, field) is None for field in ("goal", "weekly_minutes")):
             raise ValueError("goal and weekly_minutes cannot be null")
         return self
+
+
+class DeleteSpace(Contract):
+    expected_version: Version
+    confirm: StrictBool
+
+    @field_validator("confirm")
+    @classmethod
+    def confirmed(cls, value):
+        if value is not True:
+            raise ValueError("confirm must be true")
+        return value

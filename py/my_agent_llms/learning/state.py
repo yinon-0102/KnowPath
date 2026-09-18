@@ -17,6 +17,7 @@ from .assessments import AssessmentService
 from .run_repository import SqlAlchemyRunRepository
 from .planner import PlanSessionService
 from .exports import ExportService
+from .space_deletion import SpaceDeletionService
 
 
 def _now() -> str:
@@ -72,7 +73,7 @@ class LearningState:
         return space
 
     def create_space(self, payload: dict[str, Any], *, idempotency_key: str | None = None) -> dict[str, Any]:
-        # The committed response is authoritative, including retries after deletion.
+        # Committed responses replay until deletion replaces them with tombstones.
         # Topics and runtime state are hydrated on demand from pinned bindings.
         return self.space_service.create(payload, idempotency_key)
 
@@ -169,32 +170,36 @@ class LearningState:
         return self.plan_sessions.finish_session(session_id)
 
     def send_message(self, space_id: str, payload: dict[str, Any]) -> dict[str, Any]:
-        space = self.get_space(space_id)
-        message = str(payload.get("message") or "").strip()
-        if not message:
-            raise DomainConflict("INVALID_REQUEST", "message 不能为空")
-        run = self.run("message", status="running")
-        message_id = _id("message")
-        text = f"当前学习范围包含 {len(space['topic_ids']) or len(self.topics)} 个主题。你的请求是：{message}"
-        self.run_service.append_event(run["id"], "message.delta", {"delta": text})
-        self.run_service.append_event(run["id"], "message.completed",
-                                      {"message_id": message_id, "text": text, "citations": []})
-        completed = self.run_service.complete(run["id"], {"type": "message", "id": message_id})
-        return {"run_id": run["id"], "session_id": payload.get("session_id"), "status": completed["status"]}
+        with self.assessment_service.repository.transaction():
+            space = self.space_service.repository.get(space_id)
+            message = str(payload.get("message") or "").strip()
+            if not message:
+                raise DomainConflict("INVALID_REQUEST", "message 不能为空")
+            message_id = _id("message")
+            reference = {"type": "message", "id": message_id, "space_id": space_id}
+            run = self.run("message", status="running")
+            text = f"当前学习范围包含 {len(space['topic_ids']) or len(self.topics)} 个主题。你的请求是：{message}"
+            self.run_service.append_event(run["id"], "message.delta", {"delta": text})
+            self.run_service.append_event(run["id"], "message.completed",
+                                          {"message_id": message_id, "text": text, "citations": []})
+            completed = self.run_service.complete(run["id"], reference)
+            return {"run_id": run["id"], "session_id": payload.get("session_id"), "status": completed["status"]}
 
     def create_correction(self, space_id: str, payload: dict[str, Any]) -> dict[str, Any]:
-        self.get_space(space_id)
-        correction = {"id": _id("correction"), "space_id": space_id, **payload, "status": "pending", "created_at": _now()}
-        self.corrections[correction["id"]] = correction
-        return copy.deepcopy(correction)
+        with self.assessment_service.repository.transaction():
+            self.space_service.repository.get(space_id)
+            correction = {**payload, "id": _id("correction"), "space_id": space_id, "status": "pending", "created_at": _now()}
+            self.corrections[correction["id"]] = correction
+            return copy.deepcopy(correction)
 
     def confirm_correction(self, correction_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         correction = self.corrections.get(correction_id)
         if correction is None:
             raise DomainNotFound("correction", correction_id)
-        correction["status"] = "confirmed"
-        run = self.run("knowledge_publish", {"type": "correction", "id": correction_id})
-        correction["run_id"] = run["id"]
+        with self.assessment_service.repository.transaction():
+            self.space_service.repository.get(correction["space_id"])
+            run = self.run("knowledge_publish", {"type": "correction", "id": correction_id, "space_id": correction["space_id"]})
+        correction.update(status="confirmed", run_id=run["id"])
         return {"run_id": run["id"], "status": "processing", "graph_version": 2, "affected_topic_ids": [], "update_available": True}
 
     def knowledge_updates(self, space_id: str) -> dict[str, Any]:
@@ -202,7 +207,7 @@ class LearningState:
         return {"space_id": space_id, "bindings": copy.deepcopy(space["bindings"]), "available_updates": [], "affected_topic_ids": [], "invalidated_question_ids": [], "plan_impact": None}
 
     def apply_knowledge_updates(self, space_id: str, payload: dict[str, Any]) -> dict[str, Any]:
-        with self.space_service.repository.transaction():
+        with self.assessment_service.repository.transaction():
             space = self.space_service.repository.get(space_id)
             expected = payload.get("expected_space_version")
             if expected is not None and expected != space["space_version"]:
@@ -210,7 +215,7 @@ class LearningState:
             space["space_version"] += 1
             self.space_service.repository.put(space)
             new_version = space["space_version"]
-        run = self.run("knowledge_update_apply", {"type": "learning_space", "id": space_id})
+            run = self.run("knowledge_update_apply", {"type": "learning_space", "id": space_id})
         return {"run_id": run["id"], "space_id": space_id, "space_version": new_version, "affected_topic_ids": [], "stale_state_count": 0, "plan_replan_run_id": None}
 
     def grade_review(self, assessment_id, payload, idempotency_key=None):
@@ -229,16 +234,15 @@ class LearningState:
     def export_archive(self, export_id):
         return self.export_service.archive(export_id)
 
-    def delete_space(self, space_id: str) -> dict[str, Any]:
-        with self.assessment_service.repository.transaction():
-            self.space_service.repository.get(space_id)
-            if any(self.assessment_service.repository.exists(table, space_id=space_id)
-                   for table in ("assessments", "states", "evidence", "resets")) or self.plan_sessions.has_history(space_id):
-                raise DomainConflict("SPACE_HAS_LEARNING_HISTORY", "空间有学习记录，级联删除尚未实现")
-            self.export_service.delete_for_space(space_id)
-            self.space_service.delete(space_id)
+    def delete_space(self, space_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        result = SpaceDeletionService(self.assessment_service.repository, self.space_service, self.run_service).delete(space_id, payload)
         self.spaces.pop(space_id, None)
-        return {"status": "succeeded", "space_id": space_id}
+        for cache in (self.plans, self.sessions, self.corrections):
+            for identifier, row in list(cache.items()):
+                if row.get("space_id") == space_id:
+                    del cache[identifier]
+        self.changes[:] = [row for row in self.changes if row.get("space_id") != space_id]
+        return result
 
     def changes_for(self, space_id: str) -> list[dict[str, Any]]:
         return self.assessment_service.changes(space_id) + [copy.deepcopy(item) for item in self.changes if item.get("space_id") == space_id]

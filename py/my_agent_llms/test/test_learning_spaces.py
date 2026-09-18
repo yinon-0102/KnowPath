@@ -206,19 +206,19 @@ def test_bound_material_cannot_be_deleted_after_restart(workspace):
         assert client.get(f"/api/v1/materials/{material_id}").status_code == 200
 
 
-def test_create_replay_survives_resource_deletion(workspace):
+def test_create_replay_is_tombstoned_after_resource_deletion(workspace):
     factory, material_id, _ = workspace
     app = factory()
     with TestClient(app) as client:
         original = create_space(client, material_id)
-        app.state.learning_state.delete_space(original.json()["id"])
+        app.state.learning_state.delete_space(original.json()["id"], {"confirm": True, "expected_version": 1})
         replay = create_space(client, material_id)
-        assert replay.status_code == 201
-        assert replay.json() == original.json()
+        assert replay.status_code == 410
+        assert replay.json()["error"]["code"] == "RESOURCE_DELETED"
         assert client.get("/api/v1/learning-spaces").json()["items"] == []
 
 
-def test_scope_replay_survives_resource_deletion(workspace):
+def test_scope_replay_is_tombstoned_after_resource_deletion(workspace):
     factory, material_id, topic_id = workspace
     app = factory()
     with TestClient(app) as client:
@@ -228,10 +228,10 @@ def test_scope_replay_survives_resource_deletion(workspace):
         headers = {"Idempotency-Key": "scope"}
         original = client.post(path, json=body, headers=headers)
         assert original.status_code == 200
-        app.state.learning_state.delete_space(space["id"])
+        app.state.learning_state.delete_space(space["id"], {"confirm": True, "expected_version": app.state.learning_state.get_space(space["id"])["space_version"]})
         replay = client.post(path, json=body, headers=headers)
-        assert replay.status_code == 200
-        assert replay.json() == original.json()
+        assert replay.status_code == 410
+        assert replay.json()["error"]["code"] == "RESOURCE_DELETED"
 
 
 def test_plan_read_detects_scope_changed_by_another_application(workspace):

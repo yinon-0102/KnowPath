@@ -753,3 +753,5 @@ source_refs 统一结构为 `{material_id,material_version_id,chunk_id,page,line
 5. 新资料版本：POST versions → 审核并发布图谱 → GET knowledge-updates → POST knowledge-updates/apply → 受影响主题 retest/local_replan。
 
 验收必须覆盖：同一 finalize 重试不重复计分；评分时切换资料版本不污染新状态；生成题目校验失败不对用户发布；SSE 断线可重连；协作取消后不会补写结果；删除后检索和图谱无法恢复已删除内容；所有 API 与 Agent 工具均无任意命令执行路径。
+
+删除学习空间后，关联命令的幂等记录只保留请求指纹与删除标记；重放相同请求返回 410 RESOURCE_DELETED，不能返回旧学习内容或重新创建空间。当前空间删除在事务中同步完成，202 响应 status 为 succeeded，run_id 可查询。

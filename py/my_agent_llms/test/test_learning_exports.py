@@ -199,7 +199,7 @@ def test_export_http_download_replay_and_expiry():
 def test_deleting_export_only_space_cleans_exports(workspace):
     _, state, space_id, _, _ = workspace
     response = service(state).create(space_id, {}, "delete-export")
-    state.delete_space(space_id)
+    state.delete_space(space_id, {"confirm": True, "expected_version": state.get_space(space_id)["space_version"]})
     with pytest.raises(DomainNotFound):
         service(state).payload(response["export_id"])
 

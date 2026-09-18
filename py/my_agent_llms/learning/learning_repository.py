@@ -114,6 +114,8 @@ class SqlAlchemyLearningRepository(SqlAlchemySpaceRepository):
                 return None
             if row.request_fingerprint != fingerprint or row.resource_type != "assessment_command" or row.response is None:
                 raise DomainConflict("IDEMPOTENCY_CONFLICT", "相同幂等键已用于不同请求")
+            if row.response.get("resource_deleted"):
+                raise DomainConflict("RESOURCE_DELETED", "资源已删除，原请求不可重放")
             return copy.deepcopy(row.response)
 
     def remember(self, key, fingerprint, resource_id, response):

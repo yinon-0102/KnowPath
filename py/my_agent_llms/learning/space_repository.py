@@ -52,6 +52,8 @@ class InMemorySpaceRepository:
             response = self.materials.idempotency_responses.get(key)
             if record[0] != fingerprint or response is None:
                 raise _conflict()
+            if response.get("resource_deleted"):
+                raise DomainConflict("RESOURCE_DELETED", "资源已删除，原请求不可重放")
             return copy.deepcopy(response)
 
     def remember(self, key, fingerprint, space_id, response):
@@ -110,6 +112,8 @@ class SqlAlchemySpaceRepository:
                 return None
             if row.request_fingerprint != fingerprint or row.resource_type != "learning_space" or row.response is None:
                 raise _conflict()
+            if row.response.get("resource_deleted"):
+                raise DomainConflict("RESOURCE_DELETED", "资源已删除，原请求不可重放")
             return copy.deepcopy(row.response)
 
     def remember(self, key, fingerprint, space_id, response):
