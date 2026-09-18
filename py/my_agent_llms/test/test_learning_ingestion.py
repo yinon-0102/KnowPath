@@ -11,6 +11,7 @@ from my_agent_llms.learning.db import init_db
 from my_agent_llms.learning.materials import InMemoryMaterialRepository, MaterialService
 from my_agent_llms.learning.repositories import SqlAlchemyMaterialRepository
 from my_agent_llms.learning.runs import RunService
+from my_agent_llms.test.material_upload_helpers import complete_upload
 
 
 @pytest.fixture(params=["memory", "sql"])
@@ -48,6 +49,8 @@ def test_upload_replay_survives_application_recreation(apps):
         assert replay.json()["run_id"] == first.json()["run_id"]
         run_id = replay.json()["run_id"]
         assert client.get(f"/api/v1/runs/{run_id}").status_code == 200
+        assert client.get(f"/api/v1/runs/{run_id}").json()["status"] == "queued"
+        complete_upload(client, replay)
         assert client.get(f"/api/v1/runs/{run_id}/events").text.count("event: run.completed") == 1
         assert upload(client, content=b"different payload").status_code == 409
 

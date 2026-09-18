@@ -19,6 +19,7 @@ from .config import LearningSettings
 from .material_schemas import UpdateMaterial
 from .graph_schemas import IngestMaterial, ReconcileGraph, PublishGraph
 from .correction_schemas import CreateCorrection, ConfirmCorrection
+from .materials import MaterialTooLarge
 from .ingestion import MaterialIngestionService
 from .repositories import SqlAlchemyMaterialRepository
 from .run_repository import SqlAlchemyRunRepository
@@ -63,7 +64,7 @@ def create_app(
                           question_generator=question_generator if question_generator is not None else DashScopeQuestionGenerator(settings),
                           answer_generator=answer_generator if answer_generator is not None else DashScopeAnswerGenerator(settings),
                           source_retriever=source_retriever if source_retriever is not None else configured_retriever(settings))
-    ingestion = MaterialIngestionService(service, state.run_service)
+    ingestion = MaterialIngestionService(service, state.run_service, state.graph_service)
     @asynccontextmanager
     async def lifespan(app):
         try:
@@ -121,6 +122,7 @@ def create_app(
         file: UploadFile = File(...),
         idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
         name: str | None = Form(None),
+        auto_ingest: bool = Form(True),
     ) -> JSONResponse:
         if not idempotency_key or not idempotency_key.strip():
             return _error_response(
@@ -131,19 +133,21 @@ def create_app(
         try:
             uploaded = await asyncio.to_thread(ingestion.create,
                 filename=file.filename or "material.txt",
-                content=await file.read(),
+                content=await file.read(20 * 1024 * 1024 + 1),
+                auto_ingest=auto_ingest,
                 idempotency_key=idempotency_key,
                 name=name,
             )
         except IdempotencyConflict as exc:
             return _error_response(409, "IDEMPOTENCY_CONFLICT", str(exc))
+        except MaterialTooLarge:
+            return _error_response(413, "FILE_TOO_LARGE", "文件不能超过 20 MiB")
         except UnsupportedMaterial as exc:
             return _error_response(422, "UNSUPPORTED_MATERIAL", str(exc))
         except MaterialError as exc:
             return _error_response(422, "MATERIAL_PARSE_FAILED", str(exc))
 
         result, run = uploaded.resource, uploaded.run
-        state._index_material_topics(result.material.id, result.version)
 
         return JSONResponse(
             status_code=201,
@@ -167,7 +171,7 @@ def create_app(
                     "status": result.version.status,
                     "chunk_count": len(result.version.chunks),
                 },
-                "run_id": run["id"],
+                "run_id": run["id"] if run else None,
                 "replayed": result.replayed,
             },
         )
@@ -196,6 +200,8 @@ def create_app(
     async def create_material_version(
         material_id: str,
         file: UploadFile = File(...),
+        auto_ingest: bool = Form(True),
+        change_note: str | None = Form(None),
         idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
     ) -> JSONResponse:
         if not idempotency_key or not idempotency_key.strip():
@@ -203,21 +209,24 @@ def create_app(
         try:
             uploaded = await asyncio.to_thread(ingestion.create_version,
                 material_id=material_id,
+                change_note=change_note,
                 filename=file.filename or "material.txt",
-                content=await file.read(),
+                content=await file.read(20 * 1024 * 1024 + 1),
+                auto_ingest=auto_ingest,
                 idempotency_key=idempotency_key,
             )
         except MaterialNotFound:
             return _error_response(404, "RESOURCE_NOT_FOUND", "资料不存在", {"material_id": material_id})
         except IdempotencyConflict as exc:
             return _error_response(409, "IDEMPOTENCY_CONFLICT", str(exc))
+        except MaterialTooLarge:
+            return _error_response(413, "FILE_TOO_LARGE", "文件不能超过 20 MiB")
         except UnsupportedMaterial as exc:
             return _error_response(422, "UNSUPPORTED_MATERIAL", str(exc))
         except MaterialError as exc:
             return _error_response(422, "MATERIAL_PARSE_FAILED", str(exc))
 
         result, run = uploaded.resource, uploaded.run
-        state._index_material_topics(result.material.id, result.version)
 
         return JSONResponse(
             status_code=201,
@@ -227,7 +236,7 @@ def create_app(
                 "status": result.version.status,
                 "content_hash": result.version.content_hash,
                 "chunk_count": len(result.version.chunks),
-                "run_id": run["id"],
+                "run_id": run["id"] if run else None,
                 "replayed": result.replayed,
             },
         )

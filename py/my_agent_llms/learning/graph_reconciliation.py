@@ -87,21 +87,45 @@ class GraphReconciliationService:
         return {"run_id": revision["run_id"], "status": "queued", "candidate_revision_id": revision["id"]}
 
     def ingest(self, material_id, payload, key):
-        """Queue parsed sources for durable graph/index preparation, without publishing."""
-        def change():
-            self._material(material_id)
+        """Queue saved originals or already parsed sources, without publishing."""
+        return self.commands._execute("material.ingest", material_id, payload, key,
+                                      lambda: self.enqueue_ingest(material_id, payload["version_id"]))
+
+    def enqueue_ingest(self, material_id, version_id):
+        # Called within the command/upload transaction; never retry a nested UOW.
+        material = self._material(material_id)
+        version = self.materials.get_version(version_id)
+        if version is None or version.material_id != material_id:
+            raise DomainNotFound("material_version", version_id)
+        if version.status == "ready" and version.chunks:
             published = self._published(self._history(material_id))
-            return self._stage(material_id, {
-                "version_id": payload["version_id"],
-                "expected_graph_version": published["graph_version"] if published else 0,
-            }, run_kind="material_ingest")
-        return self.commands._execute("material.ingest", material_id, payload, key, change)
+            return self._stage(material_id, {"version_id": version_id,
+                "expected_graph_version": published["graph_version"] if published else 0}, run_kind="material_ingest")
+        if self.materials.get_raw(version_id) is None:
+            raise DomainConflict("MATERIAL_SOURCE_MISSING", "原文件不存在，请重新上传资料")
+        for event in self.repository.records("outbox", aggregate_type="material_version", aggregate_id=version_id,
+                                             event_type="material.parse"):
+            if event["status"] in {"pending", "processing"}:
+                run = self.runs.get(event["payload"]["run_id"])
+                if run["status"] in {"queued", "running"}:
+                    return {"run_id": run["id"], "status": "queued", "candidate_revision_id": None}
+        run = self.runs.create("material_ingest")
+        version.status = "processing"
+        self.materials.update_version(version)
+        if material.current_version_id == version_id and material.status != "archived":
+            material.status = "processing"
+            self.materials.update_material(material)
+        self.repository.put_record("outbox", {"id": str(uuid4()), "aggregate_type": "material_version",
+            "aggregate_id": version_id, "event_type": "material.parse", "status": "pending", "created_at": now(),
+            "payload": {"material_id": material_id, "material_version_id": version_id,
+                        "run_id": run["id"], "content_hash": version.content_hash}})
+        return {"run_id": run["id"], "status": "queued", "candidate_revision_id": None}
 
     def reconcile(self, material_id, payload, key):
         return self.commands._execute("graph.reconcile", material_id, payload, key,
                                       lambda: self._stage(material_id, payload))
 
-    def _stage(self, material_id, payload, *, run_kind="graph_reconcile"):
+    def _stage(self, material_id, payload, *, run_kind="graph_reconcile", run_id=None):
         # Caller owns the transaction and retry boundary. Retrying a nested
         # transaction would reuse a failed Session or commit partial staging.
         self._material(material_id)  # Material lock serializes candidate sequence and publication base.
@@ -117,7 +141,7 @@ class GraphReconciliationService:
             raise DomainConflict("VERSION_CONFLICT", "图谱版本已变化，请刷新后重试", {"graph_version": base_version})
         for row in reversed(history):
             if row["material_version_id"] == version.id and row["base_graph_version"] == base_version and row["status"] == "draft" and not row["diff"].get("correction_id"):
-                if self.runs.get(row["run_id"])["status"] in {"queued", "running"}:
+                if run_id is None and self.runs.get(row["run_id"])["status"] in {"queued", "running"}:
                     return self._response(row)
         # Rebuilding an immutable material version must preserve prior review
         # decisions, including corrections and keep_old/keep_both publication.
@@ -125,7 +149,7 @@ class GraphReconciliationService:
                     if published and published["material_version_id"] == version.id
                     else extract_snapshot(material_id, version))
         revision_id = str(uuid4())
-        run = self.runs.create(run_kind)
+        run = self.runs.get(run_id) if run_id else self.runs.create(run_kind)
         timestamp = now()
         revision = {"id": revision_id, "material_id": material_id, "material_version_id": version.id,
             "sequence": max((row["sequence"] for row in history), default=0) + 1,
@@ -235,6 +259,10 @@ class GraphReconciliationService:
         with self.repository.transaction():
             self._material(material_id)
             history = self._history(material_id)
+            for version in self.materials.list_versions(material_id):
+                for event in self.repository.records("outbox", event_type="material.parse", aggregate_id=version.id):
+                    self.runs.request_cancel(event["payload"]["run_id"])
+                    self.runs.acknowledge_cancel(event["payload"]["run_id"])
             for revision in history:
                 self.runs.request_cancel(revision["run_id"])
                 self.runs.acknowledge_cancel(revision["run_id"])

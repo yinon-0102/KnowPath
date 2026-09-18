@@ -10,9 +10,11 @@ from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, delete, select
 
 from my_agent_llms.learning.api import create_app
-from my_agent_llms.learning.db import IdempotencyRow, MaterialRow, MaterialVersionRow, RunRow, SourceChunkRow
+from my_agent_llms.learning.db import (GraphRevisionRow, IdempotencyRow, MaterialRow,
+    MaterialVersionRow, OutboxEventRow, RunRow, SourceChunkRow)
 from my_agent_llms.learning.materials import MaterialService
 from my_agent_llms.learning.repositories import SqlAlchemyMaterialRepository
+from my_agent_llms.test.material_upload_helpers import complete_upload
 
 
 @pytest.mark.skipif(not os.getenv("LEARNING_TEST_MYSQL_URL"), reason="requires explicit MySQL test URL")
@@ -57,9 +59,9 @@ def test_mysql_upload_concurrent_replay_and_restart(scenario, monkeypatch):
             barrier, guard = Barrier(4), Lock()
             reads = 0
             original_find = SqlAlchemyMaterialRepository.find_by_content_hash
-            def synchronized_find(repository, content_hash):
+            def synchronized_find(repository, content_hash, **kwargs):
                 nonlocal reads
-                result = original_find(repository, content_hash)
+                result = original_find(repository, content_hash, **kwargs)
                 with guard:
                     wait = reads < 4
                     reads += 1
@@ -93,13 +95,13 @@ def test_mysql_upload_concurrent_replay_and_restart(scenario, monkeypatch):
         assert [response.status_code for response in responses] == [201] * 4
         assert len({response.json()["material"]["id"] for response in responses}) == 1
         assert len({response.json()["version"]["id"] for response in responses}) == 1
-        assert len({response.json()["run_id"] for response in responses}) == (4 if scenario in {"different_keys", "stale_snapshot"} else 1)
-        assert {response.json()["version"]["chunk_count"] for response in responses} == {1}
-        assert all(client.app.state.learning_state.topics for client in first_clients)
+        assert len({response.json()["run_id"] for response in responses}) == 1
+        assert {response.json()["version"]["chunk_count"] for response in responses} == ({1} if scenario == "legacy" else {0})
         first = responses[0].json()
         restored = new_client()
         replay = send(restored).json()
         assert replay["run_id"] == first["run_id"]
+        complete_upload(restored, responses[0])
         assert restored.get(f"/api/v1/runs/{replay['run_id']}/events").text.count("event: run.completed") == 1
         assert send(restored, text="conflicting payload").status_code == 409
         path = f"/api/v1/materials/{first['material']['id']}/versions"
@@ -118,6 +120,9 @@ def test_mysql_upload_concurrent_replay_and_restart(scenario, monkeypatch):
             material_ids = connection.scalars(select(MaterialRow.id).where(MaterialRow.name == label)).all()
             version_ids = connection.scalars(select(MaterialVersionRow.id).where(MaterialVersionRow.material_id.in_(material_ids))).all()
             connection.execute(delete(IdempotencyRow).where(IdempotencyRow.key.in_([*upload_keys, version_key])))
+            revision_ids = connection.scalars(select(GraphRevisionRow.id).where(GraphRevisionRow.material_id.in_(material_ids))).all()
+            connection.execute(delete(OutboxEventRow).where(OutboxEventRow.aggregate_id.in_([*version_ids, *revision_ids])))
+            connection.execute(delete(GraphRevisionRow).where(GraphRevisionRow.id.in_(revision_ids)))
             connection.execute(delete(SourceChunkRow).where(SourceChunkRow.material_version_id.in_(version_ids)))
             connection.execute(delete(MaterialVersionRow).where(MaterialVersionRow.id.in_(version_ids)))
             connection.execute(delete(MaterialRow).where(MaterialRow.id.in_(material_ids)))

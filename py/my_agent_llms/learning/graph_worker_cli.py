@@ -9,12 +9,13 @@ from dotenv import load_dotenv
 from .db import create_db_engine
 from .graph_preparation import configured_graph_preparer
 from .graph_worker import GraphWorker
+from .material_ingest_worker import MaterialParseWorker
 from .repositories import SqlAlchemyMaterialRepository
 from .state import LearningState
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(description="Consume durable graph preparation jobs")
+    parser = argparse.ArgumentParser(description="Consume durable material parsing and graph preparation jobs")
     parser.add_argument("--once", action="store_true", help="Process at most one eligible job and exit")
     parser.add_argument("--poll-seconds", type=float, default=2.0)
     args = parser.parse_args(argv)
@@ -26,10 +27,11 @@ def main(argv=None):
         engine = create_db_engine()
         state = LearningState(SqlAlchemyMaterialRepository(engine))
         preparer = configured_graph_preparer(state.material_repository)
+        parse_worker = MaterialParseWorker(state.graph_service)
         worker = GraphWorker(state.graph_service, preparer)
         while True:
             try:
-                handled = worker.run_once()
+                handled = worker.run_once() or parse_worker.run_once()
             except Exception:
                 print("GRAPH_WORKER_STORAGE_UNAVAILABLE", file=sys.stderr)
                 if args.once:

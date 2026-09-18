@@ -11,13 +11,14 @@ from .runs import Run, RunService
 @dataclass(frozen=True)
 class IngestionResult:
     resource: CreateMaterialResult
-    run: Run
+    run: Run | None
 
 
 class MaterialIngestionService:
-    def __init__(self, materials: MaterialService, runs: RunService):
+    def __init__(self, materials: MaterialService, runs: RunService, graph):
         self.materials = materials
         self.runs = runs
+        self.graph = graph
 
     def create(self, **kwargs) -> IngestionResult:
         return self._execute(self.materials.create, kwargs)
@@ -34,17 +35,19 @@ class MaterialIngestionService:
         key = kwargs["idempotency_key"]
         for attempt in range(3):
             try:
-                with repository.transaction(), self.runs.repository.transaction():
-                    resource = operation(**kwargs)
+                with self.graph.repository.transaction():
+                    resource = operation(**kwargs, defer_parse=True)
                     run_id = repository.get_idempotency_run(key)
-                    if run_id is None:
-                        run = self.runs.create("material_ingest", {"type": "material_version", "id": resource.version.id},
-                                               status="succeeded")
-                        repository.bind_idempotency_run(key, run["id"])
-                        run_id = run["id"]
+                    if run_id is None and kwargs.get("auto_ingest", True):
+                        # Existing upload keys replay their Run; deferred uploads have none.
+                        response = self.graph.enqueue_ingest(resource.material.id, resource.version.id)
+                        run_id = response["run_id"]
+                        repository.bind_idempotency_run(key, run_id)
+                    resource = CreateMaterialResult(repository.get_material(resource.material.id),
+                                                    repository.get_version(resource.version.id), resource.replayed)
                 # Read after commit so a concurrent legacy repair's Run and
                 # events are visible outside the earlier MySQL read snapshot.
-                return IngestionResult(resource, self.runs.get(run_id))
+                return IngestionResult(resource, self.runs.get(run_id) if run_id else None)
             except IntegrityError:
                 # A concurrent request may win the unique idempotency-key insert.
                 # The whole losing transaction has rolled back before replaying.

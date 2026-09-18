@@ -5,11 +5,12 @@ from threading import Barrier, Event
 from uuid import uuid4
 
 import pytest
-from fastapi.testclient import TestClient
+from my_agent_llms.test.material_upload_helpers import ParsedUploadClient
 from sqlalchemy import create_engine, delete, select
 
 from my_agent_llms.learning.api import create_app
-from my_agent_llms.learning.db import IdempotencyRow, LearningSpaceRow, MaterialRow, MaterialVersionRow, RunRow, SourceChunkRow
+from my_agent_llms.learning.db import (GraphRevisionRow, IdempotencyRow, LearningSpaceRow,
+    MaterialRow, MaterialVersionRow, OutboxEventRow, RunRow, SourceChunkRow)
 from my_agent_llms.learning.materials import MaterialService
 from my_agent_llms.learning.repositories import SqlAlchemyMaterialRepository
 
@@ -24,7 +25,7 @@ def mysql_workspace():
     label = f"space-test-{uuid4().hex}"
     clients = []
     def client():
-        result = TestClient(create_app(MaterialService(SqlAlchemyMaterialRepository(engine))))
+        result = ParsedUploadClient(create_app(MaterialService(SqlAlchemyMaterialRepository(engine))))
         clients.append(result)
         return result
     try:
@@ -42,9 +43,12 @@ def mysql_workspace():
             keys = IdempotencyRow.key.startswith(label)
             run_ids = connection.scalars(select(IdempotencyRow.run_id).where(keys)).all()
             material_ids = connection.scalars(select(MaterialRow.id).where(MaterialRow.name == label)).all()
-            versions = select(MaterialVersionRow.id).where(MaterialVersionRow.material_id.in_(material_ids))
+            versions = connection.scalars(select(MaterialVersionRow.id).where(MaterialVersionRow.material_id.in_(material_ids))).all()
+            revisions = connection.scalars(select(GraphRevisionRow.id).where(GraphRevisionRow.material_id.in_(material_ids))).all()
             connection.execute(delete(LearningSpaceRow).where(LearningSpaceRow.name == label))
             connection.execute(delete(IdempotencyRow).where(keys))
+            connection.execute(delete(OutboxEventRow).where(OutboxEventRow.aggregate_id.in_([*versions, *revisions])))
+            connection.execute(delete(GraphRevisionRow).where(GraphRevisionRow.id.in_(revisions)))
             connection.execute(delete(SourceChunkRow).where(SourceChunkRow.material_version_id.in_(versions)))
             connection.execute(delete(MaterialVersionRow).where(MaterialVersionRow.material_id.in_(material_ids)))
             connection.execute(delete(MaterialRow).where(MaterialRow.id.in_(material_ids)))

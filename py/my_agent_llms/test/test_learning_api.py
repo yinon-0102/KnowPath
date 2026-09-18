@@ -4,6 +4,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from my_agent_llms.learning.api import create_app
+from my_agent_llms.test.material_upload_helpers import complete_upload
 
 
 def test_health_exposes_learning_runtime_and_embedding_default():
@@ -70,6 +71,9 @@ def test_material_version_and_source_chunk_are_queryable():
         files={"file": ("functions.md", b"# Functions\n\nReusable behavior.", "text/markdown")},
         headers={"Idempotency-Key": "upload-1"},
     )
+    assert created.json()["version"]["status"] == "processing"
+    assert created.json()["version"]["chunk_count"] == 0
+    complete_upload(client, created)
     material_id = created.json()["material"]["id"]
     version_id = created.json()["version"]["id"]
 

@@ -1,11 +1,11 @@
 from my_agent_llms.test.test_learning_state_persistence import FixedQuestions
-from fastapi.testclient import TestClient
+from my_agent_llms.test.material_upload_helpers import ParsedUploadClient
 
 from my_agent_llms.learning.api import create_app
 
 
 def test_learning_api_workflow_from_material_to_plan():
-    client = TestClient(create_app(question_generator=FixedQuestions()))
+    client = ParsedUploadClient(create_app(question_generator=FixedQuestions()))
     material = client.post(
         "/api/v1/materials",
         files={"file": ("python.md", b"# Functions\n\nReusable behavior.", "text/markdown")},
@@ -69,7 +69,7 @@ def test_learning_api_workflow_from_material_to_plan():
 def test_message_events_publish_text_before_terminal():
     from my_agent_llms.test.test_learning_state_persistence import FixedAnswer
     app = create_app(answer_generator=FixedAnswer())
-    with TestClient(app) as client:
+    with ParsedUploadClient(app) as client:
         material = client.post(
             "/api/v1/materials",
             files={"file": ("notes.md", b"# Functions\n\nReusable behavior.", "text/markdown")},

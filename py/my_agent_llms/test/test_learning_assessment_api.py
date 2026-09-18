@@ -1,4 +1,4 @@
-from fastapi.testclient import TestClient
+from my_agent_llms.test.material_upload_helpers import ParsedUploadClient
 import pytest
 
 from my_agent_llms.learning.api import create_app
@@ -8,7 +8,7 @@ from my_agent_llms.test.test_learning_state_persistence import FixedQuestions
 
 @pytest.fixture
 def assessment_api():
-    client = TestClient(create_app(question_generator=FixedQuestions()))
+    client = ParsedUploadClient(create_app(question_generator=FixedQuestions()))
     material = client.post("/api/v1/materials", files={"file": ("notes.md", b"# Functions\n\nReusable behavior.", "text/markdown")}, headers={"Idempotency-Key": "material"}).json()
     space = client.post("/api/v1/learning-spaces", json={"name": "Python", "material_ids": [material["material"]["id"]]}, headers={"Idempotency-Key": "space"}).json()
     yield client, space["id"]

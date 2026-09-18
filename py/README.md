@@ -369,8 +369,14 @@ GET /api/v1/learning-spaces/{space_id}/knowledge-updates 预览最新正式发�
 
 已有计划通过 plans 的 local_replan 流程重建，使用失效后最新 expected_plan_version；返回独立 plan_build Run。旧完成/跳过任务保留为 historical，新版本安排 diagnostic；include_review=false 也不会跳过 stale 掌握度的重新验证。采纳接口本身不自动生成计划，plan_replan_run_id 为 null。出题期间绑定发生变化时，保留生成题目为 stale 历史并以 STALE_INPUT 结束 Run。详情见 ../docs/implementation/2026-09-18-knowledge-updates.md。
 
-### 显式资料入库
+### 原文件保存与自动入库（0013 迁移）
 
-POST /api/v1/materials/{material_id}/ingest 要求 Idempotency-Key，JSON 仅包含 version_id。对已解析且有来源片段的版本，事务创建真实 queued Run、图谱候选和持久化队列，返回 run_id、status、candidate_revision_id。需运行上述 graph_worker_cli；准备成功才结束 Run，候选状态为 pending_review，仍需显式 publish。任务详情和事件查询反映实际进度与失败。
+先在 py/ 执行 `uv run alembic upgrade head`，建立独立原文件表 material_raw_files。原文件、版本、幂等记录及解析任务在同一事务提交；单文件最多 20 MiB，文本 PDF 最多 300 页，文本使用 UTF-8。
 
-同键重放原接收响应；失败/取消后使用新键重试。请求指定的版本不会被替换为最新上传版本，旧发布与空间绑定保持原值。此批尚未实现原始文件持久化及自动/延迟解析，上传目前仍同步解析；不要把该入口视为解析失败后的原文件恢复。详见 ../docs/implementation/2026-09-18-explicit-material-ingest.md。
+POST /api/v1/materials 与 POST /api/v1/materials/{material_id}/versions 接受 auto_ingest，默认 true：上传返回 processing、0 个来源片段及真实 queued Run。auto_ingest=false 只保存原文件，返回 uploaded 和 run_id=null；新版本还接受 change_note，并将其纳入请求指纹。
+
+POST /api/v1/materials/{material_id}/ingest 要求 Idempotency-Key，JSON 仅包含 version_id。未解析版本排队读取原文件；已有来源版本直接准备图谱。继续使用上面的 graph_worker_cli 独立进程，它消费 material.parse 和 graph.prepare；--once 最多认领一个任务，因此一次调用不保证两个阶段都完成。解析不持有写事务，解析结果与下一阶段任务原子提交，两个阶段共用一个 Run。准备成功后候选为 pending_review，仍需显式 publish。
+
+相同幂等键重放原 Run；失败/取消后使用新键重试。候选 ID 在解析前为 null，完成后可在 Run.result_ref 查询。重启后 worker 可接管到期租约；过期、取消或删除中的任务不能补写来源。相同内容按解析格式去重，修正错误扩展名允许重新解析。已有归档状态、发布快照与学习空间绑定不会被后台解析覆盖。
+
+旧资料若无原文件但有已解析来源，仍可准备图谱；若两者都缺失则返回 MATERIAL_SOURCE_MISSING，需重新上传。运行生产 worker 前需配置数据库、Neo4j、Qdrant 与 DashScope，默认 Embedding 为 text-embedding-v3（1024 维）。详见 ../docs/implementation/2026-09-18-automatic-material-ingest.md。

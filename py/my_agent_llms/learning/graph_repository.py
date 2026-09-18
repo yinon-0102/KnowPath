@@ -2,7 +2,7 @@
 import copy
 from datetime import datetime, timezone
 from sqlalchemy import delete, select
-from .db import GraphRevisionRow, IdempotencyRow, OutboxEventRow
+from .db import GraphRevisionRow, IdempotencyRow, OutboxEventRow, MaterialVersionRow
 from .errors import DomainConflict
 from .learning_repository import InMemoryLearningRepository, SqlAlchemyLearningRepository
 
@@ -14,10 +14,11 @@ class InMemoryGraphRepository(InMemoryLearningRepository):
             for identifier in revision_ids:
                 tables["graph_revisions"].pop(identifier, None)
             tables["outbox"] = {key: row for key, row in tables["outbox"].items()
-                               if not (row["aggregate_type"] == "graph_revision" and row["aggregate_id"] in revision_ids)}
+                               if not ((row["aggregate_type"] == "graph_revision" and row["aggregate_id"] in revision_ids)
+                                       or (row["event_type"] == "material.parse" and row["payload"]["material_id"] == material_id))}
             for key, record in self.materials.idempotency.items():
                 response = self.materials.idempotency_responses.get(key, {})
-                if record[1] == material_id and response.get("candidate_revision_id") in revision_ids:
+                if record[1] == material_id and (response.get("candidate_revision_id") in revision_ids or "run_id" in response):
                     self.materials.idempotency_responses[key] = {"resource_deleted": True}
 
 
@@ -43,6 +44,8 @@ class SqlAlchemyGraphRepository(SqlAlchemyLearningRepository):
         with self.unit_of_work.session() as session:
             session.execute(delete(OutboxEventRow).where(OutboxEventRow.aggregate_type == "graph_revision",
                                                         OutboxEventRow.aggregate_id.in_(revision_ids)))
+            session.execute(delete(OutboxEventRow).where(OutboxEventRow.event_type == "material.parse",
+                OutboxEventRow.aggregate_id.in_(select(MaterialVersionRow.id).where(MaterialVersionRow.material_id == material_id))))
             session.execute(delete(GraphRevisionRow).where(GraphRevisionRow.material_id == material_id))
             for row in session.scalars(select(IdempotencyRow).where(IdempotencyRow.resource_type == "graph_command",
                                        IdempotencyRow.resource_id == material_id).with_for_update()):

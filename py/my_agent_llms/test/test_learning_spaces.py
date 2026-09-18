@@ -3,7 +3,7 @@ from concurrent.futures import ThreadPoolExecutor
 from uuid import UUID
 
 import pytest
-from fastapi.testclient import TestClient
+from my_agent_llms.test.material_upload_helpers import ParsedUploadClient
 from sqlalchemy import create_engine
 
 from my_agent_llms.learning.api import create_app
@@ -24,7 +24,7 @@ def workspace(request, tmp_path):
         repository = InMemoryMaterialRepository()
         def factory():
             return create_app(MaterialService(repository))
-    with TestClient(factory()) as client:
+    with ParsedUploadClient(factory()) as client:
         result = client.post("/api/v1/materials", files={"file": ("notes.md", b"# Functions\n\nReusable behavior.", "text/markdown")}, headers={"Idempotency-Key": "material"}).json()
         material_id = result["material"]["id"]
         topic_id = client.get(f"/api/v1/materials/{material_id}/topics").json()["items"][0]["id"]
@@ -39,7 +39,7 @@ def create_space(client, material_id, key="space", **extra):
 
 def test_space_profile_scope_and_binding_survive_restart(workspace):
     factory, material_id, topic_id = workspace
-    with TestClient(factory()) as client:
+    with ParsedUploadClient(factory()) as client:
         response = create_space(client, material_id)
         assert response.status_code == 201
         original = response.json()
@@ -49,7 +49,7 @@ def test_space_profile_scope_and_binding_survive_restart(workspace):
         assert client.patch(path + "/profile", json={"goal": "Write reusable code", "preferences": {"example_first": True}, "target_date": "2026-10-01", "expected_version": 1}).status_code == 200
         assert client.post(path + "/scope", json={"topic_ids": [topic_id], "expected_version": 2}, headers={"Idempotency-Key": "scope"}).status_code == 200
         assert client.post(f"/api/v1/materials/{material_id}/versions", files={"file": ("new.md", b"# New topic\n\nNew content.", "text/markdown")}, headers={"Idempotency-Key": "v2"}).status_code == 201
-    with TestClient(factory()) as client:
+    with ParsedUploadClient(factory()) as client:
         restored = client.get(path).json()
         assert restored["name"] == "Python updated"
         assert restored["space_version"] == 3
@@ -66,13 +66,13 @@ def test_space_profile_scope_and_binding_survive_restart(workspace):
 
 def test_replay_returns_original_response_without_reapplying(workspace):
     factory, material_id, topic_id = workspace
-    with TestClient(factory()) as client:
+    with ParsedUploadClient(factory()) as client:
         original = create_space(client, material_id).json()
         path = f"/api/v1/learning-spaces/{original['id']}"
         body = {"topic_ids": [topic_id], "expected_version": 1}
         scope = client.post(path + "/scope", json=body, headers={"Idempotency-Key": "scope"}).json()
         assert client.patch(path, json={"name": "Later", "expected_version": 2}).status_code == 200
-    with TestClient(factory()) as client:
+    with ParsedUploadClient(factory()) as client:
         assert create_space(client, material_id).json() == original
         assert client.post(path + "/scope", json=body, headers={"Idempotency-Key": "scope"}).json() == scope
         assert client.get(path).json()["space_version"] == 3
@@ -83,7 +83,7 @@ def test_replay_returns_original_response_without_reapplying(workspace):
 
 def test_parallel_creates_and_version_conflicts(workspace):
     factory, material_id, _ = workspace
-    clients = [TestClient(factory()) for _ in range(2)]
+    clients = [ParsedUploadClient(factory()) for _ in range(2)]
     try:
         with ThreadPoolExecutor(max_workers=2) as pool:
             created = list(pool.map(lambda c: create_space(c, material_id), clients))
@@ -100,7 +100,7 @@ def test_parallel_creates_and_version_conflicts(workspace):
 
 def test_scope_rejects_topics_outside_bound_version_and_preserves_versions(workspace):
     factory, material_id, topic_id = workspace
-    with TestClient(factory()) as client:
+    with ParsedUploadClient(factory()) as client:
         space = create_space(client, material_id).json()
         path = f"/api/v1/learning-spaces/{space['id']}"
         rejected = client.post(path + "/scope", json={"topic_ids": ["unknown"], "expected_version": 1}, headers={"Idempotency-Key": "scope"})
@@ -113,7 +113,7 @@ def test_scope_rejects_topics_outside_bound_version_and_preserves_versions(works
 @pytest.mark.parametrize("suffix,body", [("", {"name": "bad"}), ("", {"name": "bad", "goal": "wrong endpoint", "expected_version": 1}), ("", {"status": "invalid", "expected_version": 1}), ("/profile", {"weekly_minutes": 0, "expected_version": 1}), ("/profile", {"goal": None, "expected_version": 1}), ("/profile", {"preferences": {"unknown": True}, "expected_version": 1}), ("/profile", {"target_date": "2026-02-30", "expected_version": 1})])
 def test_space_writes_validate_contract(workspace, suffix, body):
     factory, material_id, _ = workspace
-    with TestClient(factory()) as client:
+    with ParsedUploadClient(factory()) as client:
         space = create_space(client, material_id).json()
         response = client.patch(f"/api/v1/learning-spaces/{space['id']}" + suffix, json=body)
         assert response.status_code == 422
@@ -124,7 +124,7 @@ def test_space_writes_validate_contract(workspace, suffix, body):
 def test_command_rolls_back_when_replay_record_cannot_be_saved(workspace, monkeypatch, command):
     factory, material_id, topic_id = workspace
     app = factory()
-    with TestClient(app) as client:
+    with ParsedUploadClient(app) as client:
         space = create_space(client, material_id).json()
         path = f"/api/v1/learning-spaces/{space['id']}"
         before = client.get(path).json()
@@ -147,7 +147,7 @@ def test_command_rolls_back_when_replay_record_cannot_be_saved(workspace, monkey
 
 def test_cross_endpoint_keys_conflict_in_both_directions(workspace):
     factory, material_id, _ = workspace
-    with TestClient(factory()) as client:
+    with ParsedUploadClient(factory()) as client:
         assert create_space(client, material_id, key="material").status_code == 409
         assert create_space(client, material_id).status_code == 201
         conflict = client.post("/api/v1/materials", files={"file": ("other.md", b"# Other", "text/markdown")}, headers={"Idempotency-Key": "space"})
@@ -157,14 +157,14 @@ def test_cross_endpoint_keys_conflict_in_both_directions(workspace):
 
 def test_keyed_profile_replay_and_preference_deletion(workspace):
     factory, material_id, _ = workspace
-    with TestClient(factory()) as client:
+    with ParsedUploadClient(factory()) as client:
         space = create_space(client, material_id).json()
         path = f"/api/v1/learning-spaces/{space['id']}"
         body = {"preferences": {"example_first": True, "concise_explanations": False}, "expected_version": 1}
         first = client.patch(path + "/profile", json=body, headers={"Idempotency-Key": "profile"})
         assert first.status_code == 200
         assert client.patch(path + "/profile", json={"preferences": {"example_first": None}, "target_date": None, "expected_version": 2}).status_code == 200
-    with TestClient(factory()) as client:
+    with ParsedUploadClient(factory()) as client:
         replay = client.patch(path + "/profile", json=body, headers={"Idempotency-Key": "profile"})
         assert replay.json() == first.json()
         current = client.get(path).json()
@@ -178,7 +178,7 @@ def test_keyed_profile_replay_and_preference_deletion(workspace):
 def test_scope_keeps_old_binding_and_invalidates_only_old_plans(workspace):
     factory, material_id, topic_id = workspace
     app = factory()
-    with TestClient(app) as client:
+    with ParsedUploadClient(app) as client:
         space = create_space(client, material_id).json()
         path = f"/api/v1/learning-spaces/{space['id']}"
         old_plan = app.state.learning_state.create_plan(space["id"], {})
@@ -197,9 +197,9 @@ def test_scope_keeps_old_binding_and_invalidates_only_old_plans(workspace):
 
 def test_bound_material_cannot_be_deleted_after_restart(workspace):
     factory, material_id, _ = workspace
-    with TestClient(factory()) as client:
+    with ParsedUploadClient(factory()) as client:
         assert create_space(client, material_id).status_code == 201
-    with TestClient(factory()) as client:
+    with ParsedUploadClient(factory()) as client:
         for cascade in (False, True):
             response = client.request("DELETE", f"/api/v1/materials/{material_id}", json={"cascade": cascade})
             assert response.status_code == 409
@@ -209,7 +209,7 @@ def test_bound_material_cannot_be_deleted_after_restart(workspace):
 def test_create_replay_is_tombstoned_after_resource_deletion(workspace):
     factory, material_id, _ = workspace
     app = factory()
-    with TestClient(app) as client:
+    with ParsedUploadClient(app) as client:
         original = create_space(client, material_id)
         app.state.learning_state.delete_space(original.json()["id"], {"confirm": True, "expected_version": 1})
         replay = create_space(client, material_id)
@@ -221,7 +221,7 @@ def test_create_replay_is_tombstoned_after_resource_deletion(workspace):
 def test_scope_replay_is_tombstoned_after_resource_deletion(workspace):
     factory, material_id, topic_id = workspace
     app = factory()
-    with TestClient(app) as client:
+    with ParsedUploadClient(app) as client:
         space = create_space(client, material_id).json()
         path = f"/api/v1/learning-spaces/{space['id']}/scope"
         body = {"topic_ids": [topic_id], "expected_version": 1}
@@ -237,17 +237,17 @@ def test_scope_replay_is_tombstoned_after_resource_deletion(workspace):
 def test_plan_read_detects_scope_changed_by_another_application(workspace):
     factory, material_id, topic_id = workspace
     original_app = factory()
-    with TestClient(original_app) as client:
+    with ParsedUploadClient(original_app) as client:
         space = create_space(client, material_id).json()
         plan = original_app.state.learning_state.create_plan(space["id"], {})
-        with TestClient(factory()) as other:
+        with ParsedUploadClient(factory()) as other:
             assert other.post(f"/api/v1/learning-spaces/{space['id']}/scope", json={"topic_ids": [topic_id], "expected_version": 1}, headers={"Idempotency-Key": "scope"}).status_code == 200
         assert client.get(f"/api/v1/plans/{plan['id']}").json()["status"] == "needs_replan"
 
 
 def test_knowledge_update_requires_explicit_bindings(workspace):
     factory, material_id, _ = workspace
-    with TestClient(factory()) as client:
+    with ParsedUploadClient(factory()) as client:
         space = create_space(client, material_id).json()
         path = f"/api/v1/learning-spaces/{space['id']}"
         response = client.post(path + "/knowledge-updates/apply", json={"expected_space_version": 1}, headers={"Idempotency-Key": "knowledge"})
@@ -258,7 +258,7 @@ def test_knowledge_update_requires_explicit_bindings(workspace):
 def test_bound_topics_keep_material_identity_without_duplicate_aliases(workspace):
     factory, material_id, _ = workspace
     app = factory()
-    with TestClient(app) as client:
+    with ParsedUploadClient(app) as client:
         uploaded = client.post("/api/v1/materials", files={"file": ("other.md", b"# Functions\n\nDifferent source.", "text/markdown")}, headers={"Idempotency-Key": "other"})
         assert uploaded.status_code == 201
         other_id = uploaded.json()["material"]["id"]

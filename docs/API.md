@@ -245,7 +245,7 @@ run 对象的 result_ref 是 `{ "type": "assessment", "id": "assessment_001" }` 
 
 - `file`：文件内容；
 - `name`：可选显示名称；
-- `auto_ingest`：是否上传后立即解析，默认 `true`。
+- `auto_ingest`：是否上传后自动排队解析，默认 `true`。上传请求先保存原文件，不同步解析正文。
 
 响应 `201`：
 
@@ -709,7 +709,7 @@ replace 必须带非空 proposed_value 字段补丁：node 支持 name、descrip
 | DELETE `/learning-spaces/{space_id}`                         | expected_version、confirm=true                               | 202 run_id；清除该空间记录、派生状态及记忆，保留其他空间共享资料 |
 | DELETE `/materials/{material_id}`                            | expected_version、confirm=true、cascade（默认 false）        | 202 run_id；被空间引用且 cascade=false 时返回 409 MATERIAL_IN_USE 和影响空间。cascade=true 才清除原文件、解析/图谱版本、索引、来源相关题目和证据并重算受影响状态 |
 
-当前实现进度（ingest）：已解析且有来源片段的版本可通过此入口事务创建真实 queued Run、候选图谱与持久化准备任务；仅接受 version_id，要求 Idempotency-Key。返回 candidate_revision_id，独立 graph worker 完成索引准备后才成功，候选仍待审核发布。任务失败/取消后使用新键重试，同键重放原接收响应；应通过 Run 查询实际状态。原始文件持久化、auto_ingest=false 延迟解析、解析失败后的原文件重试及上传后自动串联仍待实现，上表保留目标契约。
+当前实现进度（ingest）：原文件存于 material_raw_files，与版本、幂等记录及解析任务事务提交。默认上传排队；auto_ingest=false 只保存。显式入口仅接受 version_id，要求 Idempotency-Key；未解析版本从原文件排队，已解析版本直接准备图谱。解析与 graph.prepare 使用同一个 Run，解析阶段 candidate_revision_id 为 null，完成后可从 Run.result_ref 获取候选 ID。独立 worker 具备租约接管、取消围栏、有限重试和原子交接，成功候选仍 pending_review，不自动发布。失败/取消后使用新键重试，同键重放原接收响应；请通过 Run 查询实际状态。旧版本若既无原文件也无可用来源，返回 MATERIAL_SOURCE_MISSING，不伪造原文件。
 
 删除和重置是不同操作：reset 保留学习历史，delete 彻底清除约定范围。运行中的相关任务先取消，防止数据被迟到结果重新写入；无法清除的文件返回 failed 与原因，不虚报成功。首版本地文件清除不承诺硬件级安全擦除。
 
