@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
+import re
+
 from typing import Annotated, Any
 
 from fastapi import FastAPI, File, Form, Header, Request, UploadFile
@@ -17,18 +20,23 @@ from .materials import (
     MaterialService,
     UnsupportedMaterial,
 )
-from .state import DomainConflict, DomainNotFound, LearningState
+from .errors import DomainConflict, DomainNotFound, EventHistoryExpired
+from .runs import RunService, stream_run_events
+from .state import LearningState
 
 
 def create_app(
     service: MaterialService | None = None,
     settings: LearningSettings | None = None,
+    *,
+    run_service: RunService | None = None,
 ) -> FastAPI:
     service = service or MaterialService(InMemoryMaterialRepository())
     settings = settings or LearningSettings.from_env()
-    state = LearningState(material_repository=service.repository)
+    state = LearningState(material_repository=service.repository, run_service=run_service)
     ingest_runs: dict[str, dict[str, Any]] = {}
     app = FastAPI(title="Keel Learning", version="0.1.0")
+    app.state.learning_state = state
 
     @app.middleware("http")
     async def idempotency_guard(request: Request, call_next):
@@ -277,37 +285,38 @@ def create_app(
         )
 
     @app.get("/api/v1/runs/{run_id}")
-    async def get_run(run_id: str) -> JSONResponse:
-        try:
-            return JSONResponse(status_code=200, content=state.get_run(run_id))
-        except DomainNotFound as exc:
-            return _domain_error(exc)
-
-    @app.get("/api/v1/runs/{run_id}/events", response_model=None)
-    async def get_run_events(run_id: str, request: Request) -> StreamingResponse | JSONResponse:
+    def get_run(run_id: str) -> JSONResponse:
         try:
             run = state.get_run(run_id)
+            return JSONResponse(status_code=200, content={k: v for k, v in run.items() if k != "events"})
         except DomainNotFound as exc:
             return _domain_error(exc)
 
+    @app.get("/api/v1/runs/{run_id}/events", response_model=None,
+             responses={200: {"content": {"text/event-stream": {}}}})
+    async def get_run_events(run_id: str, request: Request) -> StreamingResponse | JSONResponse:
+        cursor = request.headers.get("Last-Event-ID", "0")
+        if not re.fullmatch(r"[0-9]{1,20}", cursor):
+            return _error_response(422, "INVALID_EVENT_ID", "Last-Event-ID 须为非负整数")
+        last_event_id = int(cursor)
         try:
-            last_event_id = int(request.headers.get("Last-Event-ID", "0"))
-        except ValueError:
-            last_event_id = 0
-
-        def stream():
-            for event in run["events"]:
-                if int(event["id"]) <= last_event_id:
-                    continue
-                yield f"id: {event['id']}\nevent: {event['event']}\ndata: {__import__('json').dumps(event['data'], ensure_ascii=False)}\n\n"
-
-        return StreamingResponse(stream(), media_type="text/event-stream")
+            # Validate before sending HTTP headers so missing/expired history is JSON.
+            await asyncio.to_thread(state.events_for, run_id, after_id=last_event_id)
+        except (DomainNotFound, DomainConflict) as exc:
+            return _domain_error(exc)
+        return StreamingResponse(
+            stream_run_events(state.run_service, run_id, after_id=last_event_id,
+                              is_disconnected=request.is_disconnected),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
 
     @app.post("/api/v1/runs/{run_id}/cancel", status_code=202)
-    async def cancel_run(run_id: str) -> JSONResponse:
+    def cancel_run(run_id: str) -> JSONResponse:
         try:
             run = state.cancel_run(run_id)
-            return JSONResponse(status_code=200 if run["status"] in {"succeeded", "failed", "cancelled"} else 202, content={"id": run_id, "status": run["status"]})
+            status_code = 200 if run["status"] in {"succeeded", "failed", "cancelled"} else 202
+            return JSONResponse(status_code=status_code, content={"id": run_id, "status": run["status"]})
         except DomainNotFound as exc:
             return _domain_error(exc)
 
@@ -625,6 +634,8 @@ def _error_response(
 def _domain_error(exc: Exception) -> JSONResponse:
     if isinstance(exc, DomainNotFound):
         return _error_response(404, "RESOURCE_NOT_FOUND", str(exc), {"id": exc.resource_id})
+    if isinstance(exc, EventHistoryExpired):
+        return _error_response(410, exc.code, str(exc))
     if isinstance(exc, DomainConflict):
         status = 422 if exc.code.startswith("INVALID_") or exc.code.endswith("_REQUIRED") else 409
         return _error_response(status, exc.code, str(exc))

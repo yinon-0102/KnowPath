@@ -14,6 +14,8 @@ from typing import Any
 from uuid import uuid4
 
 from .materials import InMemoryMaterialRepository, MaterialService
+from .errors import DomainConflict, DomainNotFound
+from .runs import RunService
 
 
 def _now() -> str:
@@ -24,24 +26,12 @@ def _id(prefix: str) -> str:
     return f"{prefix}_{uuid4().hex}"
 
 
-class DomainNotFound(Exception):
-    def __init__(self, resource: str, resource_id: str):
-        super().__init__(f"{resource} not found: {resource_id}")
-        self.resource = resource
-        self.resource_id = resource_id
-
-
-class DomainConflict(Exception):
-    def __init__(self, code: str, message: str):
-        super().__init__(message)
-        self.code = code
-
-
 class LearningState:
-    def __init__(self, material_repository: InMemoryMaterialRepository | None = None) -> None:
+    def __init__(self, material_repository: InMemoryMaterialRepository | None = None, *,
+                 run_service: RunService | None = None) -> None:
         self.material_repository = material_repository or InMemoryMaterialRepository()
         self.material_service = MaterialService(self.material_repository)
-        self.runs: dict[str, dict[str, Any]] = {}
+        self.run_service = run_service if run_service is not None else RunService()
         self.spaces: dict[str, dict[str, Any]] = {}
         self.topics: dict[str, dict[str, Any]] = {}
         self.assessments: dict[str, dict[str, Any]] = {}
@@ -53,43 +43,16 @@ class LearningState:
         self.changes: list[dict[str, Any]] = []
 
     def run(self, kind: str, result_ref: dict[str, str] | None = None, *, status: str = "succeeded") -> dict[str, Any]:
-        run_id = _id("run")
-        now = _now()
-        run = {
-            "id": run_id,
-            "kind": kind,
-            "status": status,
-            "progress": 100 if status == "succeeded" else 0,
-            "result_ref": result_ref,
-            "error": None,
-            "created_at": now,
-            "finished_at": now if status == "succeeded" else None,
-            "events": [
-                {"id": "1", "event": "run.started", "data": {"run_id": run_id, "kind": kind}},
-                *(
-                    [{"id": "2", "event": "run.completed", "data": {"run_id": run_id, "result_ref": result_ref}}]
-                    if status == "succeeded"
-                    else []
-                ),
-            ],
-        }
-        self.runs[run_id] = run
-        return run
+        return self.run_service.create(kind, result_ref, status=status)
+
+    def events_for(self, run_id: str, *, after_id: int = 0) -> list[dict[str, Any]]:
+        return self.run_service.events_for(run_id, after_id=after_id)
 
     def get_run(self, run_id: str) -> dict[str, Any]:
-        run = self.runs.get(run_id)
-        if run is None:
-            raise DomainNotFound("run", run_id)
-        return copy.deepcopy(run)
+        return self.run_service.get(run_id)
 
     def cancel_run(self, run_id: str) -> dict[str, Any]:
-        run = self.runs.get(run_id)
-        if run is None:
-            raise DomainNotFound("run", run_id)
-        if run["status"] not in {"succeeded", "failed", "cancelled"}:
-            run["status"] = "cancelled"
-            run["finished_at"] = _now()
-        return copy.deepcopy(run)
+        return self.run_service.request_cancel(run_id)
 
     def create_space(self, payload: dict[str, Any]) -> dict[str, Any]:
         material_ids = payload.get("material_ids") or []
@@ -448,11 +411,14 @@ class LearningState:
         message = str(payload.get("message") or "").strip()
         if not message:
             raise DomainConflict("INVALID_REQUEST", "message 不能为空")
-        run = self.run("message", {"type": "message", "id": _id("message")})
-        run["text"] = f"当前学习范围包含 {len(space['topic_ids']) or len(self.topics)} 个主题。你的请求是：{message}"
-        run["events"].append({"id": "3", "event": "message.delta", "data": {"run_id": run["id"], "delta": run["text"]}})
-        run["events"].append({"id": "4", "event": "message.completed", "data": {"run_id": run["id"], "text": run["text"]}})
-        return {"run_id": run["id"], "session_id": payload.get("session_id"), "status": "queued"}
+        run = self.run("message", status="running")
+        message_id = _id("message")
+        text = f"当前学习范围包含 {len(space['topic_ids']) or len(self.topics)} 个主题。你的请求是：{message}"
+        self.run_service.append_event(run["id"], "message.delta", {"delta": text})
+        self.run_service.append_event(run["id"], "message.completed",
+                                      {"message_id": message_id, "text": text, "citations": []})
+        completed = self.run_service.complete(run["id"], {"type": "message", "id": message_id})
+        return {"run_id": run["id"], "session_id": payload.get("session_id"), "status": completed["status"]}
 
     def create_correction(self, space_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         self.get_space(space_id)

@@ -63,3 +63,31 @@ def test_learning_api_workflow_from_material_to_plan():
     assert session.status_code == 201
     session_id = session.json()["id"]
     assert client.post(f"/api/v1/sessions/{session_id}/finish", json={}).status_code == 200
+
+
+def test_message_events_publish_text_before_terminal():
+    app = create_app()
+    with TestClient(app) as client:
+        material = client.post(
+            "/api/v1/materials",
+            files={"file": ("notes.md", b"# Functions\n\nReusable behavior.", "text/markdown")},
+            headers={"Idempotency-Key": "message-material"},
+        ).json()
+        space = client.post(
+            "/api/v1/learning-spaces",
+            json={"name": "Python", "material_ids": [material["material"]["id"]]},
+            headers={"Idempotency-Key": "message-space"},
+        ).json()
+        response = client.post(
+            f"/api/v1/learning-spaces/{space['id']}/messages",
+            json={"message": "Explain functions", "stream": True},
+            headers={"Idempotency-Key": "message-send"},
+        )
+        assert response.status_code == 202
+        run_id = response.json()["run_id"]
+        stream = client.get(f"/api/v1/runs/{run_id}/events")
+        names = [line.removeprefix("event: ") for line in stream.text.splitlines() if line.startswith("event: ")]
+        assert names == ["run.started", "message.delta", "message.completed", "run.completed"]
+        run = app.state.learning_state.get_run(run_id)
+        assert run["events"][2]["data"]["message_id"] == run["result_ref"]["id"]
+        assert "citations" in run["events"][2]["data"]
