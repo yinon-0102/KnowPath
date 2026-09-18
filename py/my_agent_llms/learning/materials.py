@@ -137,18 +137,19 @@ class InMemoryMaterialRepository:
         self.idempotency_runs: dict[str, str] = {}
         self.idempotency_responses: dict[str, dict] = {}
         self.learning_spaces: dict[str, dict] = {}
+        self.assessment_data = {"assessments": {}, "attempts": {}, "states": {}, "evidence": {}, "resets": {}}
         self._lock = RLock()
 
     @contextmanager
     def transaction(self):
         with self._lock:
             previous = copy.deepcopy((self.materials, self.versions, self.by_content_hash,
-                                      self.idempotency, self.idempotency_runs, self.idempotency_responses, self.learning_spaces))
+                                      self.idempotency, self.idempotency_runs, self.idempotency_responses, self.learning_spaces, self.assessment_data))
             try:
                 yield
             except BaseException:
                 (self.materials, self.versions, self.by_content_hash,
-                 self.idempotency, self.idempotency_runs, self.idempotency_responses, self.learning_spaces) = previous
+                 self.idempotency, self.idempotency_runs, self.idempotency_responses, self.learning_spaces, self.assessment_data) = previous
                 raise
 
     def get_idempotency(self, key: str) -> tuple[str, str, str] | None:

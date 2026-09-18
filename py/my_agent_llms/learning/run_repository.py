@@ -63,7 +63,10 @@ class SqlAlchemyRunRepository:
 
     def get(self, run_id: str) -> Run:
         with self.unit_of_work.session() as session:
-            row = session.get(RunRow, run_id)
+            query = select(RunRow).where(RunRow.id == run_id)
+            if self.unit_of_work.active:
+                query = query.with_for_update().execution_options(populate_existing=True)
+            row = session.scalar(query)
             if row is None:
                 raise DomainNotFound("run", run_id)
             return self._read(session, row)

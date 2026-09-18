@@ -1,10 +1,11 @@
+from my_agent_llms.test.test_learning_state_persistence import FixedQuestions
 from fastapi.testclient import TestClient
 
 from my_agent_llms.learning.api import create_app
 
 
 def test_learning_api_workflow_from_material_to_plan():
-    client = TestClient(create_app())
+    client = TestClient(create_app(question_generator=FixedQuestions()))
     material = client.post(
         "/api/v1/materials",
         files={"file": ("python.md", b"# Functions\n\nReusable behavior.", "text/markdown")},
@@ -28,7 +29,7 @@ def test_learning_api_workflow_from_material_to_plan():
 
     created = client.post(
         f"/api/v1/learning-spaces/{space_id}/assessments",
-        json={"kind": "diagnostic", "question_count": 1},
+        json={"kind": "diagnostic", "question_count": 5, "difficulty_mix": {"easy": 1.0, "medium": 0.0, "hard": 0.0}},
         headers={"Idempotency-Key": "assessment-1"},
     )
     assert created.status_code == 202
@@ -38,7 +39,7 @@ def test_learning_api_workflow_from_material_to_plan():
 
     assert client.post(
         f"/api/v1/assessments/{assessment_id}/attempts",
-        json={"answers": [{"question_id": question_id, "answer": "A"}]},
+        json={"answers": [{"question_id": question_id, "answer": "A", "expected_answer_revision": 0}]},
         headers={"Idempotency-Key": "attempt-1"},
     ).status_code == 200
     assert client.post(

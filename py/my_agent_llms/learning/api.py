@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import re
+from datetime import datetime
 
 from typing import Annotated, Any
 
-from fastapi import FastAPI, File, Form, Header, Request, UploadFile
+from fastapi import BackgroundTasks, FastAPI, File, Form, Header, Query, Request, UploadFile
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, StreamingResponse
 
@@ -28,6 +29,8 @@ from .runs import RunService, stream_run_events
 from .state import LearningState
 from .space_schemas import CreateSpace, UpdateSpace, SetScope, UpdateProfile
 from .spaces import topics_for_version
+from .assessment_schemas import CreateAssessment, RecordAttempt, FinalizeAssessment, ResetState
+from .question_generation import DashScopeQuestionGenerator
 
 
 def create_app(
@@ -35,6 +38,7 @@ def create_app(
     settings: LearningSettings | None = None,
     *,
     run_service: RunService | None = None,
+    question_generator=None,
 ) -> FastAPI:
     service = service or MaterialService(InMemoryMaterialRepository())
     settings = settings or LearningSettings.from_env()
@@ -43,7 +47,8 @@ def create_app(
         run_service = RunService(SqlAlchemyRunRepository(uow.engine, unit_of_work=uow))
     if run_service is None and isinstance(service.repository, InMemoryMaterialRepository):
         run_service = RunService(service.repository.run_repository)
-    state = LearningState(material_repository=service.repository, run_service=run_service)
+    state = LearningState(material_repository=service.repository, run_service=run_service,
+                          question_generator=question_generator if question_generator is not None else DashScopeQuestionGenerator(settings))
     ingestion = MaterialIngestionService(service, state.run_service)
     app = FastAPI(title="Keel Learning", version="0.1.0")
     app.state.learning_state = state
@@ -410,43 +415,43 @@ def create_app(
             return _domain_error(exc)
 
     @app.get("/api/v1/learning-spaces/{space_id}/state")
-    async def get_learning_state(space_id: str) -> JSONResponse:
+    def get_learning_state(space_id: str, topic_id: str | None = None, status: str | None = None, include_evidence: bool = False) -> JSONResponse:
         try:
-            return JSONResponse(status_code=200, content=state.get_state(space_id))
+            return JSONResponse(status_code=200, content=state.get_state(space_id, topic_id=topic_id, status=status, include_evidence=include_evidence))
         except DomainNotFound as exc:
             return _domain_error(exc)
 
     @app.post("/api/v1/learning-spaces/{space_id}/assessments", status_code=202)
-    async def create_assessment(space_id: str, payload: dict[str, Any]) -> JSONResponse:
+    def create_assessment(space_id: str, payload: CreateAssessment, background_tasks: BackgroundTasks, idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None) -> JSONResponse:
         try:
-            assessment = state.create_assessment(space_id, payload)
-            return JSONResponse(status_code=202, content={"run_id": assessment["run_id"], "assessment_id": assessment["id"], "status": "queued"})
+            assessment = state.create_assessment(space_id, payload.model_dump(exclude_none=True), idempotency_key=idempotency_key, dispatch=background_tasks.add_task)
+            return JSONResponse(status_code=202, content={"run_id": assessment["run_id"], "assessment_id": assessment["id"], "assessment": assessment, "status": assessment["status"]})
         except (DomainNotFound, DomainConflict) as exc:
             return _domain_error(exc)
 
     @app.get("/api/v1/assessments/{assessment_id}")
-    async def get_assessment(assessment_id: str) -> JSONResponse:
+    def get_assessment(assessment_id: str) -> JSONResponse:
         try:
             return JSONResponse(status_code=200, content=state.get_assessment(assessment_id))
         except (DomainNotFound, DomainConflict) as exc:
             return _domain_error(exc)
 
     @app.post("/api/v1/assessments/{assessment_id}/attempts")
-    async def record_attempt(assessment_id: str, payload: dict[str, Any]) -> JSONResponse:
+    def record_attempt(assessment_id: str, payload: RecordAttempt, idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None) -> JSONResponse:
         try:
-            return JSONResponse(status_code=200, content=state.record_attempt(assessment_id, payload))
+            return JSONResponse(status_code=202 if payload.finalize else 200, content=state.record_attempt(assessment_id, payload.model_dump(), idempotency_key=idempotency_key))
         except (DomainNotFound, DomainConflict) as exc:
             return _domain_error(exc)
 
     @app.post("/api/v1/assessments/{assessment_id}/finalize", status_code=202)
-    async def finalize_assessment(assessment_id: str, payload: dict[str, Any]) -> JSONResponse:
+    def finalize_assessment(assessment_id: str, payload: FinalizeAssessment) -> JSONResponse:
         try:
-            return JSONResponse(status_code=202, content=state.finalize_assessment(assessment_id, payload))
+            return JSONResponse(status_code=202, content=state.finalize_assessment(assessment_id, payload.model_dump()))
         except (DomainNotFound, DomainConflict) as exc:
             return _domain_error(exc)
 
     @app.get("/api/v1/assessments/{assessment_id}/result")
-    async def assessment_result(assessment_id: str) -> JSONResponse:
+    def assessment_result(assessment_id: str) -> JSONResponse:
         try:
             return JSONResponse(status_code=200, content=state.assessment_result(assessment_id))
         except (DomainNotFound, DomainConflict) as exc:
@@ -503,10 +508,14 @@ def create_app(
             return _domain_error(exc)
 
     @app.get("/api/v1/learning-spaces/{space_id}/evidence")
-    async def list_evidence(space_id: str) -> JSONResponse:
+    def list_evidence(space_id: str, topic_id: str | None = None, kind: str | None = None,
+                      from_time: datetime | None = Query(None, alias="from"),
+                      to_time: datetime | None = Query(None, alias="to"),
+                      limit: int = Query(20, ge=1, le=100), cursor: str | None = Query(None, max_length=2048)) -> JSONResponse:
         try:
-            return JSONResponse(status_code=200, content={"items": state.evidence_for(space_id), "next_cursor": None})
-        except DomainNotFound as exc:
+            return JSONResponse(status_code=200, content=state.assessment_service.evidence_page(space_id,
+                topic_id=topic_id, kind=kind, from_time=from_time, to_time=to_time, limit=limit, cursor=cursor))
+        except (DomainNotFound, DomainConflict) as exc:
             return _domain_error(exc)
 
     @app.post("/api/v1/learning-spaces/{space_id}/knowledge-corrections", status_code=201)
@@ -553,9 +562,9 @@ def create_app(
             return _domain_error(exc)
 
     @app.post("/api/v1/learning-spaces/{space_id}/state/reset")
-    async def reset_learning_state(space_id: str, payload: dict[str, Any]) -> JSONResponse:
+    def reset_learning_state(space_id: str, payload: ResetState, idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None) -> JSONResponse:
         try:
-            return JSONResponse(status_code=200, content=state.reset_state(space_id, payload.get("topic_ids") or [], payload.get("reason", "")))
+            return JSONResponse(status_code=200, content=state.reset_state(space_id, payload.topic_ids, payload.reason, expected_state_version=payload.expected_state_version, idempotency_key=idempotency_key))
         except (DomainNotFound, DomainConflict) as exc:
             return _domain_error(exc)
 
@@ -563,8 +572,7 @@ def create_app(
     async def grade_review(assessment_id: str, payload: dict[str, Any]) -> JSONResponse:
         try:
             state.get_assessment(assessment_id)
-            run = state.run("grade_review", {"type": "assessment", "id": assessment_id})
-            return JSONResponse(status_code=202, content={"run_id": run["id"], "status": "queued"})
+            return _error_response(501, "GRADE_REVIEW_NOT_IMPLEMENTED", "评分复核执行器尚未接入，未创建复核任务")
         except DomainNotFound as exc:
             return _domain_error(exc)
 
@@ -594,12 +602,12 @@ def create_app(
         return JSONResponse(status_code=200, content={"id": material.id, "name": material.name, "status": material.status, "current_version_id": material.current_version_id})
 
     @app.delete("/api/v1/learning-spaces/{space_id}", status_code=202)
-    async def delete_learning_space(space_id: str, payload: dict[str, Any] | None = None) -> JSONResponse:
+    def delete_learning_space(space_id: str, payload: dict[str, Any] | None = None) -> JSONResponse:
         try:
-            run = state.run("space_delete", {"type": "learning_space", "id": space_id})
             state.delete_space(space_id)
+            run = state.run("space_delete", {"type": "learning_space", "id": space_id})
             return JSONResponse(status_code=202, content={"run_id": run["id"], "status": "queued"})
-        except DomainNotFound as exc:
+        except (DomainNotFound, DomainConflict) as exc:
             return _domain_error(exc)
 
     @app.delete("/api/v1/materials/{material_id}", status_code=202)

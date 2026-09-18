@@ -54,3 +54,6 @@ docs/
 /_todo_live_demo.py
 /probe.py
 /test_probe_del.py
+
+# Workspace-local pytest temporary databases
+.pytest-tmp/

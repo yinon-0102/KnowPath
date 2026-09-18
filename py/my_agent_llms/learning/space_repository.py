@@ -11,7 +11,7 @@ from .errors import DomainConflict, DomainNotFound
 
 
 FIELDS = ("id", "name", "status", "goal", "target_date", "weekly_minutes", "bindings",
-          "topic_ids", "excluded_topic_ids", "space_version", "scope_version", "profile_version", "profile")
+          "topic_ids", "excluded_topic_ids", "space_version", "scope_version", "profile_version", "profile", "state_version")
 
 
 def _conflict():

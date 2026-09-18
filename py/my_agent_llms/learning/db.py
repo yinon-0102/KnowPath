@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 from datetime import datetime
 
-from sqlalchemy import JSON, Boolean, DateTime, Float, ForeignKey, Integer, String, Text, create_engine
+from sqlalchemy import JSON, Boolean, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint, create_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -103,6 +103,8 @@ class LearningSpaceRow(Base):
 
 class LearnerStateRow(Base):
     __tablename__ = "learner_states"
+    __table_args__ = (UniqueConstraint("space_id", "topic_id", name="uq_learner_space_topic"),)
+    context: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     space_id: Mapped[str] = mapped_column(ForeignKey("learning_spaces.id"), nullable=False, index=True)
     topic_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
@@ -119,6 +121,10 @@ class LearnerStateRow(Base):
 
 class AssessmentRow(Base):
     __tablename__ = "assessments"
+    snapshot: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    run_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    finalize_run_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    submission_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     space_id: Mapped[str] = mapped_column(ForeignKey("learning_spaces.id"), nullable=False, index=True)
     kind: Mapped[str] = mapped_column(String(32), nullable=False)
@@ -131,6 +137,8 @@ class AssessmentRow(Base):
 
 class AttemptRow(Base):
     __tablename__ = "attempts"
+    __table_args__ = (UniqueConstraint("assessment_id", "question_id", "answer_revision", name="uq_attempt_revision"),)
+    elapsed_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     assessment_id: Mapped[str] = mapped_column(ForeignKey("assessments.id"), nullable=False, index=True)
     question_id: Mapped[str] = mapped_column(String(128), nullable=False)
@@ -142,6 +150,7 @@ class AttemptRow(Base):
 
 class EvidenceRow(Base):
     __tablename__ = "evidence"
+    context: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     space_id: Mapped[str] = mapped_column(ForeignKey("learning_spaces.id"), nullable=False, index=True)
     topic_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
@@ -152,6 +161,16 @@ class EvidenceRow(Base):
     score: Mapped[float | None] = mapped_column(Float, nullable=True)
     error_tags: Mapped[list] = mapped_column(JSON, nullable=False)
     source_refs: Mapped[list] = mapped_column(JSON, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class StateResetRow(Base):
+    __tablename__ = "state_resets"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    space_id: Mapped[str] = mapped_column(ForeignKey("learning_spaces.id"), nullable=False, index=True)
+    topic_ids: Mapped[list] = mapped_column(JSON, nullable=False)
+    state_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 

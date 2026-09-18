@@ -1,8 +1,4 @@
-"""Learning runtime with durable space metadata and in-memory learning workflows.
-
-SpaceService owns space metadata; these dictionaries retain transient assessment,
-plan, evidence and session state until their repositories are implemented.
-"""
+"""Learning runtime wiring durable spaces/assessments and provisional plan/session workflows."""
 
 from __future__ import annotations
 
@@ -16,6 +12,9 @@ from .errors import DomainConflict, DomainNotFound
 from .runs import RunService
 from .spaces import SpaceService, topics_for_version
 from .space_repository import InMemorySpaceRepository, SqlAlchemySpaceRepository
+from .learning_repository import InMemoryLearningRepository, SqlAlchemyLearningRepository
+from .assessments import AssessmentService
+from .run_repository import SqlAlchemyRunRepository
 
 
 def _now() -> str:
@@ -28,21 +27,25 @@ def _id(prefix: str) -> str:
 
 class LearningState:
     def __init__(self, material_repository: MaterialRepository | None = None, *,
-                 run_service: RunService | None = None, space_service: SpaceService | None = None) -> None:
+                 run_service: RunService | None = None, space_service: SpaceService | None = None, question_generator=None) -> None:
         self.material_repository = material_repository or InMemoryMaterialRepository()
         self.material_service = MaterialService(self.material_repository)
-        self.run_service = run_service if run_service is not None else RunService()
+        uow = getattr(self.material_repository, "unit_of_work", None)
+        if run_service is None:
+            run_service = RunService(SqlAlchemyRunRepository(uow.engine, unit_of_work=uow) if uow
+                                     else self.material_repository.run_repository)
+        self.run_service = run_service
         if space_service is None:
             uow = getattr(self.material_repository, "unit_of_work", None)
             repository = SqlAlchemySpaceRepository(uow) if uow else InMemorySpaceRepository(self.material_repository)
             space_service = SpaceService(repository, self.material_repository)
         self.space_service = space_service
+        learning_repository = SqlAlchemyLearningRepository(uow) if uow else InMemoryLearningRepository(self.material_repository, self.run_service)
+        self.assessment_service = AssessmentService(learning_repository, space_service, self.run_service, question_generator)
         self.spaces: dict[str, dict[str, Any]] = {}
         self.topics: dict[str, dict[str, Any]] = {}
-        self.assessments: dict[str, dict[str, Any]] = {}
         self.plans: dict[str, dict[str, Any]] = {}
         self.sessions: dict[str, dict[str, Any]] = {}
-        self.evidence: dict[str, dict[str, Any]] = {}
         self.corrections: dict[str, dict[str, Any]] = {}
         self.exports: dict[str, dict[str, Any]] = {}
         self.changes: list[dict[str, Any]] = []
@@ -60,11 +63,8 @@ class LearningState:
         return self.run_service.request_cancel(run_id)
 
     def _hydrate_space(self, metadata):
-        # Only metadata is durable in this slice. Assessment state and active
-        # sessions remain owned by this runtime until their repositories land.
         space = self.spaces.setdefault(metadata["id"], {"state_version": 0, "state": {}, "active_session_id": None})
-        space.update(copy.deepcopy({key: value for key, value in metadata.items()
-                                    if key not in {"state", "state_version", "active_session_id"}}))
+        space.update(copy.deepcopy(metadata))
         return space
 
     def create_space(self, payload: dict[str, Any], *, idempotency_key: str | None = None) -> dict[str, Any]:
@@ -125,132 +125,26 @@ class LearningState:
             raise DomainNotFound("topic", topic_id)
         return {"nodes": [copy.deepcopy(topic)], "edges": [], "graph_version": topic["graph_version"]}
 
-    def create_assessment(self, space_id: str, payload: dict[str, Any]) -> dict[str, Any]:
-        space = self.get_space(space_id)
-        topics = self.topics_for_space(space_id)
-        count = max(1, min(int(payload.get("question_count", 5)), 10))
-        questions = []
-        for index in range(count):
-            topic = topics[index % len(topics)] if topics else {"id": "topic_general", "name": "基础知识", "source_refs": []}
-            questions.append(
-                {
-                    "id": _id("question"),
-                    "kind": "single_choice",
-                    "topic_id": topic["id"],
-                    "topic_revision_id": f"topicrev_{topic['id']}",
-                    "stem": f"关于 {topic['name']}，哪项描述最符合资料？",
-                    "options": [{"id": "A", "text": "正确描述"}, {"id": "B", "text": "无关描述"}],
-                    "source_refs": topic.get("source_refs", []),
-                    "difficulty": "easy",
-                    "answer_key": "A",
-                    "rubric_version": "objective-v1",
-                }
-            )
-        assessment = {
-            "id": _id("assessment"),
-            "space_id": space_id,
-            "kind": payload.get("kind", "diagnostic"),
-            "status": "open",
-            "topic_ids": [topic["id"] for topic in topics],
-            "questions": questions,
-            "attempts": [],
-            "finalized": False,
-            "result": None,
-            "created_at": _now(),
-        }
-        self.assessments[assessment["id"]] = assessment
-        run = self.run("assessment_generation", {"type": "assessment", "id": assessment["id"]})
-        assessment["run_id"] = run["id"]
-        return self._public_assessment(assessment)
+    def create_assessment(self, space_id, payload, *, idempotency_key=None, dispatch=None):
+        return self.assessment_service.create(space_id, payload, idempotency_key, dispatch=dispatch)
 
-    def _public_assessment(self, assessment: dict[str, Any]) -> dict[str, Any]:
-        result = copy.deepcopy(assessment)
-        for question in result.get("questions", []):
-            question.pop("answer_key", None)
-        result.pop("attempts", None)
-        return result
+    def get_assessment(self, assessment_id):
+        return self.assessment_service.get(assessment_id)
 
-    def get_assessment(self, assessment_id: str) -> dict[str, Any]:
-        assessment = self.assessments.get(assessment_id)
-        if assessment is None:
-            raise DomainNotFound("assessment", assessment_id)
-        return self._public_assessment(assessment)
+    def record_attempt(self, assessment_id, payload, *, idempotency_key=None):
+        return self.assessment_service.record(assessment_id, payload, idempotency_key)
 
-    def record_attempt(self, assessment_id: str, payload: dict[str, Any]) -> dict[str, Any]:
-        assessment = self.assessments.get(assessment_id)
-        if assessment is None:
-            raise DomainNotFound("assessment", assessment_id)
-        if assessment["finalized"]:
-            raise DomainConflict("ASSESSMENT_FINALIZED", "测验已经封存")
-        answers = payload.get("answers") or []
-        for item in answers:
-            existing = next((a for a in assessment["attempts"] if a["question_id"] == item.get("question_id")), None)
-            row = {"question_id": item.get("question_id"), "answer": item.get("answer"), "revision": int(item.get("expected_answer_revision", 0))}
-            if existing:
-                existing.update(row)
-            else:
-                assessment["attempts"].append(row)
-        return {
-            "attempt_id": _id("attempt"),
-            "status": "recorded",
-            "accepted_count": len(answers),
-            "next_question_id": next((q["id"] for q in assessment["questions"] if q["id"] not in {a["question_id"] for a in assessment["attempts"]}), None),
-        }
+    def finalize_assessment(self, assessment_id, payload):
+        return self.assessment_service.finalize(assessment_id, payload)
 
-    def finalize_assessment(self, assessment_id: str, payload: dict[str, Any]) -> dict[str, Any]:
-        assessment = self.assessments.get(assessment_id)
-        if assessment is None:
-            raise DomainNotFound("assessment", assessment_id)
-        if assessment["finalized"]:
-            return {"run_id": assessment["finalize_run_id"], "assessment_id": assessment_id, "status": "processing"}
-        answered = {item["question_id"]: item for item in assessment["attempts"]}
-        if not payload.get("allow_unanswered", False) and len(answered) < len(assessment["questions"]):
-            raise DomainConflict("ASSESSMENT_INCOMPLETE", "仍有未回答题目")
-        question_results = []
-        topic_scores: dict[str, list[float]] = {}
-        for question in assessment["questions"]:
-            answer = answered.get(question["id"])
-            if answer is None:
-                question_results.append({"question_id": question["id"], "verdict": "unverified", "score": None, "feedback": "未作答"})
-                continue
-            score = 1.0 if str(answer.get("answer", "")).strip().upper() == question["answer_key"] else 0.0
-            verdict = "correct" if score else "incorrect"
-            question_results.append({"question_id": question["id"], "verdict": verdict, "score": score, "feedback": "已按客观答案判分"})
-            topic_scores.setdefault(question["topic_id"], []).append(score)
-        space = self.get_space(assessment["space_id"])
-        topic_results = []
-        for topic_id, scores in topic_scores.items():
-            score = sum(scores) / len(scores)
-            state = space["state"].setdefault(topic_id, {"topic_id": topic_id, "evidence_ids": [], "error_tags": []})
-            state.update({"mastery_score": score, "score_validity": "current", "status": "mastered" if score >= 0.8 else "learning", "last_assessed_at": _now(), "state_version": space["state_version"] + 1, "policy_version": "mastery-v1", "evidence_count": len(scores)})
-            evidence_id = _id("evidence")
-            evidence = {"id": evidence_id, "space_id": space["id"], "topic_id": topic_id, "assessment_id": assessment_id, "kind": "objective_answer", "result": "correct" if score >= 0.5 else "incorrect", "score": score, "created_at": _now()}
-            self.evidence[evidence_id] = evidence
-            state["evidence_ids"].append(evidence_id)
-            topic_results.append({"topic_id": topic_id, "score": score, "verified_count": len(scores), "unverified_count": 0, "error_tags": []})
-        space["state_version"] += 1
-        result = {"assessment_id": assessment_id, "graded_at": _now(), "topic_results": topic_results, "question_results": question_results, "state_version": space["state_version"], "plan_replan_run_id": None}
-        assessment["finalized"] = True
-        assessment["status"] = "finalized"
-        assessment["result"] = result
-        run = self.run("assessment_finalize", {"type": "assessment", "id": assessment_id})
-        assessment["finalize_run_id"] = run["id"]
-        return {"run_id": run["id"], "assessment_id": assessment_id, "status": "processing"}
+    def assessment_result(self, assessment_id):
+        return self.assessment_service.result(assessment_id)
 
-    def assessment_result(self, assessment_id: str) -> dict[str, Any]:
-        assessment = self.assessments.get(assessment_id)
-        if assessment is None:
-            raise DomainNotFound("assessment", assessment_id)
-        if assessment["result"] is None:
-            raise DomainConflict("ASSESSMENT_NOT_READY", "测验尚未完成评分")
-        return copy.deepcopy(assessment["result"])
+    def get_state(self, space_id, **filters):
+        return self.assessment_service.state(space_id, **filters)
 
-    def get_state(self, space_id: str) -> dict[str, Any]:
-        space = self.get_space(space_id)
-        return {"space_id": space_id, "state_version": space["state_version"], "items": copy.deepcopy(list(space["state"].values()))}
-
-    def evidence_for(self, space_id: str, **_: Any) -> list[dict[str, Any]]:
-        return [copy.deepcopy(item) for item in self.evidence.values() if item["space_id"] == space_id]
+    def evidence_for(self, space_id, **filters):
+        return self.assessment_service.evidence(space_id, **filters)
 
     def create_plan(self, space_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         space = self.get_space(space_id)
@@ -317,6 +211,8 @@ class LearningState:
         if session is None:
             raise DomainNotFound("session", session_id)
         event = {"id": _id("event"), "type": payload.get("type"), "topic_id": payload.get("topic_id"), "question_id": payload.get("question_id"), "received_at": _now()}
+        if payload.get("type") == "request_hint" and payload.get("question_id"):
+            self.assessment_service.mark_assisted(session["space_id"], payload["question_id"])
         session["events"].append(event)
         return copy.deepcopy(event)
 
@@ -376,18 +272,19 @@ class LearningState:
         run = self.run("knowledge_update_apply", {"type": "learning_space", "id": space_id})
         return {"run_id": run["id"], "space_id": space_id, "space_version": new_version, "affected_topic_ids": [], "stale_state_count": 0, "plan_replan_run_id": None}
 
-    def reset_state(self, space_id: str, topic_ids: list[str], reason: str) -> dict[str, Any]:
-        space = self.get_space(space_id)
-        for topic_id in topic_ids:
-            space["state"].pop(topic_id, None)
-        space["state_version"] += 1
-        self.changes.append({"kind": "state_reset", "space_id": space_id, "topic_ids": topic_ids, "reason": reason, "created_at": _now()})
-        return self.get_state(space_id)
+    def reset_state(self, space_id, topic_ids, reason, *, expected_state_version, idempotency_key=None):
+        return self.assessment_service.reset(space_id, {"topic_ids": topic_ids, "reason": reason,
+            "expected_state_version": expected_state_version}, idempotency_key)
 
     def create_export(self, space_id: str) -> dict[str, Any]:
-        space = self.get_space(space_id)
+        with self.assessment_service.repository.transaction():
+            space = copy.deepcopy(self.get_space(space_id))
+            durable_state = self.get_state(space_id)
+            space["state"] = {item["topic_id"]: item for item in durable_state["items"]}
+            space["state_version"] = durable_state["state_version"]
+            evidence = self.evidence_for(space_id)
         export_id = _id("export")
-        payload = {"space": copy.deepcopy(space), "evidence": self.evidence_for(space_id), "created_at": _now()}
+        payload = {"space": copy.deepcopy(space), "evidence": evidence, "created_at": _now()}
         self.exports[export_id] = {"id": export_id, "space_id": space_id, "status": "ready", "payload": payload, "expires_at": _now()}
         run = self.run("export", {"type": "export", "id": export_id})
         return {"run_id": run["id"], "export_id": export_id, "status": "processing"}
@@ -399,10 +296,14 @@ class LearningState:
         return copy.deepcopy(export["payload"])
 
     def delete_space(self, space_id: str) -> dict[str, Any]:
-        self.get_space(space_id)
-        self.space_service.delete(space_id)
+        with self.assessment_service.repository.transaction():
+            self.space_service.repository.get(space_id)
+            if any(self.assessment_service.repository.exists(table, space_id=space_id)
+                   for table in ("assessments", "states", "evidence", "resets")):
+                raise DomainConflict("SPACE_HAS_LEARNING_HISTORY", "空间有学习记录，级联删除尚未实现")
+            self.space_service.delete(space_id)
         self.spaces.pop(space_id, None)
         return {"status": "succeeded", "space_id": space_id}
 
     def changes_for(self, space_id: str) -> list[dict[str, Any]]:
-        return [copy.deepcopy(item) for item in self.changes if item.get("space_id") == space_id]
+        return self.assessment_service.changes(space_id) + [copy.deepcopy(item) for item in self.changes if item.get("space_id") == space_id]

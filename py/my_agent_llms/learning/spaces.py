@@ -55,7 +55,9 @@ class SpaceService:
                 if not key or attempt == 2 or self.repository.replay(key, fingerprint) is None:
                     raise
             except DomainConflict as exc:
-                if key and exc.code == "VERSION_CONFLICT":
+                # A concurrent same-key command may have committed a terminal
+                # state since this transaction first checked its replay record.
+                if key:
                     replay = self.repository.replay(key, fingerprint)
                     if replay is not None:
                         return replay
@@ -84,7 +86,7 @@ class SpaceService:
                      "goal": payload.get("goal"), "target_date": payload.get("target_date"),
                      "weekly_minutes": payload.get("weekly_minutes"), "bindings": bindings,
                      "topic_ids": [], "excluded_topic_ids": [], "scope_version": 0,
-                     "space_version": 1, "profile_version": 1,
+                     "space_version": 1, "profile_version": 1, "state_version": 0,
                      "profile": {field: {"value": payload.get(field), "source": "explicit", "updated_at": timestamp}
                                  for field in ("goal", "weekly_minutes", "target_date")},
                      "created_at": timestamp, "updated_at": timestamp}
