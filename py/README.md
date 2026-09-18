@@ -252,6 +252,13 @@ uv run keel                  # try it
 
 See the design docs under `docs/superpowers/specs/` and `docs/superpowers/plans/` for architectural context. No strict code style guide yet — just use good judgment and consistent formatting.
 
+## Learning backend
+
+The first learning backend slice is exposed by `my_agent_llms.learning.main:app`.
+After installing dependencies, run it with `uvicorn my_agent_llms.learning.main:app`.
+The SQLAlchemy schema is created with `uv run alembic upgrade head`; local MySQL,
+Neo4j and Qdrant services are defined in `../infra/docker-compose.yml`.
+
 ---
 
 ## License

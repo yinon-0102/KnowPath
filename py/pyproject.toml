@@ -5,22 +5,33 @@ requires-python = ">=3.13"
 dependencies = [
     "anthropic>=0.96.0",
     "datetime>=6.0",
+    "fastapi>=0.115.0",
     "google-genai>=1.73.1",
     "google-search-results>=2.4.2",
+    "httpx>=0.28.0",
+    "alembic>=1.15.0",
     "load-dotenv>=0.1.0",
     "openai>=2.32.0",
     "optional>=0.0.1",
     "prompt-toolkit>=3.0.52",
+    "pypdf>=5.0.0",
+    "pymysql>=1.1.0",
+    "qdrant-client>=1.14.0",
+    "neo4j>=5.28.0",
     "pydantic>=2.13.2",
+    "python-multipart>=0.0.20",
     "pytest>=9.0.3",
     "python-dotenv>=1.2.2",
     "rich>=15.0.0",
     "serpapi>=1.0.2",
     "tiktoken>=0.13.0",
+    "sqlalchemy>=2.0.0",
+    "uvicorn>=0.34.0",
 ]
 
 [project.scripts]
 keel = "my_agent_llms.cli.app:main"
+keel-learning-db = "my_agent_llms.learning.db_cli:main"
 
 [build-system]
 requires = ["hatchling"]
