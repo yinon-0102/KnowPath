@@ -125,7 +125,7 @@ class SpaceService:
             for topic in topics_for_version(binding["material_id"], version):
                 topics[topic["id"]] = topic
                 slug = "".join(ch.lower() if ch.isalnum() else "_" for ch in topic["name"]).strip("_")
-                if slug:
+                if slug and len(space["bindings"]) == 1:
                     alias = f"topic_{slug}"
                     if alias not in topics:
                         alias_topic = copy.deepcopy(topic)

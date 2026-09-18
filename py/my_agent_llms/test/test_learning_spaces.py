@@ -254,3 +254,18 @@ def test_existing_knowledge_update_stub_keeps_version_in_repository(workspace):
         assert response.status_code == 202
         assert response.json()["space_version"] == 2
         assert client.get(path).json()["space_version"] == 2
+
+
+def test_bound_topics_keep_material_identity_without_duplicate_aliases(workspace):
+    factory, material_id, _ = workspace
+    app = factory()
+    with TestClient(app) as client:
+        uploaded = client.post("/api/v1/materials", files={"file": ("other.md", b"# Functions\n\nDifferent source.", "text/markdown")}, headers={"Idempotency-Key": "other"})
+        assert uploaded.status_code == 201
+        other_id = uploaded.json()["material"]["id"]
+        space = client.post("/api/v1/learning-spaces", json={"name": "Python", "material_ids": [material_id, other_id], "goal": "Understand functions", "weekly_minutes": 180}, headers={"Idempotency-Key": "multi-space"}).json()
+        topics = app.state.learning_state.topics_for_space(space["id"])
+        assert len(topics) == 2
+        assert len({topic["id"] for topic in topics}) == 2
+        assert {topic["source_refs"][0]["material_id"] for topic in topics} == {material_id, other_id}
+        assert all(len(topic["source_refs"]) == 1 for topic in topics)
