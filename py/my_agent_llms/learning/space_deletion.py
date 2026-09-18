@@ -4,6 +4,7 @@ from sqlalchemy import delete, select, or_
 from .db import (ExportRow, KnowledgeCorrectionRow, OutboxEventRow, IdempotencyRow,
                  RunRow, RunEventRow)
 from .errors import DomainConflict
+from .model_tasks import EVENTS as MODEL_EVENTS
 from .learning_repository import TABLES
 from .space_schemas import DeleteSpace
 from .spaces import SpaceService
@@ -40,11 +41,12 @@ class SpaceDeletionService:
             plans = self.repository.records("plans", space_id=space_id)
             sessions = self.repository.records("sessions", space_id=space_id)
             messages = self.repository.records("messages", space_id=space_id)
-            ids = {space_id} | {r["id"] for r in assessments + plans + sessions}
+            ids = {space_id} | {r["id"] for r in assessments + plans + sessions + messages}
             run_ids = {r[k] for r in assessments + plans for k in ("run_id", "finalize_run_id") if r.get(k)}
             run_ids.update(m["run_id"] for m in messages)
             for assessment in assessments:
                 run_ids.update(r["run_id"] for r in assessment.get("grade_reviews", []))
+            self._remove_owned_outbox(space_id, ids, run_ids)
             if self.uow is None:
                 self._memory(space_id, assessments, plans, sessions, ids, run_ids)
             else:
@@ -54,6 +56,23 @@ class SpaceDeletionService:
             return {"run_id": run["id"], "space_id": space_id, "status": "succeeded"}
 
         return self.commands._execute("space.delete", space_id, payload, None, change)
+
+    def _remove_owned_outbox(self, space_id, ids, run_ids):
+        # Domain owners are already locked. Inspect without locking other spaces'
+        # jobs, then lock/remove only this space's events before removing its Runs.
+        # Include model orphans by payload and knowledge.updated by aggregate_id.
+        owned = [row for row in self.repository.records("outbox", lock=False)
+                 if row["aggregate_id"] in ids or (row["event_type"] in MODEL_EVENTS
+                     and row["payload"].get("space_id") == space_id)]
+        for candidate in owned:
+            event = self.repository.get_record("outbox", candidate["id"])
+            if event["payload"].get("run_id"):
+                run_ids.add(event["payload"]["run_id"])
+            if self.uow is None:
+                self.repository.materials.assessment_data["outbox"].pop(event["id"], None)
+            else:
+                with self.uow.session() as session:
+                    session.execute(delete(OutboxEventRow).where(OutboxEventRow.id == event["id"]))
 
     @staticmethod
     def _filters(space_id, assessments, plans, sessions):

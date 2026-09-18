@@ -4,6 +4,7 @@ from __future__ import annotations
 import copy
 import json
 from hashlib import sha256
+from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, StrictInt, model_validator
 
@@ -166,6 +167,7 @@ class KnowledgeUpdateService:
                         continue
                     binding['topic_revision_ids'][tid] = (revision(old[tid]) if tid in old and tid not in affected else
                         digest([space_id, space['space_version'] + 1, tid, self._signature(topic)]))
+            previous_bindings = copy.deepcopy(space["bindings"])
             timestamp = now()
             space.update(bindings=bindings, space_version=space['space_version'] + 1,
                          scope_version=space['scope_version'] + 1, updated_at=timestamp)
@@ -178,8 +180,10 @@ class KnowledgeUpdateService:
                         item.update(score_validity='stale', status='needs_review', state_version=space['state_version'])
                         self.repository.put_record('states', item)
                         stale_count += 1
+            invalidated_plan_ids = []
             for plan in self.repository.records('plans', space_id=space_id):
                 if plan['status'] != 'superseded':
+                    invalidated_plan_ids.append(plan['id'])
                     plan.setdefault('config', {})['invalidated_topic_ids'] = sorted(set(plan.get('config', {}).get('invalidated_topic_ids', [])) | set(affected))
                     plan.update(status='needs_replan', version=plan['version'] + 1)
                     self.repository.put_record('plans', plan)
@@ -187,6 +191,14 @@ class KnowledgeUpdateService:
             run = self.runs.create('knowledge_update_apply', status='running')
             result = {'run_id': run['id'], 'space_id': space_id, 'space_version': space['space_version'],
                       'affected_topic_ids': affected, 'stale_state_count': stale_count, 'plan_replan_run_id': None}
+            event_id = str(uuid4())
+            self.repository.put_record('outbox', {
+                'id': event_id, 'event_type': 'knowledge.updated', 'aggregate_type': 'learning_space',
+                'aggregate_id': space_id, 'status': 'completed', 'attempts': 0,
+                'lease_token': None, 'lease_until': None, 'available_at': None, 'created_at': timestamp,
+                'payload': {**result, 'id': event_id, 'kind': 'knowledge_updated', 'created_at': timestamp,
+                    'state_version': space['state_version'], 'previous_bindings': previous_bindings,
+                    'bindings': copy.deepcopy(bindings), 'invalidated_plan_ids': sorted(invalidated_plan_ids)}})
             self.runs.complete(run['id'], {'type': 'learning_space', 'id': space_id, **result})
             return result
         return self.commands._execute('knowledge_updates.apply', space_id, payload, key, change)

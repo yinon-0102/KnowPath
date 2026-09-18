@@ -20,6 +20,7 @@ from .messages import MessageService
 from .graph_reconciliation import GraphReconciliationService
 from .corrections import CorrectionService
 from .knowledge_updates import KnowledgeUpdateService
+from .graph_queries import GraphQueryService
 from .graph_repository import InMemoryGraphRepository, SqlAlchemyGraphRepository
 
 
@@ -42,6 +43,9 @@ class LearningState:
         learning_repository = SqlAlchemyLearningRepository(uow) if uow else InMemoryLearningRepository(self.material_repository, self.run_service)
         graph_repository = SqlAlchemyGraphRepository(uow) if uow else InMemoryGraphRepository(self.material_repository, self.run_service)
         self.graph_service = GraphReconciliationService(graph_repository, self.material_repository, self.run_service)
+        from .material_deletion import MaterialDeletionService
+        self.material_deletion_service = MaterialDeletionService(graph_repository, space_service, self.graph_service, self.run_service)
+        self.graph_queries = GraphQueryService(self.graph_service)
         self.space_service.graphs = self.graph_service
         self.correction_service = CorrectionService(self.graph_service, self.space_service)
         self.knowledge_update_service = KnowledgeUpdateService(learning_repository, space_service, self.graph_service, self.run_service)
@@ -54,6 +58,9 @@ class LearningState:
         self.changes: list[dict[str, Any]] = []
         self.plan_sessions = PlanSessionService(learning_repository, space_service, self.run_service, self.assessment_service, self.plans, self.sessions)
         self.export_service = ExportService(learning_repository, space_service, self.assessment_service, self.plan_sessions, self.run_service)
+
+    def delete_material(self, material_id, payload):
+        return self.material_deletion_service.delete(material_id, payload)
 
     def run(self, kind: str, result_ref: dict[str, str] | None = None, *, status: str = "succeeded") -> dict[str, Any]:
         return self.run_service.create(kind, result_ref, status=status)
@@ -73,10 +80,10 @@ class LearningState:
         space["active_session_id"] = self.plan_sessions.active_session_id(metadata["id"])
         return space
 
-    def create_space(self, payload: dict[str, Any], *, idempotency_key: str | None = None) -> dict[str, Any]:
+    def create_space(self, payload: dict[str, Any], *, idempotency_key: str | None = None, require_published=False) -> dict[str, Any]:
         # Committed responses replay until deletion replaces them with tombstones.
         # Topics and runtime state are hydrated on demand from pinned bindings.
-        return self.space_service.create(payload, idempotency_key)
+        return self.space_service.create(payload, idempotency_key, require_published=require_published)
 
     def list_spaces(self) -> list[dict[str, Any]]:
         return [copy.deepcopy(self._hydrate_space(space)) for space in self.space_service.list()]
@@ -120,19 +127,11 @@ class LearningState:
         return [copy.deepcopy(topic) for topic in topics
                 if (not selected or topic["id"] in selected) and topic["id"] not in excluded]
 
-    def get_topic_graph(self, topic_id: str) -> dict[str, Any]:
-        topic = self.topics.get(topic_id)
-        if topic is None:
-            for space in self.space_service.list():
-                for restored in self.space_service.bound_topics(space):
-                    self.topics[restored["id"]] = restored
-            topic = self.topics.get(topic_id)
-        if topic is None:
-            raise DomainNotFound("topic", topic_id)
-        return {"nodes": [copy.deepcopy(topic)], "edges": [], "graph_version": topic["graph_version"]}
+    def get_topic_graph(self, topic_id: str, *, depth=1, include_sources=True) -> dict[str, Any]:
+        return self.graph_queries.topic_graph(topic_id, depth=depth, include_sources=include_sources)
 
-    def create_assessment(self, space_id, payload, *, idempotency_key=None, dispatch=None):
-        return self.assessment_service.create(space_id, payload, idempotency_key, dispatch=dispatch)
+    def create_assessment(self, space_id, payload, *, idempotency_key=None, dispatch=None, durable=False):
+        return self.assessment_service.create(space_id, payload, idempotency_key, dispatch=dispatch, durable=durable)
 
     def get_assessment(self, assessment_id):
         return self.assessment_service.get(assessment_id)
@@ -170,8 +169,8 @@ class LearningState:
     def finish_session(self, session_id: str) -> dict[str, Any]:
         return self.plan_sessions.finish_session(session_id)
 
-    def send_message(self, space_id: str, payload: dict[str, Any], *, idempotency_key=None, dispatch=None) -> dict[str, Any]:
-        return self.message_service.send(space_id, payload, idempotency_key, dispatch=dispatch)
+    def send_message(self, space_id: str, payload: dict[str, Any], *, idempotency_key=None, dispatch=None, durable=False) -> dict[str, Any]:
+        return self.message_service.send(space_id, payload, idempotency_key, dispatch=dispatch, durable=durable)
 
     def create_correction(self, space_id, payload, *, idempotency_key=None):
         return self.correction_service.create(space_id, payload, idempotency_key)
@@ -212,4 +211,5 @@ class LearningState:
         return result
 
     def changes_for(self, space_id: str) -> list[dict[str, Any]]:
-        return self.assessment_service.changes(space_id) + [copy.deepcopy(item) for item in self.changes if item.get("space_id") == space_id]
+        from .timeline import changes_for
+        return changes_for(self, space_id)

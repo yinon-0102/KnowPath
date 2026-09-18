@@ -7,6 +7,7 @@ from .errors import DomainConflict, DomainNotFound
 from .message_schemas import SendMessage
 from .message_generation import DashScopeAnswerGenerator, MessageGenerationError, validate_answer
 from .runs import ACTIVE_STATUSES
+from .model_tasks import ModelTaskWorker, TRANSIENT_ERRORS, LeaseLost, enqueue
 from .spaces import SpaceService, now
 from .vector_retrieval import KeywordRetriever, RetrievalError, configured_retriever
 
@@ -22,7 +23,7 @@ class MessageService:
         self.commands = SpaceService(repository, spaces.materials)
         self.retriever = retriever if retriever is not None else configured_retriever()
 
-    def send(self, space_id, payload, key=None, *, dispatch=None):
+    def send(self, space_id, payload, key=None, *, dispatch=None, durable=False):
         payload = SendMessage.model_validate(payload).model_dump()
         created = []
         def prepare():
@@ -44,7 +45,7 @@ class MessageService:
                     history.extend([{"role": "user", "content": message["message"]},
                                     {"role": "assistant", "content": message["response"]["text"]}])
             hint = self._hint(assessments, payload["message"])
-            run = self.runs.create("message", status="running")
+            run = self.runs.create("message", status="queued" if durable else "running")
             identifier = uid()
             snapshot = {"message": payload["message"], "sources": sources, "history": history[-10:],
                         "scope_version": space["scope_version"], "bindings": copy.deepcopy(space["bindings"]), "hint": hint}
@@ -52,13 +53,17 @@ class MessageService:
                       "run_id": run["id"], "status": "pending", "message": payload["message"],
                       "sequence": len(previous) + 1, "snapshot": snapshot, "response": None, "created_at": now()}
             self.repository.put_record("messages", record)
-            created.append((identifier, run["id"]))
-            return {"run_id": run["id"], "session_id": conversation["id"], "status": "running"}
+            event_id = enqueue(self.repository, "message", record) if durable else None
+            created.append((identifier, run["id"], event_id))
+            return {"run_id": run["id"], "session_id": conversation["id"], "status": "queued" if durable else "running"}
         response = self.commands._execute("message.send", space_id, payload, key, prepare)
         # A losing same-key transaction can leave a local preparation record.
         # Only dispatch the preparation whose Run was actually committed.
         if created and created[-1][1] == response["run_id"]:
-            if dispatch is None:
+            if durable:
+                if dispatch is not None:
+                    dispatch(ModelTaskWorker(messages=self).run_once, created[-1][2])
+            elif dispatch is None:
                 self.generate(created[-1][0])
             else:
                 dispatch(self.generate, created[-1][0])
@@ -128,13 +133,15 @@ class MessageService:
             self.repository.put_record("assessments", assessment)
         return bool(matched)
 
-    def generate(self, identifier):
+    def generate(self, identifier, *, job=None):
         try:
             initial = self.repository.get_record("messages", identifier, lock=False)
             with self.repository.transaction():
                 self.spaces.repository.get(initial["space_id"])
                 current = self.repository.get_record("messages", identifier)
-                if current["status"] != "pending":
+                if job is not None:
+                    job.check()
+                if current["status"] not in ({"pending", "generating"} if job else {"pending"}):
                     return
                 if self._terminal(current):
                     return
@@ -158,7 +165,7 @@ class MessageService:
                     or len({row["chunk_id"] for row in selected}) != len(selected)):
                 raise RetrievalError("RETRIEVAL_VALIDATION_FAILED")
             snapshot = {**snapshot, "sources": copy.deepcopy(selected)}
-            if not self._record_sources(identifier, snapshot):
+            if not self._record_sources(identifier, snapshot, job=job):
                 return
             if snapshot["hint"]:
                 raw = {"text": "先在引用资料中定位相关概念，列出题目的已知条件，再逐步检查自己的推理。这里提供学习提示，不直接给出活动测验答案。",
@@ -166,6 +173,8 @@ class MessageService:
             else:
                 raw = self.generator.generate(copy.deepcopy(snapshot))
             text, citations = validate_answer(raw, snapshot["sources"])
+        except LeaseLost:
+            raise
         except (MessageGenerationError, RetrievalError) as exc:
             error = exc.code
         except Exception:
@@ -176,11 +185,14 @@ class MessageService:
             with self.repository.transaction():
                 space = self.spaces.repository.get(initial["space_id"])
                 current = self.repository.get_record("messages", identifier)
+                if job is not None:
+                    job.check()
                 if current["status"] != "generating" or self._terminal(current):
                     return
                 error = self._context_error(space, current, snapshot) or error
                 if error:
-                    public = {"MODEL_UNAVAILABLE": "对话模型暂时不可用", "MESSAGE_VALIDATION_FAILED": "回答未通过来源校验",
+                    public = {"UNSUPPORTED_MODEL": "当前模型不支持所需能力", "RATE_LIMITED": "模型请求过于频繁，请稍后重试",
+                              "MODEL_UNAVAILABLE": "对话模型暂时不可用", "MESSAGE_VALIDATION_FAILED": "回答未通过来源校验",
                               "STALE_LEARNING_CONTEXT": "学习范围已变化，请重新发送消息", "SESSION_FINISHED": "学习会话已经结束",
                               "EMBEDDING_UNAVAILABLE": "向量模型暂时不可用", "EMBEDDING_INVALID_RESPONSE": "向量模型返回无效数据",
                               "EMBEDDING_INPUT_INVALID": "检索文本不符合向量模型要求",
@@ -189,8 +201,13 @@ class MessageService:
                               "RETRIEVAL_VALIDATION_FAILED": "检索结果未通过来源校验"}
                     if error not in public:
                         error = "MODEL_UNAVAILABLE"
-                    self.runs.fail(current["run_id"], {"code": error, "message": public.get(error, "对话生成失败"),
-                        "details": {}, "retryable": error in {"MODEL_UNAVAILABLE", "EMBEDDING_UNAVAILABLE", "VECTOR_UNAVAILABLE", "VECTOR_INDEX_NOT_READY"}})
+                    failure = {"code": error, "message": public.get(error, "对话生成失败"),
+                               "details": {}, "retryable": error in TRANSIENT_ERRORS}
+                    if job is not None and job.retry(failure):
+                        current["status"] = "pending"
+                        self.repository.put_record("messages", current)
+                        return
+                    self.runs.fail(current["run_id"], failure)
                     current["status"] = "failed"
                 else:
                     response = {"message_id": identifier, "session_id": current["conversation_id"], "text": text, "citations": citations}
@@ -199,7 +216,11 @@ class MessageService:
                     self.runs.append_event(current["run_id"], "message.completed", response)
                     self.runs.complete(current["run_id"], {"type": "message", "id": identifier, "space_id": current["space_id"]})
                     current.update(status="completed", response=response)
+                    from .profile_candidates import infer_candidates
+                    current["snapshot"]["profile_candidates"] = infer_candidates(current)
                 self.repository.put_record("messages", current)
+                if job is not None:
+                    job.settle()
         except DomainNotFound:
             return  # A deleted space must never be recreated by a late result.
 
@@ -213,12 +234,14 @@ class MessageService:
                 return "SESSION_FINISHED"
         return None
 
-    def _record_sources(self, identifier, snapshot):
+    def _record_sources(self, identifier, snapshot, *, job=None):
         try:
             initial = self.repository.get_record("messages", identifier, lock=False)
             with self.repository.transaction():
                 space = self.spaces.repository.get(initial["space_id"])
                 current = self.repository.get_record("messages", identifier)
+                if job is not None:
+                    job.check()
                 if current["status"] != "generating" or self._terminal(current):
                     return False
                 error = self._context_error(space, current, snapshot)

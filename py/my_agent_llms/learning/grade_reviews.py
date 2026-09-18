@@ -21,6 +21,7 @@ def review_grade(service, assessment_id, payload, key=None):
             raise DomainNotFound("question", payload["question_id"])
         space = service.spaces.repository.get(assessment["space_id"])
         result = deepcopy(assessment["result"])
+        assessment["snapshot"].setdefault("original_graded_result", deepcopy(result))
         previous_result = next(q for q in result["question_results"] if q["question_id"] == question["id"])
         old = service.repository.get_record("evidence", previous_result["evidence_id"])
         # Never select a new answer revision or fetch a regenerated question.
@@ -68,6 +69,7 @@ def review_grade(service, assessment_id, payload, key=None):
         assessment["result"] = result
         assessment.setdefault("grade_reviews", []).append({"id": review_id, "run_id": run["id"],
             "question_id": question["id"], "reason": payload["reason"], "created_at": timestamp,
+            "state_version": version, "topic_results": deepcopy(result["topic_results"]),
             "previous_result": previous_result, "result": reviewed,
             "replaced_evidence_id": old["id"], "evidence_id": replacement["id"]})
         service.repository.put_record("assessments", assessment)

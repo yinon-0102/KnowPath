@@ -1,4 +1,4 @@
-"""Fenced graph.prepare consumer. SQL transactions never enclose external I/O."""
+"""Fenced graph.prepare consumer; preparers separately fence external writes."""
 from __future__ import annotations
 
 import copy
@@ -103,6 +103,12 @@ class GraphWorker:
                 if self._cancelled(event, revision):
                     return False
                 event["lease_until"] = (self.clock() + timedelta(seconds=self.lease_seconds)).isoformat()
+                # Journal the destination before I/O, including partially successful attempts.
+                backend = getattr(getattr(self.preparer, "vectors", None), "backend", None)
+                collection = getattr(backend, "collection", None)
+                if collection:
+                    event["payload"]["external_collections"] = sorted(set(
+                        event["payload"].get("external_collections", [])) | {collection})
                 self.repository.put_record("outbox", event)
                 return True
         except DomainNotFound:

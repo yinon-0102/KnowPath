@@ -194,10 +194,10 @@ class RunService:
             raise EventHistoryExpired(run_id)
         return events
 
-    def recover_interrupted(self, *, exclude_kinds=()) -> int:
+    def recover_interrupted(self, *, exclude_kinds=(), exclude_ids=()) -> int:
         """Call once at startup, before admitting work, in the single-process runtime."""
         ids = [run_id for run_id in self.repository.active_ids()
-               if self.get(run_id)["kind"] not in exclude_kinds]
+               if run_id not in exclude_ids and self.get(run_id)["kind"] not in exclude_kinds]
         for run_id in ids:
             self.fail(run_id, {"code": "RUN_INTERRUPTED", "message": "服务重启，任务已中断",
                                "details": {}, "retryable": True})

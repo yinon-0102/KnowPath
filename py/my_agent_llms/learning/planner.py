@@ -432,6 +432,8 @@ class PlanSessionService:
             # All writes, including assisted, roll back if the session rejects the event.
             if event_type == "request_hint" and payload.get("question_id"):
                 self.assessments.mark_assisted(space_id, payload["question_id"])
+            elif event_type == "request_hint":
+                self.assessments.mark_topic_assisted(space_id, payload.get("topic_id"))
             space = self.spaces.repository.get(space_id)
             if self.sql:
                 row = self._find_session_sql(session_id, lock=True)

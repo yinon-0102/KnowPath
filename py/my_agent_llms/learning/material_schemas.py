@@ -1,7 +1,7 @@
 """Strict contracts for material metadata commands."""
 from typing import Literal
-from pydantic import model_validator
-from .space_schemas import Contract, Name, Version
+from pydantic import StrictBool, model_validator
+from .space_schemas import Contract, DeleteSpace, Name, Version
 
 
 class UpdateMaterial(Contract):
@@ -15,3 +15,7 @@ class UpdateMaterial(Contract):
         if not fields or any(getattr(self, field) is None for field in fields):
             raise ValueError("provide non-null name or archived status")
         return self
+
+
+class DeleteMaterial(DeleteSpace):
+    cascade: StrictBool = False

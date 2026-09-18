@@ -211,7 +211,7 @@ def test_material_deletion_during_preparation_discards_receipt(graph_workspace):
         def prepare(self, manifest, heartbeat):
             receipt = super().prepare(manifest, heartbeat)
             with TestClient(create_app(service=state.material_service, run_service=state.run_service)) as client:
-                assert client.delete(f"/api/v1/materials/{upload.material.id}").status_code == 202
+                assert client.request("DELETE", f"/api/v1/materials/{upload.material.id}", json={"expected_version": 1, "confirm": True}).status_code == 202
             return receipt
     worker(state, Deleting()).run_once(event_id(state, staged))
     assert state.get_run(staged["run_id"])["status"] == "cancelled"

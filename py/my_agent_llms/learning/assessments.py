@@ -15,6 +15,8 @@ from .assessment_grading import grade_answer
 from .grade_reviews import review_grade
 from .question_generation import DashScopeQuestionGenerator, QuestionGenerationError, validate_questions
 from .spaces import SpaceService, now
+from .source_access import apply_source_assistance
+from .model_tasks import ModelTaskWorker, TRANSIENT_ERRORS, enqueue
 
 
 def uid():
@@ -49,7 +51,7 @@ class AssessmentService:
                 result[topic_id] = max(result.get(topic_id, 0), reset["state_version"])
         return result
 
-    def create(self, space_id, payload, key=None, *, dispatch=None):
+    def create(self, space_id, payload, key=None, *, dispatch=None, durable=False):
         payload = CreateAssessment.model_validate(payload).model_dump(exclude_none=True)
         created = []
         def prepare():
@@ -66,7 +68,7 @@ class AssessmentService:
                     version = self.spaces.materials.get_version(ref["material_version_id"])
                     texts.extend(c.text for c in version.chunks if c.id == ref["chunk_id"])
                 topic["source_text"] = "\n\n".join(texts)
-            run = self.runs.create("assessment_generation", status="running")
+            run = self.runs.create("assessment_generation", status="queued" if durable else "running")
             assessment = {"id": uid(), "space_id": space_id, "kind": payload["kind"],
                 "status": "generating", "topic_ids": requested, "questions": [], "result": None,
                 "run_id": run["id"], "finalize_run_id": None, "submission_id": None,
@@ -75,17 +77,21 @@ class AssessmentService:
                     "epochs": self._epochs(space_id), "request": payload,
                     "assessment_policy_version": "assessment-v1"}}
             self.repository.put_record("assessments", assessment)
-            created.append(assessment["id"])
+            event_id = enqueue(self.repository, "assessment", assessment) if durable else None
+            created.append((assessment["id"], event_id))
             return self.public(assessment)
         response = self._execute("assessment.create", space_id, payload, key, prepare)
-        if created and response["id"] in created:
-            if dispatch is None:
+        if created and response["id"] == created[-1][0]:
+            if durable:
+                if dispatch is not None:
+                    dispatch(ModelTaskWorker(assessments=self).run_once, created[-1][1])
+            elif dispatch is None:
                 self.generate(response["id"])
             else:
                 dispatch(self.generate, response["id"])
         return response
 
-    def generate(self, assessment_id):
+    def generate(self, assessment_id, *, job=None):
         try:
             assessment = self.repository.get_record("assessments", assessment_id)
         except DomainNotFound:
@@ -98,7 +104,9 @@ class AssessmentService:
             raw = self.generator.generate(snapshot["topics"], snapshot["request"])
             questions = validate_questions(raw, snapshot["topics"], snapshot["request"])
         except QuestionGenerationError as exc:
-            error = {"code": exc.code, "message": str(exc), "details": {}, "retryable": exc.code == "MODEL_UNAVAILABLE"}
+            error = {"code": exc.code, "message": str(exc), "details": {}, "retryable": exc.code in TRANSIENT_ERRORS}
+        except Exception:
+            error = {"code": "MODEL_UNAVAILABLE", "message": "The question generation model is unavailable.", "details": {}, "retryable": True}
         with self.repository.transaction():
             try:
                 # Match answer, message and deletion commands: assessment -> space.
@@ -106,6 +114,8 @@ class AssessmentService:
                 space = self.spaces.repository.get(current["space_id"])
             except DomainNotFound:
                 return  # Discard output generated while the space was deleted.
+            if job is not None:
+                job.check()
             if current["status"] != "generating":
                 return
             run = self.runs.get(current["run_id"])
@@ -115,15 +125,20 @@ class AssessmentService:
             elif run["status"] != "running":
                 current["status"] = "failed"
             elif error:
+                if job is not None and job.retry(error):
+                    return
                 self.runs.fail(run["id"], error)
                 current["status"] = "failed"
             elif space["bindings"] != snapshot["bindings"]:
                 current.update(status="stale", questions=questions)
                 self.runs.fail(run["id"], {"code": "STALE_INPUT", "message": "生成期间空间知识绑定已变化，结果仅供历史查看", "details": {}, "retryable": False})
             else:
+                apply_source_assistance(questions, current["snapshot"])
                 current.update(status="ready", questions=questions)
                 self.runs.complete(run["id"], {"type": "assessment", "id": assessment_id})
             self.repository.put_record("assessments", current)
+            if job is not None:
+                job.settle()
 
     def public(self, assessment):
         snapshot = assessment["snapshot"]
@@ -292,6 +307,27 @@ class AssessmentService:
                 for item in items:
                     item["evidence"] = [evidence[eid] for eid in item["evidence_ids"] if eid in evidence]
             return {"space_id": space_id, "state_version": space["state_version"], "items": items}
+
+    def mark_topic_assisted(self, space_id, topic_id=None):
+        """Fence current questions and in-flight generation before recording a hint."""
+        with self.repository.transaction():
+            candidates = self.repository.records("assessments", space_id=space_id, lock=False)
+            for candidate in sorted(candidates, key=lambda item: item["id"]):
+                if candidate["status"] not in {"generating", "ready", "in_progress"}:
+                    continue
+                assessment = self.repository.get_record("assessments", candidate["id"])
+                if assessment["status"] not in {"generating", "ready", "in_progress"}:
+                    continue
+                if assessment["status"] == "generating" and self.runs.get(assessment["run_id"])["status"] in {"failed", "cancelled"}:
+                    continue
+                snapshot = assessment["snapshot"]
+                if topic_id is None:
+                    snapshot["all_topics_assisted"] = True
+                else:
+                    snapshot["consulted_topic_ids"] = sorted(set(snapshot.get("consulted_topic_ids", [])) | {topic_id})
+                from .source_access import apply_source_assistance
+                apply_source_assistance(assessment["questions"], snapshot)
+                self.repository.put_record("assessments", assessment)
 
     def mark_assisted(self, space_id, question_id):
         # Locate without taking every assessment lock; then lock only its owner.

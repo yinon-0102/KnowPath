@@ -10,6 +10,7 @@ from .db import create_db_engine
 from .graph_preparation import configured_graph_preparer
 from .graph_worker import GraphWorker
 from .material_ingest_worker import MaterialParseWorker
+from .material_deletion import MaterialDeletionService, MaterialDeletionWorker, ExternalMaterialCleaner
 from .repositories import SqlAlchemyMaterialRepository
 from .state import LearningState
 
@@ -29,9 +30,11 @@ def main(argv=None):
         preparer = configured_graph_preparer(state.material_repository)
         parse_worker = MaterialParseWorker(state.graph_service)
         worker = GraphWorker(state.graph_service, preparer)
+        deletion = MaterialDeletionWorker(MaterialDeletionService(state.graph_service.repository,
+            state.space_service, state.graph_service, state.run_service), ExternalMaterialCleaner(preparer))
         while True:
             try:
-                handled = worker.run_once() or parse_worker.run_once()
+                handled = deletion.run_once() or worker.run_once() or parse_worker.run_once()
             except Exception:
                 print("GRAPH_WORKER_STORAGE_UNAVAILABLE", file=sys.stderr)
                 if args.once:
