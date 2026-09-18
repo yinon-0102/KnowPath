@@ -48,7 +48,7 @@ def test_empty_database_upgrade_matches_current_schema(migration_database):
     config, engine = migration_database
     command.upgrade(config, "head")
     with engine.connect() as connection:
-        assert connection.scalar(sa.text("SELECT version_num FROM alembic_version")) == "0006_exports"
+        assert connection.scalar(sa.text("SELECT version_num FROM alembic_version")) == "0007_material_version"
         context = MigrationContext.configure(connection, opts={"compare_type": True})
         assert compare_metadata(context, Base.metadata) == []
     assert "run_events" in sa.inspect(engine).get_table_names()
@@ -127,7 +127,7 @@ def test_exports_upgrade_and_downgrade_preserve_existing_data(migration_database
     config, engine = migration_database
     command.upgrade(config, "0005_plans_sessions")
     _seed_run(engine)
-    command.upgrade(config, "0006_exports")
+    command.upgrade(config, "head")
     assert "learning_exports" in sa.inspect(engine).get_table_names()
     _assert_original_run(engine)
     with engine.connect() as connection:
@@ -135,3 +135,19 @@ def test_exports_upgrade_and_downgrade_preserve_existing_data(migration_database
     command.downgrade(config, "0005_plans_sessions")
     assert "learning_exports" not in sa.inspect(engine).get_table_names()
     _assert_original_run(engine)
+
+
+def test_material_version_backfill_preserves_existing_rows(migration_database):
+    from datetime import datetime
+    config, engine = migration_database
+    command.upgrade(config, "0006_exports")
+    table = sa.Table("materials", sa.MetaData(), autoload_with=engine)
+    with engine.begin() as connection:
+        connection.execute(table.insert().values(id="existing-material", name="Notes", type="md", status="archived",
+            current_version_id=None, size_bytes=42, created_at=datetime(2026, 9, 18), updated_at=datetime(2026, 9, 18)))
+    command.upgrade(config, "head")
+    with engine.connect() as connection:
+        assert connection.execute(sa.text("SELECT name, status, size_bytes, version FROM materials")).one() == ("Notes", "archived", 42, 1)
+    command.downgrade(config, "0006_exports")
+    with engine.connect() as connection:
+        assert connection.execute(sa.text("SELECT name, status, size_bytes FROM materials")).one() == ("Notes", "archived", 42)

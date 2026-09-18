@@ -77,6 +77,8 @@ class SpaceService:
                 material = self.materials.get_material(material_id)
                 if material is None:
                     raise DomainNotFound("material", material_id)
+                if material.status == "archived":
+                    raise DomainConflict("MATERIAL_ARCHIVED", "归档资料不能绑定到新空间", {"material_id": material_id})
                 version = self.materials.get_version(material.current_version_id)
                 if version is None or version.status != "ready":
                     raise DomainConflict("MATERIAL_NOT_READY", "资料还没有可用版本")

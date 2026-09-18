@@ -70,7 +70,7 @@ def workspace(request, tmp_path):
                 connection.execute(delete(AttemptRow).where(AttemptRow.assessment_id.in_(assessment_ids)))
                 connection.execute(delete(AssessmentRow).where(AssessmentRow.space_id == space["id"]))
                 connection.execute(delete(LearningSpaceRow).where(LearningSpaceRow.id == space["id"]))
-                connection.execute(delete(IdempotencyRow).where(IdempotencyRow.key.startswith(label)))
+                connection.execute(delete(IdempotencyRow).where((IdempotencyRow.key.startswith(label)) | (IdempotencyRow.resource_id == material.material.id)))
                 versions = select(MaterialVersionRow.id).where(MaterialVersionRow.material_id == material.material.id)
                 connection.execute(delete(SourceChunkRow).where(SourceChunkRow.material_version_id.in_(versions)))
                 connection.execute(delete(MaterialVersionRow).where(MaterialVersionRow.material_id == material.material.id))

@@ -13,6 +13,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, StreamingResponse, Response
 
 from .config import LearningSettings
+from .material_schemas import UpdateMaterial
 from .ingestion import MaterialIngestionService
 from .repositories import SqlAlchemyMaterialRepository
 from .run_repository import SqlAlchemyRunRepository
@@ -130,6 +131,7 @@ def create_app(
                     "name": result.material.name,
                     "type": result.material.type,
                     "status": result.material.status,
+                    "version": result.material.version,
                     "current_version_id": result.material.current_version_id,
                     "size_bytes": result.material.size_bytes,
                     "created_at": result.material.created_at.isoformat(),
@@ -157,6 +159,7 @@ def create_app(
                     "name": material.name,
                     "type": material.type,
                     "status": material.status,
+                    "version": material.version,
                     "current_version_id": material.current_version_id,
                     "size_bytes": material.size_bytes,
                     "created_at": material.created_at.isoformat(),
@@ -243,6 +246,7 @@ def create_app(
                     "name": material.name,
                     "type": material.type,
                     "status": material.status,
+                    "version": material.version,
                     "current_version_id": material.current_version_id,
                     "size_bytes": material.size_bytes,
                     "created_at": material.created_at.isoformat(),
@@ -594,15 +598,16 @@ def create_app(
             return _domain_error(exc)
 
     @app.patch("/api/v1/materials/{material_id}")
-    async def update_material(material_id: str, payload: dict[str, Any]) -> JSONResponse:
-        material = service.repository.get_material(material_id)
-        if material is None:
-            return _error_response(404, "RESOURCE_NOT_FOUND", "资料不存在", {"material_id": material_id})
-        if "name" in payload:
-            material.name = str(payload["name"])[:100]
-        if "status" in payload:
-            material.status = payload["status"]
-        return JSONResponse(status_code=200, content={"id": material.id, "name": material.name, "status": material.status, "current_version_id": material.current_version_id})
+    def update_material(material_id: str, payload: UpdateMaterial) -> JSONResponse:
+        try:
+            material = service.update(material_id, payload.model_dump(exclude_unset=True))
+            return JSONResponse(status_code=200, content={
+                "id": material.id, "name": material.name, "type": material.type,
+                "status": material.status, "version": material.version,
+                "current_version_id": material.current_version_id, "size_bytes": material.size_bytes,
+                "created_at": material.created_at.isoformat(), "updated_at": material.updated_at.isoformat()})
+        except (DomainNotFound, DomainConflict) as exc:
+            return _domain_error(exc)
 
     @app.delete("/api/v1/learning-spaces/{space_id}", status_code=202)
     def delete_learning_space(space_id: str, payload: dict[str, Any] | None = None) -> JSONResponse:

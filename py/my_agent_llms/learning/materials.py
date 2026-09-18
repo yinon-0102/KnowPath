@@ -20,6 +20,8 @@ from typing import Protocol
 from uuid import uuid4
 
 from .runs import InMemoryRunRepository
+from .errors import DomainConflict, DomainNotFound
+from .material_schemas import UpdateMaterial
 
 
 class MaterialError(Exception):
@@ -76,6 +78,7 @@ class Material:
     size_bytes: int
     created_at: datetime
     updated_at: datetime
+    version: int = 1
 
 
 @dataclass(frozen=True)
@@ -117,6 +120,8 @@ class MaterialRepository(Protocol):
         material_id: str,
         version_id: str,
     ) -> None: ...
+
+    def update_material(self, material: Material) -> None: ...
 
     def delete_material(self, material_id: str) -> None: ...
 
@@ -211,6 +216,10 @@ class InMemoryMaterialRepository:
                              if value.material_id != material_id}
             self.by_content_hash = {key: value for key, value in self.by_content_hash.items()
                                     if value[0] != material_id}
+
+    def update_material(self, material: Material) -> None:
+        with self._lock:
+            self.materials[material.id] = copy.deepcopy(material)
 
     def list_materials(self) -> list[Material]:
         with self._lock:
@@ -316,6 +325,22 @@ class MaterialService:
     def __init__(self, repository: MaterialRepository, parser: MaterialParser | None = None) -> None:
         self.repository = repository
         self.parser = parser or MaterialParser()
+
+    def update(self, material_id, payload):
+        payload = UpdateMaterial.model_validate(payload).model_dump(exclude_unset=True)
+        with self.repository.transaction():
+            material = self.repository.get_material(material_id)
+            if material is None:
+                raise DomainNotFound("material", material_id)
+            if payload["expected_version"] != material.version:
+                raise DomainConflict("VERSION_CONFLICT", "资料版本已变化，请刷新后重试", {"current_version": material.version})
+            for field in ("name", "status"):
+                if field in payload:
+                    setattr(material, field, payload[field])
+            material.version += 1
+            material.updated_at = datetime.now(timezone.utc)
+            self.repository.update_material(material)
+            return material
 
     def create(self, *, filename: str, content: bytes, idempotency_key: str, name: str | None = None) -> CreateMaterialResult:
         if not idempotency_key.strip():
@@ -431,6 +456,7 @@ class MaterialService:
             chunks=chunks,
         )
         material.current_version_id = version.id
+        material.version += 1
         material.size_bytes = len(content)
         material.updated_at = now
         self.repository.save(

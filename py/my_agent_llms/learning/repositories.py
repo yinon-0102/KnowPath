@@ -51,7 +51,7 @@ class SqlAlchemyMaterialRepository:
         with self.unit_of_work.session() as session:
             query = select(MaterialRow).where(MaterialRow.id == material_id)
             if self.unit_of_work.active:
-                query = query.with_for_update()
+                query = query.with_for_update().execution_options(populate_existing=True)
             row = session.scalar(query)
             return _material_from_row(row) if row else None
 
@@ -106,6 +106,10 @@ class SqlAlchemyMaterialRepository:
                 created_at=datetime.now(timezone.utc),
             ))
 
+    def update_material(self, material: Material) -> None:
+        with self.unit_of_work.session() as session:
+            session.merge(_material_row(material))
+
     def list_materials(self) -> list[Material]:
         with self.unit_of_work.session() as session:
             return [_material_from_row(row) for row in session.scalars(select(MaterialRow)).all()]
@@ -129,6 +133,7 @@ def _material_row(material: Material) -> MaterialRow:
         type=material.type,
         status=material.status,
         current_version_id=material.current_version_id,
+        version=material.version,
         size_bytes=material.size_bytes,
         created_at=material.created_at,
         updated_at=material.updated_at,
@@ -168,6 +173,7 @@ def _material_from_row(row: MaterialRow) -> Material:
         type=row.type,
         status=row.status,
         current_version_id=row.current_version_id or "",
+        version=row.version,
         size_bytes=row.size_bytes,
         created_at=row.created_at.replace(tzinfo=timezone.utc),
         updated_at=row.updated_at.replace(tzinfo=timezone.utc),

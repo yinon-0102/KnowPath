@@ -108,6 +108,7 @@ GET 默认 200，资源创建默认 201，修改默认 200，无响应删除 204
 {
   "id": "mat_123",
   "name": "Python 基础教程",
+  "version": 1,
   "type": "pdf",
   "status": "ready",
   "current_version_id": "matver_001",
@@ -116,6 +117,8 @@ GET 默认 200，资源创建默认 201，修改默认 200，无响应删除 204
   "updated_at": "2026-09-17T09:35:00Z"
 }
 ```
+
+`version` 是资料资源的乐观锁版本，PATCH/DELETE 的 `expected_version` 对应该值；与 `current_version_id` 指向的内容版本分开。
 
 `status`：`uploaded`、`processing`、`ready`、`needs_review`、`failed`、`archived`。
 
