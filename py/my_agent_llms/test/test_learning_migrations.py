@@ -48,7 +48,7 @@ def test_empty_database_upgrade_matches_current_schema(migration_database):
     config, engine = migration_database
     command.upgrade(config, "head")
     with engine.connect() as connection:
-        assert connection.scalar(sa.text("SELECT version_num FROM alembic_version")) == "0007_material_version"
+        assert connection.scalar(sa.text("SELECT version_num FROM alembic_version")) == "0008_assessment_audit"
         context = MigrationContext.configure(connection, opts={"compare_type": True})
         assert compare_metadata(context, Base.metadata) == []
     assert "run_events" in sa.inspect(engine).get_table_names()
@@ -151,3 +151,29 @@ def test_material_version_backfill_preserves_existing_rows(migration_database):
     command.downgrade(config, "0006_exports")
     with engine.connect() as connection:
         assert connection.execute(sa.text("SELECT name, status, size_bytes FROM materials")).one() == ("Notes", "archived", 42)
+
+
+def test_assessment_context_backfill_preserves_result_and_snapshot(migration_database):
+    from datetime import datetime
+    config, engine = migration_database
+    command.upgrade(config, "0007_material_version")
+    meta = sa.MetaData()
+    spaces = sa.Table("learning_spaces", meta, autoload_with=engine)
+    assessments = sa.Table("assessments", meta, autoload_with=engine)
+    with engine.begin() as connection:
+        connection.execute(spaces.insert().values(id="audit-space", name="Audit", status="active",
+            bindings=[], topic_ids=[], excluded_topic_ids=[], space_version=1, scope_version=1,
+            profile_version=1, state_version=0, profile={}, created_at=datetime(2026, 9, 18), updated_at=datetime(2026, 9, 18)))
+        connection.execute(assessments.insert().values(id="audit-assessment", space_id="audit-space",
+            kind="diagnostic", status="completed", topic_ids=[], questions=[], snapshot={"frozen": True},
+            result={"state_version": 7}, created_at=datetime(2026, 9, 18)))
+    command.upgrade(config, "head")
+    assessments = sa.Table("assessments", sa.MetaData(), autoload_with=engine)
+    with engine.connect() as connection:
+        row = connection.execute(sa.select(assessments)).mappings().one()
+        assert row["context"] == {}
+        assert row["snapshot"] == {"frozen": True}
+        assert row["result"] == {"state_version": 7}
+    command.downgrade(config, "0007_material_version")
+    with engine.connect() as connection:
+        assert connection.scalar(sa.text("SELECT id FROM assessments")) == "audit-assessment"

@@ -122,6 +122,7 @@ class LearnerStateRow(Base):
 
 class AssessmentRow(Base):
     __tablename__ = "assessments"
+    context: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
     snapshot: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
     run_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     finalize_run_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
