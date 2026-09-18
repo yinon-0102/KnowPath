@@ -131,7 +131,8 @@ def test_api_restart_keeps_durable_ingestion_but_fails_ephemeral_work(graph_work
                         lambda self: [staged['run_id'], ephemeral['id']])
     monkeypatch.setenv('LEARNING_PERSISTENCE', 'sql')
     monkeypatch.setattr(database, 'create_db_engine', lambda: state.material_repository.unit_of_work.engine)
-    with TestClient(entrypoint.build_app()) as client:
+    monkeypatch.setenv('LEARNING_LOCAL_TOKEN', 'test-restart-local-token')
+    with TestClient(entrypoint.build_app(), headers={'X-Local-Token': 'test-restart-local-token'}) as client:
         assert client.get('/api/v1/runs/' + staged['run_id']).json()['status'] == 'queued'
         assert client.get('/api/v1/runs/' + ephemeral['id']).json()['status'] == 'failed'
     assert worker(factory()).run_once(event_id(state, staged))

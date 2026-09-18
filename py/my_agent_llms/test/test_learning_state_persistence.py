@@ -7,7 +7,7 @@ import pytest
 from sqlalchemy import create_engine, select, delete
 from sqlalchemy.pool import StaticPool
 
-from my_agent_llms.learning.db import init_db, LearningMessageRow, ConversationRow, ExportRow, AttemptRow, EvidenceRow, AssessmentRow, LearnerStateRow, StateResetRow, LearningSpaceRow, IdempotencyRow, SourceChunkRow, MaterialVersionRow, MaterialRow, RunRow
+from my_agent_llms.learning.db import StudyPlanRow, StudyTaskRow, SessionRow, SessionEventRow, init_db, OutboxEventRow, LearningMessageRow, ConversationRow, ExportRow, AttemptRow, EvidenceRow, AssessmentRow, LearnerStateRow, StateResetRow, LearningSpaceRow, IdempotencyRow, SourceChunkRow, MaterialVersionRow, MaterialRow, RunRow
 from my_agent_llms.learning.errors import DomainConflict
 from my_agent_llms.learning.materials import InMemoryMaterialRepository
 from my_agent_llms.learning.repositories import SqlAlchemyMaterialRepository
@@ -60,7 +60,7 @@ def workspace(request, tmp_path):
         state.message_service.commands._execute = lambda op, ident, body, key, change: execute_message(op, ident, body, label + key if key else None, change)
         return state
     first = factory()
-    material = first.material_service.create(filename="notes.md", content=b"# Functions\n\nFunctions group reusable behavior.", idempotency_key=label + "material")
+    material = first.material_service.create(filename="notes.md", content=("# Functions\n\nFunctions group reusable behavior.\n\nFixture: " + label).encode(), idempotency_key=label + "material")
     space = first.create_space({"name": "Python", "material_ids": [material.material.id]})
     topic_id = first.topics_for_space(space["id"])[0]["id"]
     first.set_scope(space["id"], {"topic_ids": [topic_id], "expected_version": 1})
@@ -72,10 +72,21 @@ def workspace(request, tmp_path):
                 assessments = connection.execute(select(AssessmentRow.id, AssessmentRow.run_id, AssessmentRow.finalize_run_id).where(AssessmentRow.space_id == space["id"])).all()
                 assessment_ids = [a.id for a in assessments]
                 run_ids = [rid for a in assessments for rid in (a.run_id, a.finalize_run_id) if rid]
+                message_ids = list(connection.scalars(select(LearningMessageRow.id).where(LearningMessageRow.space_id == space["id"])))
+                connection.execute(delete(OutboxEventRow).where(
+                    ((OutboxEventRow.event_type == "assessment.generate") & OutboxEventRow.aggregate_id.in_(assessment_ids))
+                    | ((OutboxEventRow.event_type == "message.generate") & OutboxEventRow.aggregate_id.in_(message_ids))
+                    | ((OutboxEventRow.event_type == "knowledge.updated") & (OutboxEventRow.aggregate_id == space["id"]))))
                 for cls in (LearningMessageRow, ConversationRow, ExportRow, EvidenceRow, LearnerStateRow, StateResetRow):
                     connection.execute(delete(cls).where(cls.space_id == space["id"]))
                 connection.execute(delete(AttemptRow).where(AttemptRow.assessment_id.in_(assessment_ids)))
                 connection.execute(delete(AssessmentRow).where(AssessmentRow.space_id == space["id"]))
+                plan_ids = list(connection.scalars(select(StudyPlanRow.id).where(StudyPlanRow.space_id == space["id"])))
+                session_ids = list(connection.scalars(select(SessionRow.id).where(SessionRow.space_id == space["id"])))
+                connection.execute(delete(SessionEventRow).where(SessionEventRow.session_id.in_(session_ids)))
+                connection.execute(delete(SessionRow).where(SessionRow.space_id == space["id"]))
+                connection.execute(delete(StudyTaskRow).where(StudyTaskRow.plan_id.in_(plan_ids)))
+                connection.execute(delete(StudyPlanRow).where(StudyPlanRow.space_id == space["id"]))
                 connection.execute(delete(LearningSpaceRow).where(LearningSpaceRow.id == space["id"]))
                 connection.execute(delete(IdempotencyRow).where((IdempotencyRow.key.startswith(label)) | (IdempotencyRow.resource_id == material.material.id)))
                 versions = select(MaterialVersionRow.id).where(MaterialVersionRow.material_id == material.material.id)

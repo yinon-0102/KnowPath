@@ -5,18 +5,27 @@ from __future__ import annotations
 from .knowledge_updates import ApplyKnowledgeUpdates
 
 import asyncio
+import hmac
+from uuid import uuid4
+from starlette.exceptions import HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from .http_contract import ContractRoute, error_response, request_id_context
 from contextlib import asynccontextmanager
 import re
 from datetime import datetime
 
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
+
+from .pagination import page_records
+from .source_access import SourceAccessService
 
 from fastapi import BackgroundTasks, FastAPI, File, Form, Header, Query, Request, UploadFile
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, StreamingResponse, Response
 
 from .config import LearningSettings
-from .material_schemas import UpdateMaterial
+from .material_schemas import UpdateMaterial, DeleteMaterial
+from .model_adapters import chat_model, ModelError
 from .graph_schemas import IngestMaterial, ReconcileGraph, PublishGraph
 from .correction_schemas import CreateCorrection, ConfirmCorrection
 from .materials import MaterialTooLarge
@@ -65,6 +74,15 @@ def create_app(
                           answer_generator=answer_generator if answer_generator is not None else DashScopeAnswerGenerator(settings),
                           source_retriever=source_retriever if source_retriever is not None else configured_retriever(settings))
     ingestion = MaterialIngestionService(service, state.run_service, state.graph_service)
+    source_access = SourceAccessService(state.assessment_service)
+    def validate_chat(generator):
+        if isinstance(generator, (DashScopeQuestionGenerator, DashScopeAnswerGenerator)):
+            try:
+                model = chat_model(settings)
+                if "json" not in getattr(model, "capabilities", ()):
+                    raise ModelError("UNSUPPORTED_MODEL")
+            except ModelError as exc:
+                raise DomainConflict(exc.code, "配置的模型不支持当前任务所需能力") from None
     @asynccontextmanager
     async def lifespan(app):
         try:
@@ -77,16 +95,44 @@ def create_app(
 
     app = FastAPI(title="Keel Learning", version="0.1.0", lifespan=lifespan)
     app.state.learning_state = state
+    app.router.route_class = ContractRoute
+    app.add_middleware(CORSMiddleware, allow_origins=list(settings.allowed_origins),
+                       allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
+                       allow_headers=["Content-Type", "X-Local-Token", "Idempotency-Key", "Last-Event-ID"],
+                       expose_headers=["X-Request-ID"], allow_credentials=False)
 
     @app.middleware("http")
     async def idempotency_guard(request: Request, call_next):
-        if settings.local_token and request.url.path != "/api/v1/health":
-            if request.headers.get("X-Local-Token") != settings.local_token:
-                return _error_response(401, "LOCAL_TOKEN_REQUIRED", "需要有效的本地会话令牌")
-        if request.method == "POST" and request.url.path.startswith("/api/v1/") and _requires_idempotency(request.url.path):
-            if not (request.headers.get("Idempotency-Key") or "").strip():
-                return _error_response(400, "IDEMPOTENCY_KEY_REQUIRED", "此 POST 请求必须提供 Idempotency-Key")
-        return await call_next(request)
+        request_id = str(uuid4())
+        token = request_id_context.set(request_id)
+        origin = request.headers.get("Origin")
+        try:
+            if origin is not None and origin not in settings.allowed_origins:
+                response = _error_response(403, "ORIGIN_NOT_ALLOWED", "请求来源不在本地服务白名单中")
+            elif (settings.local_token and request.method != "OPTIONS" and request.url.path != "/api/v1/health"
+                  and not hmac.compare_digest(request.headers.get("X-Local-Token", "").encode("utf-8"), settings.local_token.encode("utf-8"))):
+                response = _error_response(401, "LOCAL_TOKEN_REQUIRED", "需要有效的本地会话令牌")
+            elif (request.method == "POST" and request.url.path.startswith("/api/v1/")
+                  and _requires_idempotency(request.url.path) and not (request.headers.get("Idempotency-Key") or "").strip()):
+                response = _error_response(400, "IDEMPOTENCY_KEY_REQUIRED", "此 POST 请求必须提供 Idempotency-Key")
+            else:
+                try:
+                    response = await call_next(request)
+                except Exception:
+                    response = _error_response(500, "INTERNAL_ERROR", "服务内部错误，请提供 request_id 以便排查")
+            response.headers["X-Request-ID"] = request_id
+            if origin in settings.allowed_origins:
+                response.headers["Access-Control-Allow-Origin"] = origin
+                response.headers["Access-Control-Expose-Headers"] = "X-Request-ID"
+                response.headers.add_vary_header("Origin")
+            return response
+        finally:
+            request_id_context.reset(token)
+
+    @app.exception_handler(HTTPException)
+    async def http_error(_: Request, exc: HTTPException) -> JSONResponse:
+        codes = {404: "RESOURCE_NOT_FOUND", 405: "METHOD_NOT_ALLOWED"}
+        return _error_response(exc.status_code, codes.get(exc.status_code, "INVALID_REQUEST"), "请求的资源或方法不可用")
 
     @app.exception_handler(RequestValidationError)
     async def validation_error(_: Request, exc: RequestValidationError) -> JSONResponse:
@@ -94,28 +140,15 @@ def create_app(
             status_code=422,
             code="INVALID_REQUEST",
             message="请求参数校验失败",
-            details={"errors": [{k: v for k, v in error.items() if k != "ctx"} for error in exc.errors()]},
+            details={"errors": [{k: v for k, v in error.items() if k not in {"ctx", "input"}} for error in exc.errors()]},
         )
 
     @app.get("/api/v1/health")
-    async def health() -> dict:
-        return {
-            "status": "ok",
-            "version": "0.1.0",
-            "runtime": "keel-learning",
-            "dependencies": {
-                "mysql": "not_configured",
-                "neo4j": "not_configured",
-                "vector_store": "qdrant",
-                "llm": {"provider": settings.chat_provider, "model": settings.chat_model, "status": "configured"},
-                "embedding": {
-                    "provider": settings.embedding_provider,
-                    "model": settings.embedding_model,
-                    "dimension": settings.embedding_dimension,
-                    "status": "configured",
-                },
-            },
-        }
+    async def health(request: Request) -> dict:
+        if settings.local_token and not hmac.compare_digest(request.headers.get("X-Local-Token", "").encode("utf-8"), settings.local_token.encode("utf-8")):
+            return {"status": "ok"}
+        from .health import report
+        return await asyncio.to_thread(report, service.repository, settings)
 
     @app.post("/api/v1/materials", status_code=201)
     async def create_material(
@@ -141,7 +174,7 @@ def create_app(
         except IdempotencyConflict as exc:
             return _error_response(409, "IDEMPOTENCY_CONFLICT", str(exc))
         except MaterialTooLarge:
-            return _error_response(413, "FILE_TOO_LARGE", "文件不能超过 20 MiB")
+            return _error_response(413, "MATERIAL_TOO_LARGE", "文件不能超过 20 MiB")
         except UnsupportedMaterial as exc:
             return _error_response(422, "UNSUPPORTED_MATERIAL", str(exc))
         except MaterialError as exc:
@@ -177,24 +210,19 @@ def create_app(
         )
 
     @app.get("/api/v1/materials")
-    async def list_materials() -> dict:
-        return {
-            "items": [
-                {
-                    "id": material.id,
-                    "name": material.name,
-                    "type": material.type,
-                    "status": material.status,
-                    "version": material.version,
-                    "current_version_id": material.current_version_id,
-                    "size_bytes": material.size_bytes,
-                    "created_at": material.created_at.isoformat(),
-                    "updated_at": material.updated_at.isoformat(),
-                }
-                for material in service.repository.list_materials()
-            ],
-            "next_cursor": None,
-        }
+    async def list_materials(
+        status: Literal["uploaded", "processing", "ready", "needs_review", "failed", "archived"] | None = None,
+        cursor: str | None = Query(None, max_length=2048), limit: int = Query(20, ge=1, le=100),
+    ) -> JSONResponse:
+        items = [{"id": material.id, "name": material.name, "type": material.type,
+                  "status": material.status, "version": material.version,
+                  "current_version_id": material.current_version_id, "size_bytes": material.size_bytes,
+                  "created_at": material.created_at.isoformat(), "updated_at": material.updated_at.isoformat()}
+                 for material in service.repository.list_materials() if status is None or material.status == status]
+        try:
+            return JSONResponse(content=page_records(items, scope=["materials", status], limit=limit, cursor=cursor))
+        except DomainConflict as exc:
+            return _domain_error(exc)
 
     @app.post("/api/v1/materials/{material_id}/versions", status_code=201)
     async def create_material_version(
@@ -220,7 +248,7 @@ def create_app(
         except IdempotencyConflict as exc:
             return _error_response(409, "IDEMPOTENCY_CONFLICT", str(exc))
         except MaterialTooLarge:
-            return _error_response(413, "FILE_TOO_LARGE", "文件不能超过 20 MiB")
+            return _error_response(413, "MATERIAL_TOO_LARGE", "文件不能超过 20 MiB")
         except UnsupportedMaterial as exc:
             return _error_response(422, "UNSUPPORTED_MATERIAL", str(exc))
         except MaterialError as exc:
@@ -242,33 +270,37 @@ def create_app(
         )
 
     @app.get("/api/v1/materials/{material_id}/versions")
-    async def list_material_versions(material_id: str) -> JSONResponse:
+    async def list_material_versions(material_id: str, cursor: str | None = Query(None, max_length=2048),
+                                    limit: int = Query(20, ge=1, le=100)) -> JSONResponse:
         if service.repository.get_material(material_id) is None:
             return _error_response(404, "RESOURCE_NOT_FOUND", "资料不存在", {"material_id": material_id})
-        return JSONResponse(
-            status_code=200,
-            content={
-                "items": [
-                    {
-                        "id": version.id,
-                        "material_id": version.material_id,
-                        "filename": version.filename,
-                        "content_hash": version.content_hash,
-                        "status": version.status,
-                        "created_at": version.created_at.isoformat(),
-                    }
-                    for version in service.repository.list_versions(material_id)
-                ],
-                "next_cursor": None,
-            },
-        )
+        history = state.graph_service.repository.records("graph_revisions", material_id=material_id)
+        published_versions = {}
+        for revision in history:
+            if revision["status"] in {"published", "superseded"} and revision.get("graph_version") is not None:
+                version_id = revision["material_version_id"]
+                published_versions[version_id] = max(published_versions.get(version_id, 0), revision["graph_version"])
+        items = [{"id": version.id, "material_id": version.material_id, "filename": version.filename,
+                  "content_hash": version.content_hash, "status": version.status,
+                  "graph_version": published_versions.get(version.id), "created_at": version.created_at.isoformat()}
+                 for version in service.repository.list_versions(material_id)]
+        try:
+            return JSONResponse(content=page_records(items, scope=["material_versions", material_id], limit=limit, cursor=cursor))
+        except DomainConflict as exc:
+            return _domain_error(exc)
 
     @app.get("/api/v1/materials/{material_id}")
-    async def get_material(material_id: str) -> JSONResponse:
+    async def get_material(material_id: str, space_id: str | None = None) -> JSONResponse:
         material = service.repository.get_material(material_id)
         if material is None:
             return _error_response(404, "RESOURCE_NOT_FOUND", "资料不存在", {"material_id": material_id})
         version = service.repository.get_version(material.current_version_id)
+        if version and version.chunks:
+            try:
+                await asyncio.to_thread(source_access.consult, material_id, version.id,
+                                        [chunk.id for chunk in version.chunks], space_id)
+            except (DomainNotFound, DomainConflict) as exc:
+                return _domain_error(exc)
         return JSONResponse(
             status_code=200,
             content={
@@ -307,13 +339,17 @@ def create_app(
         )
 
     @app.get("/api/v1/materials/{material_id}/versions/{version_id}/chunks/{chunk_id}")
-    async def get_source_chunk(material_id: str, version_id: str, chunk_id: str) -> JSONResponse:
+    async def get_source_chunk(material_id: str, version_id: str, chunk_id: str, space_id: str | None = None) -> JSONResponse:
         version = service.repository.get_version(version_id)
         if version is None or version.material_id != material_id:
             return _error_response(404, "RESOURCE_NOT_FOUND", "资料版本不存在", {"version_id": version_id})
         chunk = next((item for item in version.chunks if item.id == chunk_id), None)
         if chunk is None:
             return _error_response(404, "RESOURCE_NOT_FOUND", "来源片段不存在", {"chunk_id": chunk_id})
+        try:
+            await asyncio.to_thread(source_access.consult, material_id, version_id, [chunk_id], space_id)
+        except (DomainNotFound, DomainConflict) as exc:
+            return _domain_error(exc)
         return JSONResponse(
             status_code=200,
             content={
@@ -357,7 +393,7 @@ def create_app(
         )
 
     @app.post("/api/v1/runs/{run_id}/cancel", status_code=202)
-    def cancel_run(run_id: str) -> JSONResponse:
+    def cancel_run(run_id: str, _: EmptyObject) -> JSONResponse:
         try:
             run = state.cancel_run(run_id)
             status_code = 200 if run["status"] in {"succeeded", "failed", "cancelled"} else 202
@@ -366,21 +402,18 @@ def create_app(
             return _domain_error(exc)
 
     @app.get("/api/v1/materials/{material_id}/topics")
-    def material_topics(material_id: str, version_id: str | None = None) -> JSONResponse:
-        material = service.repository.get_material(material_id)
-        if material is None:
-            return _error_response(404, "RESOURCE_NOT_FOUND", "资料不存在", {"material_id": material_id})
-        version = service.repository.get_version(version_id or material.current_version_id)
-        if version is None or version.material_id != material_id:
-            return _error_response(404, "RESOURCE_NOT_FOUND", "资料版本不存在")
-        topics = topics_for_version(material_id, version)
-        state.topics.update({topic["id"]: topic for topic in topics})
-        return JSONResponse(status_code=200, content={"material_id": material_id, "version_id": version.id if version else None, "items": topics})
+    def material_topics(material_id: str, version_id: str | None = None,
+                        include_inactive: bool = False, depth: int | None = Query(None, ge=1, le=100)) -> JSONResponse:
+        try:
+            return JSONResponse(content=state.graph_queries.material_topics(material_id, version_id,
+                                include_inactive=include_inactive, depth=depth))
+        except DomainNotFound as exc:
+            return _domain_error(exc)
 
     @app.get("/api/v1/topics/{topic_id}/graph")
-    def topic_graph(topic_id: str) -> JSONResponse:
+    def topic_graph(topic_id: str, depth: int = Query(1, ge=1, le=3), include_sources: bool = True) -> JSONResponse:
         try:
-            return JSONResponse(status_code=200, content=state.get_topic_graph(topic_id))
+            return JSONResponse(content=state.get_topic_graph(topic_id, depth=depth, include_sources=include_sources))
         except DomainNotFound as exc:
             return _domain_error(exc)
 
@@ -410,13 +443,17 @@ def create_app(
             return _domain_error(exc)
 
     @app.get("/api/v1/learning-spaces")
-    def list_learning_spaces() -> dict[str, Any]:
-        return {"items": state.list_spaces(), "next_cursor": None}
+    def list_learning_spaces(cursor: str | None = Query(None, max_length=2048),
+                             limit: int = Query(20, ge=1, le=100)) -> JSONResponse:
+        try:
+            return JSONResponse(content=page_records(state.list_spaces(), scope=["spaces"], limit=limit, cursor=cursor))
+        except DomainConflict as exc:
+            return _domain_error(exc)
 
     @app.post("/api/v1/learning-spaces", status_code=201)
     def create_learning_space(payload: CreateSpace, idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None) -> JSONResponse:
         try:
-            return JSONResponse(status_code=201, content=state.create_space(payload.model_dump(mode="json", exclude_unset=True), idempotency_key=idempotency_key))
+            return JSONResponse(status_code=201, content=state.create_space(payload.model_dump(mode="json", exclude_unset=True), idempotency_key=idempotency_key, require_published=True))
         except (DomainNotFound, DomainConflict) as exc:
             return _domain_error(exc)
 
@@ -445,7 +482,9 @@ def create_app(
     def get_learning_profile(space_id: str) -> JSONResponse:
         try:
             space = state.get_space(space_id)
-            return JSONResponse(status_code=200, content={"profile": space["profile"], "profile_version": space["profile_version"]})
+            from .profile_candidates import candidates_for
+            return JSONResponse(status_code=200, content={"profile": space["profile"], "profile_version": space["profile_version"],
+                "candidates": candidates_for(state.assessment_service.repository, space_id)})
         except DomainNotFound as exc:
             return _domain_error(exc)
 
@@ -466,7 +505,8 @@ def create_app(
     @app.post("/api/v1/learning-spaces/{space_id}/assessments", status_code=202)
     def create_assessment(space_id: str, payload: CreateAssessment, background_tasks: BackgroundTasks, idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None) -> JSONResponse:
         try:
-            assessment = state.create_assessment(space_id, payload.model_dump(exclude_none=True), idempotency_key=idempotency_key, dispatch=background_tasks.add_task)
+            validate_chat(state.assessment_service.generator)
+            assessment = state.create_assessment(space_id, payload.model_dump(exclude_none=True), idempotency_key=idempotency_key, dispatch=background_tasks.add_task, durable=True)
             return JSONResponse(status_code=202, content={"run_id": assessment["run_id"], "assessment_id": assessment["id"], "assessment": assessment, "status": assessment["status"]})
         except (DomainNotFound, DomainConflict) as exc:
             return _domain_error(exc)
@@ -548,6 +588,9 @@ def create_app(
     def send_learning_message(space_id: str, payload: SendMessage, background_tasks: BackgroundTasks,
                               idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None) -> JSONResponse:
         try:
+            validate_chat(state.message_service.generator)
+            if getattr(state.message_service.retriever, "configuration_error", None):
+                raise DomainConflict("UNSUPPORTED_MODEL", "配置的向量模型不支持当前任务所需能力")
             return JSONResponse(status_code=202, content=state.send_message(space_id, payload.model_dump(), idempotency_key=idempotency_key,
                                                                            dispatch=background_tasks.add_task))
         except (DomainNotFound, DomainConflict) as exc:
@@ -581,11 +624,12 @@ def create_app(
             return _domain_error(exc)
 
     @app.get("/api/v1/learning-spaces/{space_id}/changes")
-    async def list_changes(space_id: str) -> JSONResponse:
+    async def list_changes(space_id: str, cursor: str | None = Query(None, max_length=2048),
+                           limit: int = Query(20, ge=1, le=100)) -> JSONResponse:
         try:
             state.get_space(space_id)
-            return JSONResponse(status_code=200, content={"items": state.changes_for(space_id), "next_cursor": None})
-        except DomainNotFound as exc:
+            return JSONResponse(content=page_records(state.changes_for(space_id), scope=["changes", space_id], limit=limit, cursor=cursor))
+        except (DomainNotFound, DomainConflict) as exc:
             return _domain_error(exc)
 
     @app.post("/api/v1/materials/{material_id}/ingest", status_code=202)
@@ -661,26 +705,12 @@ def create_app(
             return _domain_error(exc)
 
     @app.delete("/api/v1/materials/{material_id}", status_code=202)
-    async def delete_material(material_id: str, payload: dict[str, Any] | None = None) -> JSONResponse:
-        def delete_atomically():
-            with state.graph_service.repository.transaction():
-                material = service.repository.get_material(material_id)
-                if material is None:
-                    raise DomainNotFound("material", material_id)
-                referenced = any(material_id in [binding["material_id"] for binding in space["bindings"]]
-                                for space in state.list_spaces())
-                if referenced:
-                    raise DomainConflict("MATERIAL_IN_USE", "资料仍被学习空间引用；请先删除引用空间，级联删除尚未实现")
-                state.graph_service.delete_history(material_id)
-                service.repository.delete_material(material_id)
+    async def delete_material(material_id: str, payload: DeleteMaterial) -> JSONResponse:
         try:
-            await asyncio.to_thread(delete_atomically)
-        except DomainNotFound as exc:
+            result = await asyncio.to_thread(state.delete_material, material_id, payload.model_dump())
+            return JSONResponse(status_code=202, content=result)
+        except (DomainNotFound, DomainConflict) as exc:
             return _domain_error(exc)
-        except DomainConflict as exc:
-            return _domain_error(exc)
-        run = state.run("material_delete", {"type": "material", "id": material_id})
-        return JSONResponse(status_code=202, content={"run_id": run["id"], "status": "queued"})
     return app
 
 
@@ -690,17 +720,7 @@ def _error_response(
     message: str,
     details: dict | None = None,
 ) -> JSONResponse:
-    return JSONResponse(
-        status_code=status_code,
-        content={
-            "error": {
-                "code": code,
-                "message": message,
-                "details": details or {},
-                "retryable": status_code >= 500,
-            }
-        },
-    )
+    return error_response(status_code, code, message, details)
 
 
 def _domain_error(exc: Exception) -> JSONResponse:
@@ -712,7 +732,7 @@ def _domain_error(exc: Exception) -> JSONResponse:
         status = 422 if exc.code.startswith("INVALID_") or exc.code.endswith("_REQUIRED") else 409
         if exc.code in {"EXPORT_EXPIRED", "RESOURCE_DELETED"}:
             status = 410
-        if exc.code == "PLAN_CONSTRAINT_UNSATISFIABLE":
+        if exc.code in {"PLAN_CONSTRAINT_UNSATISFIABLE", "UNSUPPORTED_MODEL"}:
             status = 422
         return _error_response(status, exc.code, str(exc), exc.details)
     return _error_response(500, "INTERNAL_ERROR", str(exc))

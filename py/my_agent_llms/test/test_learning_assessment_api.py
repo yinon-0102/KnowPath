@@ -37,7 +37,18 @@ def test_failed_model_preserves_failed_run_and_replay(assessment_api):
     assert response.status_code == 202
     assert create(client, space_id).json() == response.json()
     assessment = client.get(f"/api/v1/assessments/{response.json()['assessment_id']}").json()
+    assert assessment["status"] == "generating"
+    from datetime import datetime, timedelta, timezone
+    from my_agent_llms.learning.model_tasks import ModelTaskWorker
+    state = client.app.state.learning_state
+    event = state.assessment_service.repository.records("outbox", event_type="assessment.generate", aggregate_id=response.json()["assessment_id"])[0]
+    for seconds in (10, 30):
+        worker = ModelTaskWorker(state.assessment_service, state.message_service,
+            clock=lambda: datetime.now(timezone.utc) + timedelta(seconds=seconds))
+        assert worker.run_once(event["id"])
+    assessment = client.get(f"/api/v1/assessments/{response.json()['assessment_id']}").json()
     assert assessment["status"] == "failed"
+    assert create(client, space_id).json() == response.json()
     assert assessment["questions"] == []
     run = client.app.state.learning_state.get_run(response.json()["run_id"])
     assert run["error"]["code"] == "MODEL_UNAVAILABLE"

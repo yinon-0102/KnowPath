@@ -206,7 +206,7 @@ def test_deletion_during_parse_cannot_resurrect_original_or_sources(apps):
         data = upload(client).json()
         class Deleting(MaterialParser):
             def parse(self, *args, **kwargs):
-                assert client.delete('/api/v1/materials/' + data['material']['id']).status_code == 202
+                assert client.request("DELETE", '/api/v1/materials/' + data['material']['id'], json={"expected_version": 1, "confirm": True}).status_code == 202
                 return super().parse(*args, **kwargs)
         assert parse_worker(app, parser=Deleting()).run_once()
     state = apps().state.learning_state
@@ -297,7 +297,7 @@ def test_delete_cancels_only_selected_material_jobs(apps):
     with TestClient(app) as client:
         first = upload(client).json()
         second = upload(client, key='other-material', content=b'Second material').json()
-        assert client.delete('/api/v1/materials/' + first['material']['id']).status_code == 202
+        assert client.request("DELETE", '/api/v1/materials/' + first['material']['id'], json={"expected_version": 1, "confirm": True}).status_code == 202
     state = app.state.learning_state
     assert state.get_run(second['run_id'])['status'] == 'queued'
     assert state.material_repository.get_raw(second['version']['id']) == b'Second material'
@@ -309,7 +309,7 @@ def test_oversized_upload_is_rejected_before_queuing(apps):
     with TestClient(apps()) as client:
         response = upload(client, content=b'x' * (20 * 1024 * 1024 + 1))
         assert response.status_code == 413
-        assert response.json()['error']['code'] == 'FILE_TOO_LARGE'
+        assert response.json()['error']['code'] == 'MATERIAL_TOO_LARGE'
         assert client.get('/api/v1/materials').json()['items'] == []
 
 
@@ -325,6 +325,8 @@ def test_worker_cli_once_advances_one_durable_stage_per_invocation(tmp_path, mon
     app = create_app(MaterialService(SqlAlchemyMaterialRepository(engine)))
     closed = []
     class Backend(PreparedBackend):
+        graph = None
+        vectors = type("Vectors", (), {"backend": None})()
         def close(self):
             closed.append(True)
     monkeypatch.setattr(cli, 'create_db_engine', lambda: engine)

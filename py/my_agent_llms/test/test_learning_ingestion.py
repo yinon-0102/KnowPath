@@ -77,8 +77,8 @@ def test_run_write_failure_rolls_back_entire_upload(apps, monkeypatch):
         raise RuntimeError("simulated run write failure")
     with monkeypatch.context() as patch:
         patch.setattr(app.state.learning_state.run_service.repository, "create", fail_run_write)
-        with TestClient(app) as client, pytest.raises(RuntimeError, match="run write failure"):
-            upload(client)
+        with TestClient(app) as client:
+            assert upload(client).status_code == 500
     assert repo.list_materials() == []
     assert repo.get_idempotency("upload-one") is None
     with TestClient(apps()) as client:
@@ -113,8 +113,8 @@ def test_binding_failure_rolls_back_material_and_created_run(apps, monkeypatch):
         raise RuntimeError("simulated binding failure")
     monkeypatch.setattr(state.run_service.repository, "create", capture_create)
     monkeypatch.setattr(state.material_repository, "bind_idempotency_run", fail_bind)
-    with TestClient(app) as client, pytest.raises(RuntimeError, match="binding failure"):
-        upload(client)
+    with TestClient(app) as client:
+        assert upload(client).status_code == 500
     assert created_run_ids
     assert state.material_repository.list_materials() == []
     assert state.material_repository.get_idempotency("upload-one") is None
@@ -133,8 +133,7 @@ def test_failed_version_upload_keeps_previous_version(apps, monkeypatch):
             raise RuntimeError("simulated version binding failure")
         with monkeypatch.context() as patch:
             patch.setattr(repo, "bind_idempotency_run", fail_bind)
-            with pytest.raises(RuntimeError, match="version binding failure"):
-                upload(client, "failed-version", b"new version", f"/api/v1/materials/{material_id}/versions")
+            assert upload(client, "failed-version", b"new version", f"/api/v1/materials/{material_id}/versions").status_code == 500
         assert repo.get_material(material_id).current_version_id == original["version"]["id"]
         assert len(repo.list_versions(material_id)) == 1
         assert repo.get_idempotency("failed-version") is None
@@ -143,7 +142,7 @@ def test_failed_version_upload_keeps_previous_version(apps, monkeypatch):
 def test_delete_then_reupload_same_content_does_not_reuse_deleted_material(apps):
     with TestClient(apps()) as client:
         original = upload(client).json()
-        assert client.delete(f"/api/v1/materials/{original['material']['id']}").status_code == 202
+        assert client.request("DELETE", f"/api/v1/materials/{original['material']['id']}", json={"expected_version": 1, "confirm": True}).status_code == 202
         replacement = upload(client, "new-upload")
         assert replacement.status_code == 201
         assert replacement.json()["material"]["id"] != original["material"]["id"]
