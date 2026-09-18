@@ -21,12 +21,12 @@
 - 所有资源使用字符串 ID，推荐 UUID；
 - 列表响应统一包含 `items`、`next_cursor`；
 - 异步任务统一返回 `run_id`，通过 SSE 查询进度；
-- 修改类请求支持 `Idempotency-Key`；
+- 创建资源、追加答题/事件、启动异步任务和持久化状态变更的请求使用 `Idempotency-Key`；
 - 资源状态更新支持 `expected_version`，版本冲突返回 `409`。
 
 默认服务地址 `http://127.0.0.1:8000`。本地配置产生随机会话令牌，由调用方通过 `X-Local-Token` 发送；SSE 使用支持自定义头的流式 fetch，不把令牌放进 URL。除只返回最少信息的 health 外，接口均要求令牌；Origin 必须匹配配置白名单。没有登录/注册接口，不代表接口可以无约束公开。
 
-GET 默认 200，资源创建默认 201，修改默认 200，无响应删除 204，所有后台执行返回 202。`Idempotency-Key` 对 POST 必填，保留 24 小时；相同 key 和相同请求返回同一资源/run，不同请求体返回 `409 IDEMPOTENCY_CONFLICT`。分页 limit 默认 20、最大 100，next_cursor 为不透明字符串或 null。示例中的 mat_123 等 ID 只是占位值；实现统一用 UUID 字符串。请求未声明字段返回 422。
+GET 默认 200，资源创建默认 201，修改默认 200，无响应删除 204，后台执行返回 202。创建资源、追加答题或事件、启动异步任务以及会改变持久化状态的 POST 必须提供 `Idempotency-Key`，保留 24 小时；相同 key 和相同请求返回同一资源/run，不同请求体返回 `409 IDEMPOTENCY_CONFLICT`。`POST /runs/{run_id}/cancel`、`POST /assessments/{assessment_id}/finalize` 和 `POST /sessions/{session_id}/finish` 由资源终态保证幂等，可以不要求 key；重复调用返回当前状态或原结果。追加型会话事件必须使用 key，或者提供客户端生成的唯一 `event_id`。分页 limit 默认 20、最大 100，next_cursor 为不透明字符串或 null。示例中的 mat_123 等 ID 只是占位值；实现统一用 UUID 字符串。请求未声明字段返回 422。
 
 ### 1.2 统一错误格式
 

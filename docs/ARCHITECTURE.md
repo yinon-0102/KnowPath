@@ -360,7 +360,7 @@ MySQL（InnoDB、utf8mb4）作为业务记录和版本发布状态的权威数�
 
 Qdrant 通过独立 VectorBackend 适配器接入；这是新增组件，不是 Keel 当前已具备的组件。原 Keel 的 SQLiteVectorBackend 将向量存为 BLOB，并在启动时全量加载到 Python 内存做余弦排序，无 embedder 时退化为 TF-IDF，不是独立的向量检索数据库。迁移时保留其后端协议思想，增加资料版本与空间过滤，不能只替换连接字符串。
 
-Qdrant collection 保存资料片段或允许检索的记忆向量，以及 chunk_id/material_version_id/graph_version/space_id/topic_id/content_hash/embedding_model 等 payload 过滤字段；正文与权威来源从 MySQL 读取，知识关系从 Neo4j 补充。题目答案键不进入通用向量索引。Embedding 模型与向量库是不同组件，模型尚未选型；须固定模型版本、向量维度和距离度量，换模型重建 Qdrant collection，不能混用向量空间。Qdrant 的 collection、payload 索引、快照和备份策略在实现阶段固化。
+Qdrant collection 保存资料片段或允许检索的记忆向量，以及 chunk_id/material_version_id/graph_version/space_id/topic_id/content_hash/embedding_model 等 payload 过滤字段；正文与权威来源从 MySQL 读取，知识关系从 Neo4j 补充。题目答案键不进入通用向量索引。Embedding 模型与向量库是不同组件，首版固定使用 DashScope `text-embedding-v3`、1024 维和 Cosine 距离；更换模型必须重建 Qdrant collection，不能混用向量空间。Qdrant 的 collection、payload 索引、快照和备份策略在实现阶段固化。
 
 MySQL 最小表集合：`materials/material_versions/chunks`、`graph_snapshots/graph_change_events`、`learning_spaces/space_material_bindings/profiles/scopes`、`assessments/questions/submissions/grades/evidence`、`learner_states/plans/plan_tasks/sessions`、`runs/run_events/change_events/idempotency_keys/outbox_events`。Neo4j 实现 MaterialVersion、TopicRevision、SourceChunkRef 等节点及其关系，设置业务 ID 唯一约束，查询必须限定资料/图谱版本。题目答案键和内部评分标准不进入公共 DTO 或通用对话索引。
 
@@ -454,7 +454,7 @@ Keel 的 Playbook、事实图谱和记忆冷存储也存在 SQLite 耦合，须�
 ## 15. 当前设计决策
 
 - 运行形态：首版本地单用户；
-- 存储：MySQL 业务数据 + Neo4j 知识图谱 + Qdrant 向量检索；Embedding 模型仍需单独选型；
+- 存储：MySQL 业务数据 + Neo4j 知识图谱 + Qdrant 向量检索；首版 Embedding 固定为 DashScope `text-embedding-v3`（1024 维、Cosine 距离）；
 - 接口形态：REST JSON + SSE；
 - 学习目标：资料知识掌握，不做考试评分；
 - 资料类型：文本型 PDF、Markdown、TXT；
