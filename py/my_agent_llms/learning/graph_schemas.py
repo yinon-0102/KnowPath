@@ -6,6 +6,10 @@ from .space_schemas import Contract, Identifier
 GraphVersion = Annotated[int, Field(strict=True, ge=0)]
 
 
+class IngestMaterial(Contract):
+    version_id: Identifier
+
+
 class ReconcileGraph(Contract):
     version_id: Identifier
     expected_graph_version: GraphVersion

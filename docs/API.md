@@ -709,6 +709,8 @@ replace 必须带非空 proposed_value 字段补丁：node 支持 name、descrip
 | DELETE `/learning-spaces/{space_id}`                         | expected_version、confirm=true                               | 202 run_id；清除该空间记录、派生状态及记忆，保留其他空间共享资料 |
 | DELETE `/materials/{material_id}`                            | expected_version、confirm=true、cascade（默认 false）        | 202 run_id；被空间引用且 cascade=false 时返回 409 MATERIAL_IN_USE 和影响空间。cascade=true 才清除原文件、解析/图谱版本、索引、来源相关题目和证据并重算受影响状态 |
 
+当前实现进度（ingest）：已解析且有来源片段的版本可通过此入口事务创建真实 queued Run、候选图谱与持久化准备任务；仅接受 version_id，要求 Idempotency-Key。返回 candidate_revision_id，独立 graph worker 完成索引准备后才成功，候选仍待审核发布。任务失败/取消后使用新键重试，同键重放原接收响应；应通过 Run 查询实际状态。原始文件持久化、auto_ingest=false 延迟解析、解析失败后的原文件重试及上传后自动串联仍待实现，上表保留目标契约。
+
 删除和重置是不同操作：reset 保留学习历史，delete 彻底清除约定范围。运行中的相关任务先取消，防止数据被迟到结果重新写入；无法清除的文件返回 failed 与原因，不虚报成功。首版本地文件清除不承诺硬件级安全擦除。
 
 版本采用示例请求：
@@ -736,7 +738,7 @@ TopicNode 和图谱边响应增加 revision_id、material_version_id、graph_ver
 
 graph-diff 返回 base_graph_version、candidate_revision_id、added/changed/removed 数组、conflicts 数组和 affected_topic_ids。reconcile 请求包含 version_id、expected_graph_version，首次发布基版本为 0。候选图谱与索引由 worker 准备就绪，再允许 publish 在 MySQL 中原子切换发布状态；未就绪返回 409 REVISION_NOT_READY。只有自动规则确认的无冲突首次提取可直接 ready；其他结果 needs_review，等待 publish。knowledge-corrections 请求 kind=node/relation、target_id、action=reject/replace、reason、source_ref；replace 需要 proposed_value。201 返回 correction_id、status=pending、candidate_revision_id。confirm 不改变学习空间绑定。
 
-**当前实现进度（0012 迁移）**：reconcile 事务性保存候选、queued Run、graph.prepare outbox 事件及幂等响应；graph-diff 读取持久化差异，条目为 `{kind,id,before,after}`。独立 SQL worker 已实现持久租约、过期接管、失败重试、Neo4j 来源图和 Qdrant 向量准备读回；准备成功才原子进入 pending_review。publish 已实现就绪校验、冲突决策审计、原子发布和旧快照 superseded；未决冲突返回 GRAPH_CONFLICTS_PENDING。keep_both 当前保守排除整个冲突主题的自动出题。已有空间保持绑定，新空间优先绑定最新正式 revision；缺少 graph_revision_id 的旧空间保留临时投影，首次正式 reconcile 基版本仍为 0。提取器仍只投影标题和片段，关系数组为空；0012 已实现纠错持久化、确认入队及 worker 自动发布，确认记录、候选和 Run 均可重启恢复；空间删除阻止尚未完成的纠错发布。自动摄入编排、空间更新采纳和外部物理清理仍待实现。
+**当前实现进度（0012 迁移）**：reconcile 事务性保存候选、queued Run、graph.prepare outbox 事件及幂等响应；graph-diff 读取持久化差异，条目为 `{kind,id,before,after}`。独立 SQL worker 已实现持久租约、过期接管、失败重试、Neo4j 来源图和 Qdrant 向量准备读回；准备成功才原子进入 pending_review。publish 已实现就绪校验、冲突决策审计、原子发布和旧快照 superseded；未决冲突返回 GRAPH_CONFLICTS_PENDING。keep_both 当前保守排除整个冲突主题的自动出题。已有空间保持绑定，新空间优先绑定最新正式 revision；缺少 graph_revision_id 的旧空间保留临时投影，首次正式 reconcile 基版本仍为 0。提取器仍只投影标题和片段，关系数组为空；0012 已实现纠错持久化、确认入队及 worker 自动发布，确认记录、候选和 Run 均可重启恢复；空间删除阻止尚未完成的纠错发布。空间更新采纳已实现（见第 13 节）；上传后的自动摄入编排和外部物理清理仍待实现。
 
 ### 14.2 版本字段的含义
 

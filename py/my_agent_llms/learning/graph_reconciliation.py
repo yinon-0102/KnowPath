@@ -86,43 +86,58 @@ class GraphReconciliationService:
     def _response(revision):
         return {"run_id": revision["run_id"], "status": "queued", "candidate_revision_id": revision["id"]}
 
-    def reconcile(self, material_id, payload, key):
+    def ingest(self, material_id, payload, key):
+        """Queue parsed sources for durable graph/index preparation, without publishing."""
         def change():
-            self._material(material_id)  # Material lock serializes candidate sequence and publication base.
-            version = self.materials.get_version(payload["version_id"])
-            if version is None or version.material_id != material_id:
-                raise DomainNotFound("material_version", payload["version_id"])
-            if version.status != "ready" or not version.chunks:
-                raise DomainConflict("MATERIAL_NOT_READY", "资料版本尚未完成解析")
-            history = self._history(material_id)
-            published = self._published(history)
-            base_version = published["graph_version"] if published else 0
-            if payload["expected_graph_version"] != base_version:
-                raise DomainConflict("VERSION_CONFLICT", "图谱版本已变化，请刷新后重试", {"graph_version": base_version})
-            for row in reversed(history):
-                if row["material_version_id"] == version.id and row["base_graph_version"] == base_version and row["status"] == "draft" and not row["diff"].get("correction_id"):
-                    if self.runs.get(row["run_id"])["status"] in {"queued", "running"}:
-                        return self._response(row)
-            # Rebuilding an immutable material version must preserve prior review
-            # decisions, including corrections and keep_old/keep_both publication.
-            snapshot = (copy.deepcopy(published["publication"]["snapshot"])
-                        if published and published["material_version_id"] == version.id
-                        else extract_snapshot(material_id, version))
-            revision_id = str(uuid4())
-            run = self.runs.create("graph_reconcile")
-            timestamp = now()
-            revision = {"id": revision_id, "material_id": material_id, "material_version_id": version.id,
-                "sequence": max((row["sequence"] for row in history), default=0) + 1,
-                "base_graph_version": base_version, "graph_version": None, "status": "draft", "run_id": run["id"],
-                "snapshot": snapshot, "snapshot_hash": digest(snapshot),
-                "diff": compare_snapshots(published["publication"]["snapshot"] if published and published.get("publication") else published["snapshot"] if published else {}, snapshot), "created_at": timestamp}
-            self.repository.put_record("graph_revisions", revision)
-            self.repository.put_record("outbox", {"id": str(uuid4()), "aggregate_type": "graph_revision",
-                "aggregate_id": revision_id, "event_type": "graph.prepare", "status": "pending", "created_at": timestamp,
-                "payload": {"revision_id": revision_id, "material_id": material_id, "material_version_id": version.id,
-                            "run_id": run["id"], "snapshot_hash": revision["snapshot_hash"]}})
-            return self._response(revision)
-        return self.commands._execute("graph.reconcile", material_id, payload, key, change)
+            self._material(material_id)
+            published = self._published(self._history(material_id))
+            return self._stage(material_id, {
+                "version_id": payload["version_id"],
+                "expected_graph_version": published["graph_version"] if published else 0,
+            }, run_kind="material_ingest")
+        return self.commands._execute("material.ingest", material_id, payload, key, change)
+
+    def reconcile(self, material_id, payload, key):
+        return self.commands._execute("graph.reconcile", material_id, payload, key,
+                                      lambda: self._stage(material_id, payload))
+
+    def _stage(self, material_id, payload, *, run_kind="graph_reconcile"):
+        # Caller owns the transaction and retry boundary. Retrying a nested
+        # transaction would reuse a failed Session or commit partial staging.
+        self._material(material_id)  # Material lock serializes candidate sequence and publication base.
+        version = self.materials.get_version(payload["version_id"])
+        if version is None or version.material_id != material_id:
+            raise DomainNotFound("material_version", payload["version_id"])
+        if version.status != "ready" or not version.chunks:
+            raise DomainConflict("MATERIAL_NOT_READY", "资料版本尚未完成解析")
+        history = self._history(material_id)
+        published = self._published(history)
+        base_version = published["graph_version"] if published else 0
+        if payload["expected_graph_version"] != base_version:
+            raise DomainConflict("VERSION_CONFLICT", "图谱版本已变化，请刷新后重试", {"graph_version": base_version})
+        for row in reversed(history):
+            if row["material_version_id"] == version.id and row["base_graph_version"] == base_version and row["status"] == "draft" and not row["diff"].get("correction_id"):
+                if self.runs.get(row["run_id"])["status"] in {"queued", "running"}:
+                    return self._response(row)
+        # Rebuilding an immutable material version must preserve prior review
+        # decisions, including corrections and keep_old/keep_both publication.
+        snapshot = (copy.deepcopy(published["publication"]["snapshot"])
+                    if published and published["material_version_id"] == version.id
+                    else extract_snapshot(material_id, version))
+        revision_id = str(uuid4())
+        run = self.runs.create(run_kind)
+        timestamp = now()
+        revision = {"id": revision_id, "material_id": material_id, "material_version_id": version.id,
+            "sequence": max((row["sequence"] for row in history), default=0) + 1,
+            "base_graph_version": base_version, "graph_version": None, "status": "draft", "run_id": run["id"],
+            "snapshot": snapshot, "snapshot_hash": digest(snapshot),
+            "diff": compare_snapshots(published["publication"]["snapshot"] if published and published.get("publication") else published["snapshot"] if published else {}, snapshot), "created_at": timestamp}
+        self.repository.put_record("graph_revisions", revision)
+        self.repository.put_record("outbox", {"id": str(uuid4()), "aggregate_type": "graph_revision",
+            "aggregate_id": revision_id, "event_type": "graph.prepare", "status": "pending", "created_at": timestamp,
+            "payload": {"revision_id": revision_id, "material_id": material_id, "material_version_id": version.id,
+                        "run_id": run["id"], "snapshot_hash": revision["snapshot_hash"]}})
+        return self._response(revision)
 
     def diff(self, material_id, revision_id=None, include_unchanged=False):
         with self.repository.transaction():

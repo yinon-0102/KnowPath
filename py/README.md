@@ -338,7 +338,7 @@ Questions or ideas? Feel free to open an [Issue](https://github.com/HHHH-LK/keel
 
 执行 `uv run alembic upgrade head` 后，reconcile 接口要求 `version_id` 和 `expected_graph_version`，并与候选快照、queued Run、待处理事件及幂等响应一起提交。首次正式发布前基版本是 0；旧空间使用的临时 graph_version=1 投影不代表已经发布的图谱。graph-diff 返回真实节点/来源差异，支持指定 revision_id 和 include_unchanged。
 
-0011 迁移已补齐 graph.prepare worker、Neo4j/Qdrant 准备读回校验及原子发布。SQL API 启动保留 graph_reconcile / knowledge_publish 任务，由独立 worker 按租约恢复和重试；其他异步任务仍沿用原启动恢复规则。publish 对未就绪快照返回 409 REVISION_NOT_READY，对未决冲突返回 409 GRAPH_CONFLICTS_PENDING；发布不改变已有空间，新空间默认绑定最新发布的精确 revision。keep_both 保留双方来源，并保守排除整个冲突主题的自动出题。
+0011 迁移已补齐 graph.prepare worker、Neo4j/Qdrant 准备读回校验及原子发布。SQL API 启动保留 graph_reconcile / knowledge_publish / material_ingest 任务，由独立 worker 按租约恢复和重试；其他异步任务仍沿用原启动恢复规则。publish 对未就绪快照返回 409 REVISION_NOT_READY，对未决冲突返回 409 GRAPH_CONFLICTS_PENDING；发布不改变已有空间，新空间默认绑定最新发布的精确 revision。keep_both 保留双方来源，并保守排除整个冲突主题的自动出题。
 
 在 py/ 目录运行（先配置本地 .env 或环境变量中的数据库、Neo4j、Qdrant、DashScope 连接信息）：
 
@@ -368,3 +368,9 @@ GET /api/v1/learning-spaces/{space_id}/knowledge-updates 预览最新正式发�
 采纳在同一事务切换精确图谱绑定、递增 space/scope 版本、将受影响掌握度持久化为 stale / needs_review，并将旧计划持久化为 needs_replan、递增计划版本；Run 完成结果保存真实影响范围和 stale_state_count。未改变的主题跨资料版本沿用证据版本；变更或移除主题保留历史分数、题目和来源，但旧题与旧评分复核不能恢复新版本掌握度。显式学习范围保持选中的 ID，节点移除不会扩大为全部主题。无需新迁移，使用现有 JSON 绑定与计划配置列。
 
 已有计划通过 plans 的 local_replan 流程重建，使用失效后最新 expected_plan_version；返回独立 plan_build Run。旧完成/跳过任务保留为 historical，新版本安排 diagnostic；include_review=false 也不会跳过 stale 掌握度的重新验证。采纳接口本身不自动生成计划，plan_replan_run_id 为 null。出题期间绑定发生变化时，保留生成题目为 stale 历史并以 STALE_INPUT 结束 Run。详情见 ../docs/implementation/2026-09-18-knowledge-updates.md。
+
+### 显式资料入库
+
+POST /api/v1/materials/{material_id}/ingest 要求 Idempotency-Key，JSON 仅包含 version_id。对已解析且有来源片段的版本，事务创建真实 queued Run、图谱候选和持久化队列，返回 run_id、status、candidate_revision_id。需运行上述 graph_worker_cli；准备成功才结束 Run，候选状态为 pending_review，仍需显式 publish。任务详情和事件查询反映实际进度与失败。
+
+同键重放原接收响应；失败/取消后使用新键重试。请求指定的版本不会被替换为最新上传版本，旧发布与空间绑定保持原值。此批尚未实现原始文件持久化及自动/延迟解析，上传目前仍同步解析；不要把该入口视为解析失败后的原文件恢复。详见 ../docs/implementation/2026-09-18-explicit-material-ingest.md。

@@ -17,7 +17,7 @@ from fastapi.responses import JSONResponse, StreamingResponse, Response
 
 from .config import LearningSettings
 from .material_schemas import UpdateMaterial
-from .graph_schemas import ReconcileGraph, PublishGraph
+from .graph_schemas import IngestMaterial, ReconcileGraph, PublishGraph
 from .correction_schemas import CreateCorrection, ConfirmCorrection
 from .ingestion import MaterialIngestionService
 from .repositories import SqlAlchemyMaterialRepository
@@ -580,11 +580,13 @@ def create_app(
             return _domain_error(exc)
 
     @app.post("/api/v1/materials/{material_id}/ingest", status_code=202)
-    async def ingest_material(material_id: str, payload: dict[str, Any]) -> JSONResponse:
-        if service.repository.get_material(material_id) is None:
-            return _error_response(404, "RESOURCE_NOT_FOUND", "资料不存在", {"material_id": material_id})
-        run = state.run("material_ingest", {"type": "material", "id": material_id})
-        return JSONResponse(status_code=202, content={"run_id": run["id"], "status": "queued"})
+    def ingest_material(material_id: str, payload: IngestMaterial,
+                        idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None) -> JSONResponse:
+        try:
+            return JSONResponse(status_code=202, content=state.graph_service.ingest(
+                material_id, payload.model_dump(), idempotency_key))
+        except (DomainNotFound, DomainConflict) as exc:
+            return _domain_error(exc)
 
     @app.get("/api/v1/learning-spaces/{space_id}/knowledge-updates")
     async def knowledge_updates(space_id: str) -> JSONResponse:
