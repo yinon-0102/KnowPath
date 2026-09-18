@@ -17,7 +17,7 @@ def build_app():
         # Apply Alembic migrations before starting this single-process runtime.
         materials = SqlAlchemyMaterialRepository(engine)
         runs = RunService(SqlAlchemyRunRepository(engine, unit_of_work=materials.unit_of_work))
-        runs.recover_interrupted()
+        runs.recover_interrupted(exclude_kinds={"graph_reconcile"})
         return create_app(MaterialService(materials), run_service=runs)
     return create_app()
 

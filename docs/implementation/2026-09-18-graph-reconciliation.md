@@ -1,5 +1,7 @@
 # Durable graph reconciliation candidates
 
+Historical staging increment. The worker/publication limitations below were addressed by [the 0011 implementation](2026-09-19-graph-worker-publication.md); extraction and remaining API limitations still apply.
+
 ## Scope and contract
 
 This module replaces the reconcile and graph-diff placeholders with persisted, source-backed candidate snapshots. It removes fabricated publication success. It is the staging portion of the approved GraphService/outbox architecture, not a completed graph publication pipeline.

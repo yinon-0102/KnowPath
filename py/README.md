@@ -272,15 +272,15 @@ uv run uvicorn my_agent_llms.learning.main:app --host 127.0.0.1 --port 8000 --wo
 
 SQL 模式要求先完成迁移；启动时不再用 `create_all()` 隐式建表。`.env.example` 只是配置示例，以上命令显式设置环境变量。Docker 配置见 `../infra/docker-compose.yml`。
 
-Run/SSE 当前支持递增事件 ID、UTC 时间戳、Last-Event-ID 续传、15 秒心跳、终态关闭和七天历史过期检查。取消请求先进入 `cancelling`，执行器确认停止后才能变成 `cancelled`；此期间拒绝发布迟到的结果和消息。SQL 启动时将残留的 queued/running/cancelling 任务标记为 `failed / RUN_INTERRUPTED`，不自动重放业务操作。
+Run/SSE 当前支持递增事件 ID、UTC 时间戳、Last-Event-ID 续传、15 秒心跳、终态关闭和七天历史过期检查。取消请求先进入 `cancelling`，执行器确认停止后才能变成 `cancelled`；此期间拒绝发布迟到的结果和消息。SQL 启动时将残留的非 graph_reconcile 类 queued/running/cancelling 任务标记为 `failed / RUN_INTERRUPTED`；graph_reconcile 由独立持久 worker 按租约恢复和重试。
 
 当前 SQL 模式只支持单个服务进程；多个进程同时启动会错误地将彼此任务判断为中断。学习空间的基础字段、固定资料版本绑定、学习范围、画像及 space/scope/profile 版本号已持久化到 MySQL。测验冻结快照、答题修订、证据、掌握度、状态重置和 state_version 已随 0004 迁移持久化；重启后可恢复测验、评分结果、Run 和证据。计划、任务、学习会话、会话事件、评分复核审计和导出快照也已持久化。0009 迁移增加独立对话与消息表；出题和对话在事务提交后通过 FastAPI 后台任务调用 DashScope，模型不可用会将对应 Run 标记为 failed。尚未实现可重试的独立 worker 或真实图谱发布/版本采用。
 
 资料上传和新增版本把资料、版本、片段、幂等记录、Run 与事件写入同一个 SQL 事务；任一步失败会一起回滚。相同 key 和请求在重启后返回原 material/version/run，不同内容复用 key 返回 409。旧幂等记录尚未关联 Run 时，会在首次匹配重试中补建关联，并发重试仍复用同一 Run。MySQL 默认 REPEATABLE READ 隔离级别下，上传按文件哈希加锁去重；锁冲突导致的死锁会有限重试。
 
-创建空间与设置范围必须提供 Idempotency-Key；修改空间基础字段、画像的 PATCH 可选提供该键，提供后也保存并重放原响应。资源变化与响应快照在同一事务中提交。PATCH 和范围修改必须携带 expected_version；画像检查 profile_version，基础字段和范围检查 space_version。范围更新同时递增 scope_version，并将旧范围计划标记为 needs_replan。绑定版本在上传新版本后保持不变；范围只接受绑定版本中的实际主题。当前主题来自文本标题/片段，真实 Neo4j 图谱和有来源的前置关系尚未接入，因此不自动扩展前置主题。
+创建空间与设置范围必须提供 Idempotency-Key；修改空间基础字段、画像的 PATCH 可选提供该键，提供后也保存并重放原响应。资源变化与响应快照在同一事务中提交。PATCH 和范围修改必须携带 expected_version；画像检查 profile_version，基础字段和范围检查 space_version。范围更新同时递增 scope_version，并将旧范围计划标记为 needs_replan。绑定版本在上传新版本后保持不变；范围只接受绑定版本中的实际主题。当前主题来自文本标题/片段，已发布图谱具有 Neo4j 来源投影；语义前置关系尚未提取，因此不自动扩展前置主题。
 
-删除资料会在事务中检查持久空间引用；有引用时返回 409，即使请求 cascade=true 也不能绕过。完整级联删除、删除接口的确认/版本约束及业务清理仍待实现。幂等重放还覆盖测验创建、追加答案和状态重置；交卷依据测验终态复用原 Run。计划、学习会话事件、评分复核、导出和对话也支持幂等重放；图谱候选 reconcile 也已支持事务性幂等重放；真实图谱发布及 24 小时幂等记录清理仍待实现。事件轮询和追加目前读取整个 Run 历史，尚未进行长对话负载优化；过期载荷在读取时清除，保留事件序号和时间用于判断续传是否过期。
+删除资料会在事务中检查持久空间引用；有引用时返回 409，即使请求 cascade=true 也不能绕过。完整级联删除、删除接口的确认/版本约束及业务清理仍待实现。幂等重放还覆盖测验创建、追加答案和状态重置；交卷依据测验终态复用原 Run。计划、学习会话事件、评分复核、导出和对话也支持幂等重放；图谱候选 reconcile 也已支持事务性幂等重放；图谱发布也已实现事务性幂等重放；24 小时幂等记录清理仍待实现。事件轮询和追加目前读取整个 Run 历史，尚未进行长对话负载优化；过期载荷在读取时清除，保留事件序号和时间用于判断续传是否过期。
 
 测验和来源约束对话默认使用 DashScope，需要在服务进程配置 `DASHSCOPE_API_KEY`（请勿提交密钥）；默认聊天模型为 `qwen-plus`，Embedding 保持 `text-embedding-v3`。可设置 `LEARNING_CHAT_BASE_URL` 指向 DashScope 兼容服务。测试注入固定题集或模拟 HTTP，不消费真实模型额度。模型输出通过题数、题型、难度配额、答案键及来源引用校验后才发布；这些结构校验不能保证所有题意和答案在语义上正确，仍需人工评估。
 
@@ -306,7 +306,7 @@ uv run python -m my_agent_llms.learning.vector_indexing --version-id "<material_
 
 全部绑定版本建好索引后，在 `py/.env` 设置 `LEARNING_RETRIEVAL_BACKEND=qdrant` 并重启服务。索引不完整返回 `VECTOR_INDEX_NOT_READY`，不会降级成关键词；失败的 Run 保留原结果，修复索引后使用新的 Idempotency-Key 重试。客户端连接超时为 Qdrant 30 秒、Embedding 每批 60 秒，不自动重试或跟随模型重定向。新版本需要重新建索引，原来固定的旧版本仍可查询。
 
-这个命令是自动摄入前的维护入口。GraphService 的候选快照和 graph.prepare outbox 事件已持久化；跨存储 worker、真实发布、自动重试和物理删除清理仍待实现；索引与资料删除并发时可能留下不可通过当前来源白名单检索的孤儿向量，后续删除流程仍须负责物理清理，不能把该命令当作完整发布/删除工作流。
+这个命令是自动摄入前的维护入口。GraphService 的候选快照和 graph.prepare outbox 事件已持久化；跨存储 worker、带审核的发布和任务重试已实现（见下文），物理删除清理仍待实现；索引与资料删除并发时可能留下不可通过当前来源白名单检索的孤儿向量，后续删除流程仍须负责物理清理，不能把该命令当作完整发布/删除工作流。
 
 运行学习模块回归测试（PowerShell 先展开测试文件）：
 
@@ -334,8 +334,17 @@ Questions or ideas? Feel free to open an [Issue](https://github.com/HHHH-LK/keel
 如果你想要的不是"问一句答一句"的工具,而是一个**记得住、做得完、不闯祸**的长期 AI 伙伴——那就是 Keel。
 
 
-### 图谱候选审核（0010 迁移）
+### 图谱候选审核和发布（0011 迁移）
 
 执行 `uv run alembic upgrade head` 后，reconcile 接口要求 `version_id` 和 `expected_graph_version`，并与候选快照、queued Run、待处理事件及幂等响应一起提交。首次正式发布前基版本是 0；旧空间使用的临时 graph_version=1 投影不代表已经发布的图谱。graph-diff 返回真实节点/来源差异，支持指定 revision_id 和 include_unchanged。
 
-本增量只完成候选持久化和审核读取。还没有执行 graph.prepare 的 worker，Run 不会自行完成；服务启动时现有恢复逻辑会把残留活跃任务标记为 RUN_INTERRUPTED，候选记录保留，可用新幂等键重新生成任务。publish 已取消占位成功响应，未就绪返回 409 REVISION_NOT_READY，不会切换任何空间绑定。详情见 ../docs/implementation/2026-09-18-graph-reconciliation.md。
+0011 迁移已补齐 graph.prepare worker、Neo4j/Qdrant 准备读回校验及原子发布。SQL API 启动保留 graph_reconcile 任务，由独立 worker 按租约恢复和重试；其他异步任务仍沿用原启动恢复规则。publish 对未就绪快照返回 409 REVISION_NOT_READY，对未决冲突返回 409 GRAPH_CONFLICTS_PENDING；发布不改变已有空间，新空间默认绑定最新发布的精确 revision。keep_both 保留双方来源，并保守排除整个冲突主题的自动出题。
+
+在 py/ 目录运行（先配置本地 .env 或环境变量中的数据库、Neo4j、Qdrant、DashScope 连接信息）：
+
+```powershell
+uv run alembic upgrade head
+uv run python -m my_agent_llms.learning.graph_worker_cli
+```
+
+API 必须设置 LEARNING_PERSISTENCE=sql 才能与 worker 共用任务。可加 --once 处理至多一个可执行任务；job_claimed 只表示已领取，最终状态请查询对应 Run。真实 embedding 会使用 DashScope text-embedding-v3（1024 维）。当前标题/片段提取不推断语义关系，上传后的自动图谱编排、纠错确认、空间更新采纳和外部物理清理仍待实现。详情见 ../docs/implementation/2026-09-19-graph-worker-publication.md。

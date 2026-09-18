@@ -728,7 +728,7 @@ TopicNode 和图谱边响应增加 revision_id、material_version_id、graph_ver
 
 graph-diff 返回 base_graph_version、candidate_revision_id、added/changed/removed 数组、conflicts 数组和 affected_topic_ids。reconcile 请求包含 version_id、expected_graph_version，首次发布基版本为 0。候选图谱与索引由 worker 准备就绪，再允许 publish 在 MySQL 中原子切换发布状态；未就绪返回 409 REVISION_NOT_READY。只有自动规则确认的无冲突首次提取可直接 ready；其他结果 needs_review，等待 publish。knowledge-corrections 请求 kind=node/relation、target_id、action=reject/replace、reason、source_ref；replace 需要 proposed_value。201 返回 correction_id、status=pending、candidate_revision_id。confirm 不改变学习空间绑定。
 
-**当前实现进度（0010 迁移）**：reconcile 已事务性保存候选、queued Run、graph.prepare outbox 事件及幂等响应；graph-diff 已读取真实持久化差异，条目为 `{kind,id,before,after}`，kind 为 node/relation/source。当前提取器只投影标题和片段，关系数组为空；同主题内容变化保守标为 content_change 审核项。跨存储准备 worker 和原子发布仍待实现，候选不会自动完成，publish 对未就绪快照返回 409 REVISION_NOT_READY。现有学习空间的临时 graph_version=1 投影不属于正式发布历史，首次 reconcile 的 expected_graph_version 为 0。上述接口契约仍是最终目标，不能据此认为图谱发布已完成。
+**当前实现进度（0011 迁移）**：reconcile 事务性保存候选、queued Run、graph.prepare outbox 事件及幂等响应；graph-diff 读取持久化差异，条目为 `{kind,id,before,after}`。独立 SQL worker 已实现持久租约、过期接管、失败重试、Neo4j 来源图和 Qdrant 向量准备读回；准备成功才原子进入 pending_review。publish 已实现就绪校验、冲突决策审计、原子发布和旧快照 superseded；未决冲突返回 GRAPH_CONFLICTS_PENDING。keep_both 当前保守排除整个冲突主题的自动出题。已有空间保持绑定，新空间优先绑定最新正式 revision；缺少 graph_revision_id 的旧空间保留临时投影，首次正式 reconcile 基版本仍为 0。提取器仍只投影标题和片段，关系数组为空；纠错确认、自动摄入编排、空间更新采纳和外部物理清理仍待实现。
 
 ### 14.2 版本字段的含义
 

@@ -88,9 +88,11 @@ class MessageService:
         return conversation
 
     def _sources(self, space):
-        graphs = {b["material_version_id"]: b["graph_version"] for b in space["bindings"]}
+        selected, excluded = set(space["topic_ids"]), set(space["excluded_topic_ids"])
         sources, versions = {}, {}
-        for topic in self.assessments._topics(space):
+        for topic in self.spaces.bound_topics(space):
+            if (selected and topic["id"] not in selected) or topic["id"] in excluded:
+                continue
             for ref in topic["source_refs"]:
                 version_id = ref["material_version_id"]
                 if version_id not in versions:
@@ -101,7 +103,7 @@ class MessageService:
                 chunk = next((c for c in version.chunks if c.id == ref["chunk_id"]), None)
                 if chunk is not None:
                     sources[chunk.id] = {**ref, "topic_id": topic["id"], "topic_name": topic["name"], "text": chunk.text[:6000],
-                                         "graph_version": graphs[version_id]}
+                                         "graph_version": topic["graph_version"]}
         return list(sources.values())
 
     def _hint(self, assessments, message):

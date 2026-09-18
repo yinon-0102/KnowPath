@@ -16,7 +16,7 @@ from .space_repository import InMemorySpaceRepository, SqlAlchemySpaceRepository
 TABLES = {"assessments": AssessmentRow, "attempts": AttemptRow, "evidence": EvidenceRow,
           "states": LearnerStateRow, "resets": StateResetRow,
           "plans": StudyPlanRow, "tasks": StudyTaskRow, "sessions": SessionRow, "session_events": SessionEventRow, "conversations": ConversationRow, "messages": LearningMessageRow, "graph_revisions": GraphRevisionRow, "outbox": OutboxEventRow}
-DATE_FIELDS = {"created_at", "last_assessed_at", "next_review_at", "defer_until", "started_at", "finished_at", "received_at"}
+DATE_FIELDS = {"lease_until", "available_at", "created_at", "last_assessed_at", "next_review_at", "defer_until", "started_at", "finished_at", "received_at"}
 
 
 class InMemoryLearningRepository(InMemorySpaceRepository):

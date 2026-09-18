@@ -1,8 +1,4 @@
-"""Durable graph candidates; external preparation is a separate outbox consumer.
-
-This stage preserves source-backed extraction and conservative content-change
-conflicts. It never promotes a parsed material into a published graph.
-"""
+"""Durable graph candidates, reviewed publication and pinned snapshot reads."""
 from __future__ import annotations
 
 import copy
@@ -111,7 +107,7 @@ class GraphReconciliationService:
                 "sequence": max((row["sequence"] for row in history), default=0) + 1,
                 "base_graph_version": base_version, "graph_version": None, "status": "draft", "run_id": run["id"],
                 "snapshot": snapshot, "snapshot_hash": digest(snapshot),
-                "diff": compare_snapshots(published["snapshot"] if published else {}, snapshot), "created_at": timestamp}
+                "diff": compare_snapshots(published["publication"]["snapshot"] if published and published.get("publication") else published["snapshot"] if published else {}, snapshot), "created_at": timestamp}
             self.repository.put_record("graph_revisions", revision)
             self.repository.put_record("outbox", {"id": str(uuid4()), "aggregate_type": "graph_revision",
                 "aggregate_id": revision_id, "event_type": "graph.prepare", "status": "pending", "created_at": timestamp,
@@ -161,10 +157,43 @@ class GraphReconciliationService:
             supplied = {item["conflict_id"] for item in payload.get("resolutions", [])}
             if supplied - known:
                 raise DomainConflict("INVALID_CONFLICT_RESOLUTION", "冲突不属于该候选快照")
-            # Readiness must be attested by the external graph/index worker.
-            # Until that consumer and atomic publication are installed, fail
-            # closed even if a caller knows a real candidate identifier.
-            raise DomainConflict("REVISION_NOT_READY", "候选图谱和索引尚未准备就绪，当前不能发布", {"candidate_revision_id": revision_id})
+            from .graph_worker import receipt_valid
+            from .graph_schemas import PublishGraph
+            validated = PublishGraph.model_validate(payload)
+            if revision["status"] != "pending_review" or not receipt_valid(revision, revision.get("preparation")):
+                raise DomainConflict("REVISION_NOT_READY", "候选图谱和索引尚未准备就绪，当前不能发布", {"candidate_revision_id": revision_id})
+            if known - supplied:
+                raise DomainConflict("GRAPH_CONFLICTS_PENDING", "请处理所有图谱冲突后再发布")
+            decisions = {item.conflict_id: item.model_dump() for item in validated.resolutions}
+            effective = copy.deepcopy(revision["snapshot"])
+            nodes = {node["id"]: node for node in effective["nodes"]}
+            for conflict in revision["diff"]["conflicts"]:
+                decision = decisions[conflict["conflict_id"]]
+                if decision["action"] == "keep_old":
+                    nodes[conflict["topic_id"]] = copy.deepcopy(conflict["before"])
+                elif decision["action"] == "keep_both":
+                    node = nodes[conflict["topic_id"]]
+                    node["alternatives"] = [copy.deepcopy(conflict["before"]), copy.deepcopy(conflict["after"])]
+                    refs = {ref["chunk_id"]: ref for side in node["alternatives"] for ref in side["source_refs"]}
+                    node["source_refs"] = list(refs.values())
+                    node["status"], node["automatic_questions"] = "conflicted", False
+                    node["content_hash"] = digest([side["content_hash"] for side in node["alternatives"]])
+            effective["nodes"] = list(nodes.values())
+            sources = {source["id"]: source for source in effective["sources"]}
+            if published:
+                sources.update({source["id"]: source for source in published["publication"]["snapshot"]["sources"]})
+            used = {ref["chunk_id"] for node in effective["nodes"] for ref in node["source_refs"]}
+            effective["sources"] = [sources[identifier] for identifier in sorted(used)]
+            timestamp = now()
+            revision.update(status="published", graph_version=current + 1,
+                publication={"snapshot": effective, "snapshot_hash": digest(effective),
+                             "resolutions": list(decisions.values()), "published_at": timestamp})
+            if published:
+                published["status"] = "superseded"
+                self.repository.put_record("graph_revisions", published)
+            self.repository.put_record("graph_revisions", revision)
+            return {"graph_version": current + 1, "material_version_id": revision["material_version_id"],
+                    "candidate_revision_id": revision_id, "published_at": timestamp}
         return self.commands._execute("graph.publish", material_id, {"revision_id": revision_id, **payload}, key, change)
 
     def delete_history(self, material_id):

@@ -39,7 +39,8 @@ class AssessmentService:
         topics = self.spaces.bound_topics(space)
         selected, excluded = set(space["topic_ids"]), set(space["excluded_topic_ids"])
         return [dict(topic, revision_id=revision(topic)) for topic in topics
-                if (not selected or topic["id"] in selected) and topic["id"] not in excluded]
+                if (not selected or topic["id"] in selected) and topic["id"] not in excluded
+                and topic.get("automatic_questions", True)]
 
     def _epochs(self, space_id):
         result = {}

@@ -36,6 +36,7 @@ class SpaceService:
     def __init__(self, repository, materials):
         self.repository = repository
         self.materials = materials
+        self.graphs = None
 
     def _execute(self, operation, space_id, payload, key, change):
         fingerprint = sha256(json.dumps([operation, space_id, payload], sort_keys=True,
@@ -79,6 +80,11 @@ class SpaceService:
                     raise DomainNotFound("material", material_id)
                 if material.status == "archived":
                     raise DomainConflict("MATERIAL_ARCHIVED", "归档资料不能绑定到新空间", {"material_id": material_id})
+                published = self.graphs._published(self.graphs._history(material_id)) if self.graphs else None
+                if published:
+                    bindings.append({"material_id": material_id, "material_version_id": published["material_version_id"],
+                                     "graph_version": published["graph_version"], "graph_revision_id": published["id"]})
+                    continue
                 version = self.materials.get_version(material.current_version_id)
                 if version is None or version.status != "ready":
                     raise DomainConflict("MATERIAL_NOT_READY", "资料还没有可用版本")
@@ -126,7 +132,19 @@ class SpaceService:
             version = self.materials.get_version(binding["material_version_id"])
             if version is None or version.material_id != binding["material_id"]:
                 raise DomainConflict("BOUND_VERSION_UNAVAILABLE", "空间绑定的资料版本不可用")
-            for topic in topics_for_version(binding["material_id"], version):
+            if binding.get("graph_revision_id"):
+                if self.graphs is None:
+                    raise DomainConflict("BOUND_VERSION_UNAVAILABLE", "图谱快照不可用")
+                revision = self.graphs.repository.get_record("graph_revisions", binding["graph_revision_id"], lock=False)
+                if (revision["material_id"] != binding["material_id"] or revision["material_version_id"] != version.id
+                        or revision["graph_version"] != binding["graph_version"] or revision["status"] not in {"published", "superseded"}):
+                    raise DomainConflict("BOUND_VERSION_UNAVAILABLE", "图谱快照绑定不匹配")
+                bound = copy.deepcopy(revision["publication"]["snapshot"]["nodes"])
+                for node in bound:
+                    node["graph_version"] = binding["graph_version"]
+            else:
+                bound = topics_for_version(binding["material_id"], version)
+            for topic in bound:
                 topics[topic["id"]] = topic
                 slug = "".join(ch.lower() if ch.isalnum() else "_" for ch in topic["name"]).strip("_")
                 if slug and len(space["bindings"]) == 1:

@@ -49,6 +49,7 @@ class LearningState:
         learning_repository = SqlAlchemyLearningRepository(uow) if uow else InMemoryLearningRepository(self.material_repository, self.run_service)
         graph_repository = SqlAlchemyGraphRepository(uow) if uow else InMemoryGraphRepository(self.material_repository, self.run_service)
         self.graph_service = GraphReconciliationService(graph_repository, self.material_repository, self.run_service)
+        self.space_service.graphs = self.graph_service
         self.assessment_service = AssessmentService(learning_repository, space_service, self.run_service, question_generator)
         self.message_service = MessageService(learning_repository, space_service, self.assessment_service, self.run_service, answer_generator, source_retriever)
         self.spaces: dict[str, dict[str, Any]] = {}
