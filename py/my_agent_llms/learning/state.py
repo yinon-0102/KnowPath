@@ -1,21 +1,21 @@
-"""In-memory learning domain state used by the local first release.
+"""Learning runtime with durable space metadata and in-memory learning workflows.
 
-The class is intentionally storage-agnostic.  Its dictionaries mirror the
-aggregate boundaries that will be persisted by the SQL/graph repositories.
+SpaceService owns space metadata; these dictionaries retain transient assessment,
+plan, evidence and session state until their repositories are implemented.
 """
 
 from __future__ import annotations
 
 import copy
-import json
 from datetime import datetime, timezone
-from hashlib import sha256
 from typing import Any
 from uuid import uuid4
 
-from .materials import InMemoryMaterialRepository, MaterialService
+from .materials import InMemoryMaterialRepository, MaterialRepository, MaterialService
 from .errors import DomainConflict, DomainNotFound
 from .runs import RunService
+from .spaces import SpaceService, topics_for_version
+from .space_repository import InMemorySpaceRepository, SqlAlchemySpaceRepository
 
 
 def _now() -> str:
@@ -27,11 +27,16 @@ def _id(prefix: str) -> str:
 
 
 class LearningState:
-    def __init__(self, material_repository: InMemoryMaterialRepository | None = None, *,
-                 run_service: RunService | None = None) -> None:
+    def __init__(self, material_repository: MaterialRepository | None = None, *,
+                 run_service: RunService | None = None, space_service: SpaceService | None = None) -> None:
         self.material_repository = material_repository or InMemoryMaterialRepository()
         self.material_service = MaterialService(self.material_repository)
         self.run_service = run_service if run_service is not None else RunService()
+        if space_service is None:
+            uow = getattr(self.material_repository, "unit_of_work", None)
+            repository = SqlAlchemySpaceRepository(uow) if uow else InMemorySpaceRepository(self.material_repository)
+            space_service = SpaceService(repository, self.material_repository)
+        self.space_service = space_service
         self.spaces: dict[str, dict[str, Any]] = {}
         self.topics: dict[str, dict[str, Any]] = {}
         self.assessments: dict[str, dict[str, Any]] = {}
@@ -54,154 +59,68 @@ class LearningState:
     def cancel_run(self, run_id: str) -> dict[str, Any]:
         return self.run_service.request_cancel(run_id)
 
-    def create_space(self, payload: dict[str, Any]) -> dict[str, Any]:
-        material_ids = payload.get("material_ids") or []
-        if not material_ids:
-            raise DomainConflict("MATERIAL_REQUIRED", "至少需要一份资料")
-        bindings = []
-        for material_id in material_ids:
-            material = self.material_repository.get_material(material_id)
-            if material is None:
-                raise DomainNotFound("material", material_id)
-            version = self.material_repository.get_version(material.current_version_id)
-            if version is None or version.status != "ready":
-                raise DomainConflict("MATERIAL_NOT_READY", "资料还没有可用版本")
-            bindings.append(
-                {
-                    "material_id": material.id,
-                    "material_version_id": version.id,
-                    "graph_version": 1,
-                }
-            )
-            self._index_material_topics(material.id, version)
-        space_id = _id("space")
-        now = _now()
-        space = {
-            "id": space_id,
-            "name": (payload.get("name") or "未命名学习空间")[:100],
-            "status": "draft",
-            "goal": payload.get("goal"),
-            "target_date": payload.get("target_date"),
-            "weekly_minutes": payload.get("weekly_minutes"),
-            "bindings": bindings,
-            "topic_ids": [],
-            "excluded_topic_ids": [],
-            "scope_version": 0,
-            "space_version": 1,
-            "profile_version": 1,
-            "state_version": 0,
-            "state": {},
-            "profile": {
-                "goal": {"value": payload.get("goal"), "source": "explicit", "updated_at": now},
-                "weekly_minutes": {"value": payload.get("weekly_minutes"), "source": "explicit", "updated_at": now},
-                "target_date": {"value": payload.get("target_date"), "source": "explicit", "updated_at": now},
-            },
-            "active_session_id": None,
-            "created_at": now,
-            "updated_at": now,
-        }
-        self.spaces[space_id] = space
-        self.changes.append({"kind": "space_created", "space_id": space_id, "created_at": now})
-        return copy.deepcopy(space)
-
-    def list_spaces(self) -> list[dict[str, Any]]:
-        return [copy.deepcopy(item) for item in self.spaces.values()]
-
-    def get_space(self, space_id: str) -> dict[str, Any]:
-        space = self.spaces.get(space_id)
-        if space is None:
-            raise DomainNotFound("learning_space", space_id)
+    def _hydrate_space(self, metadata):
+        # Only metadata is durable in this slice. Assessment state and active
+        # sessions remain owned by this runtime until their repositories land.
+        space = self.spaces.setdefault(metadata["id"], {"state_version": 0, "state": {}, "active_session_id": None})
+        space.update(copy.deepcopy({key: value for key, value in metadata.items()
+                                    if key not in {"state", "state_version", "active_session_id"}}))
         return space
 
-    def update_space(self, space_id: str, payload: dict[str, Any]) -> dict[str, Any]:
-        space = self.get_space(space_id)
-        expected = payload.get("expected_version")
-        if expected is not None and expected != space["space_version"]:
-            raise DomainConflict("VERSION_CONFLICT", "学习空间版本已变化")
-        if "name" in payload:
-            space["name"] = str(payload["name"])[:100]
-        if "status" in payload:
-            space["status"] = payload["status"]
-        space["space_version"] += 1
-        space["updated_at"] = _now()
-        return copy.deepcopy(space)
+    def create_space(self, payload: dict[str, Any], *, idempotency_key: str | None = None) -> dict[str, Any]:
+        # The committed response is authoritative, including retries after deletion.
+        # Topics and runtime state are hydrated on demand from pinned bindings.
+        return self.space_service.create(payload, idempotency_key)
 
-    def set_scope(self, space_id: str, payload: dict[str, Any]) -> dict[str, Any]:
-        space = self.get_space(space_id)
-        expected = payload.get("expected_version")
-        if expected is not None and expected != space["space_version"]:
-            raise DomainConflict("VERSION_CONFLICT", "学习空间版本已变化")
-        topic_ids = list(dict.fromkeys(payload.get("topic_ids") or []))
-        if not topic_ids:
-            raise DomainConflict("INVALID_SCOPE", "topic_ids 不能为空")
-        space["topic_ids"] = topic_ids
-        space["excluded_topic_ids"] = payload.get("excluded_topic_ids") or []
-        space["scope_version"] += 1
-        space["space_version"] += 1
-        space["updated_at"] = _now()
-        return {
-            "scope_version": space["scope_version"],
-            "space_version": space["space_version"],
-            "topic_ids": topic_ids,
-            "prerequisite_topic_ids": [],
-            "recommended_topic_ids": [],
-        }
+    def list_spaces(self) -> list[dict[str, Any]]:
+        return [copy.deepcopy(self._hydrate_space(space)) for space in self.space_service.list()]
+
+    def get_space(self, space_id: str) -> dict[str, Any]:
+        return self._hydrate_space(self.space_service.get(space_id))
+
+    def update_space(self, space_id: str, payload: dict[str, Any], *, idempotency_key: str | None = None) -> dict[str, Any]:
+        return self.space_service.update(space_id, payload, idempotency_key)
+
+    def set_scope(self, space_id: str, payload: dict[str, Any], *, idempotency_key: str | None = None) -> dict[str, Any]:
+        result = self.space_service.set_scope(space_id, payload, idempotency_key)
+        try:
+            current = self.get_space(space_id)
+        except DomainNotFound:
+            # A committed idempotent response can be replayed after the resource
+            # was deleted; no runtime plan cache needs invalidation then.
+            return result
+        for plan in self.plans.values():
+            if plan["space_id"] == space_id and plan.get("scope_version", 0) != current["scope_version"]:
+                plan["status"] = "needs_replan"
+        return result
 
     def get_profile(self, space_id: str) -> dict[str, Any]:
         return copy.deepcopy(self.get_space(space_id)["profile"])
 
-    def update_profile(self, space_id: str, payload: dict[str, Any]) -> dict[str, Any]:
-        space = self.get_space(space_id)
-        expected = payload.get("expected_version")
-        if expected is not None and expected != space["profile_version"]:
-            raise DomainConflict("VERSION_CONFLICT", "画像版本已变化")
-        now = _now()
-        for key in ("goal", "weekly_minutes", "target_date", "preferences"):
-            if key in payload:
-                space["profile"][key] = {"value": payload[key], "source": "explicit", "updated_at": now}
-                if key in {"goal", "weekly_minutes", "target_date"}:
-                    space[key] = payload[key]
-        space["profile_version"] += 1
-        return {"profile": copy.deepcopy(space["profile"]), "profile_version": space["profile_version"]}
+    def update_profile(self, space_id: str, payload: dict[str, Any], *, idempotency_key: str | None = None) -> dict[str, Any]:
+        return self.space_service.update_profile(space_id, payload, idempotency_key)
 
     def _index_material_topics(self, material_id: str, version: Any) -> None:
-        for index, chunk in enumerate(version.chunks):
-            name = chunk.section_path[-1] if chunk.section_path else chunk.text.split(".", 1)[0][:80]
-            topic_id = f"topic_{sha256(f'{material_id}:{name}'.encode()).hexdigest()[:12]}"
-            self.topics.setdefault(
-                topic_id,
-                {
-                    "id": topic_id,
-                    "name": name or f"知识点 {index + 1}",
-                    "kind": "concept",
-                    "parent_id": None,
-                    "level": len(chunk.section_path) or 1,
-                    "confidence": 1.0,
-                    "source_refs": [
-                        {
-                            "material_id": material_id,
-                            "material_version_id": version.id,
-                            "chunk_id": chunk.id,
-                            "page": chunk.page,
-                            "line_start": chunk.line_start,
-                            "line_end": chunk.line_end,
-                        }
-                    ],
-                    "prerequisites": [],
-                    "status": "active",
-                    "graph_version": 1,
-                },
-            )
+        for topic in topics_for_version(material_id, version):
+            self.topics[topic["id"]] = topic
 
     def topics_for_space(self, space_id: str) -> list[dict[str, Any]]:
         space = self.get_space(space_id)
+        topics = self.space_service.bound_topics(space)
+        for topic in topics:
+            self.topics[topic["id"]] = topic
         selected = set(space["topic_ids"])
-        if not selected:
-            selected = set(self.topics)
-        return [copy.deepcopy(topic) for topic in self.topics.values() if topic["id"] in selected]
+        excluded = set(space["excluded_topic_ids"])
+        return [copy.deepcopy(topic) for topic in topics
+                if (not selected or topic["id"] in selected) and topic["id"] not in excluded]
 
     def get_topic_graph(self, topic_id: str) -> dict[str, Any]:
         topic = self.topics.get(topic_id)
+        if topic is None:
+            for space in self.space_service.list():
+                for restored in self.space_service.bound_topics(space):
+                    self.topics[restored["id"]] = restored
+            topic = self.topics.get(topic_id)
         if topic is None:
             raise DomainNotFound("topic", topic_id)
         return {"nodes": [copy.deepcopy(topic)], "edges": [], "graph_version": topic["graph_version"]}
@@ -337,13 +256,13 @@ class LearningState:
         space = self.get_space(space_id)
         count = max(3, min(int(payload.get("session_count", 5)), 5))
         minutes = max(10, min(int(payload.get("minutes_per_session", 30)), 120))
-        topic_ids = space["topic_ids"] or list(self.topics)[:1] or ["topic_general"]
+        topic_ids = space["topic_ids"] or [topic["id"] for topic in self.topics_for_space(space_id)]
         tasks = []
         for index in range(count):
             topic_id = topic_ids[index % len(topic_ids)]
             tasks.append({"id": _id("task"), "topic_ids": [topic_id], "kind": "targeted_practice", "status": "pending", "estimated_minutes": minutes, "reason": "按当前学习范围生成"})
         plan_id = _id("plan")
-        plan = {"plan_id": plan_id, "id": plan_id, "space_id": space_id, "version": 1, "tasks": tasks, "status": "ready", "created_at": _now()}
+        plan = {"plan_id": plan_id, "id": plan_id, "space_id": space_id, "version": 1, "scope_version": space["scope_version"], "tasks": tasks, "status": "ready", "created_at": _now()}
         self.plans[plan_id] = plan
         run = self.run("plan_build", {"type": "plan", "id": plan_id})
         plan["run_id"] = run["id"]
@@ -353,6 +272,12 @@ class LearningState:
         plan = self.plans.get(plan_id)
         if plan is None:
             raise DomainNotFound("plan", plan_id)
+        try:
+            current_scope_version = self.get_space(plan["space_id"])["scope_version"]
+            if plan.get("scope_version", 0) != current_scope_version:
+                plan["status"] = "needs_replan"
+        except DomainNotFound:
+            pass
         return copy.deepcopy(plan)
 
     def update_task(self, plan_id: str, task_id: str, payload: dict[str, Any]) -> dict[str, Any]:
@@ -440,13 +365,16 @@ class LearningState:
         return {"space_id": space_id, "bindings": copy.deepcopy(space["bindings"]), "available_updates": [], "affected_topic_ids": [], "invalidated_question_ids": [], "plan_impact": None}
 
     def apply_knowledge_updates(self, space_id: str, payload: dict[str, Any]) -> dict[str, Any]:
-        space = self.get_space(space_id)
-        expected = payload.get("expected_space_version")
-        if expected is not None and expected != space["space_version"]:
-            raise DomainConflict("VERSION_CONFLICT", "学习空间版本已变化")
-        space["space_version"] += 1
+        with self.space_service.repository.transaction():
+            space = self.space_service.repository.get(space_id)
+            expected = payload.get("expected_space_version")
+            if expected is not None and expected != space["space_version"]:
+                raise DomainConflict("VERSION_CONFLICT", "学习空间版本已变化")
+            space["space_version"] += 1
+            self.space_service.repository.put(space)
+            new_version = space["space_version"]
         run = self.run("knowledge_update_apply", {"type": "learning_space", "id": space_id})
-        return {"run_id": run["id"], "space_id": space_id, "space_version": space["space_version"], "affected_topic_ids": [], "stale_state_count": 0, "plan_replan_run_id": None}
+        return {"run_id": run["id"], "space_id": space_id, "space_version": new_version, "affected_topic_ids": [], "stale_state_count": 0, "plan_replan_run_id": None}
 
     def reset_state(self, space_id: str, topic_ids: list[str], reason: str) -> dict[str, Any]:
         space = self.get_space(space_id)
@@ -472,7 +400,8 @@ class LearningState:
 
     def delete_space(self, space_id: str) -> dict[str, Any]:
         self.get_space(space_id)
-        del self.spaces[space_id]
+        self.space_service.delete(space_id)
+        self.spaces.pop(space_id, None)
         return {"status": "succeeded", "space_id": space_id}
 
     def changes_for(self, space_id: str) -> list[dict[str, Any]]:

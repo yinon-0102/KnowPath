@@ -26,6 +26,8 @@ from .materials import (
 from .errors import DomainConflict, DomainNotFound, EventHistoryExpired
 from .runs import RunService, stream_run_events
 from .state import LearningState
+from .space_schemas import CreateSpace, UpdateSpace, SetScope, UpdateProfile
+from .spaces import topics_for_version
 
 
 def create_app(
@@ -62,7 +64,7 @@ def create_app(
             status_code=422,
             code="INVALID_REQUEST",
             message="请求参数校验失败",
-            details={"errors": exc.errors()},
+            details={"errors": [{k: v for k, v in error.items() if k != "ctx"} for error in exc.errors()]},
         )
 
     @app.get("/api/v1/health")
@@ -323,16 +325,19 @@ def create_app(
             return _domain_error(exc)
 
     @app.get("/api/v1/materials/{material_id}/topics")
-    async def material_topics(material_id: str) -> JSONResponse:
+    def material_topics(material_id: str, version_id: str | None = None) -> JSONResponse:
         material = service.repository.get_material(material_id)
         if material is None:
             return _error_response(404, "RESOURCE_NOT_FOUND", "资料不存在", {"material_id": material_id})
-        version = service.repository.get_version(material.current_version_id)
-        topics = [topic for topic in state.topics.values() if any(ref["material_id"] == material_id for ref in topic.get("source_refs", []))]
+        version = service.repository.get_version(version_id or material.current_version_id)
+        if version is None or version.material_id != material_id:
+            return _error_response(404, "RESOURCE_NOT_FOUND", "资料版本不存在")
+        topics = topics_for_version(material_id, version)
+        state.topics.update({topic["id"]: topic for topic in topics})
         return JSONResponse(status_code=200, content={"material_id": material_id, "version_id": version.id if version else None, "items": topics})
 
     @app.get("/api/v1/topics/{topic_id}/graph")
-    async def topic_graph(topic_id: str) -> JSONResponse:
+    def topic_graph(topic_id: str) -> JSONResponse:
         try:
             return JSONResponse(status_code=200, content=state.get_topic_graph(topic_id))
         except DomainNotFound as exc:
@@ -358,48 +363,49 @@ def create_app(
         return JSONResponse(status_code=200, content={"graph_version": 2, "material_version_id": revision_id, "published_at": _now_for_api()})
 
     @app.get("/api/v1/learning-spaces")
-    async def list_learning_spaces() -> dict[str, Any]:
+    def list_learning_spaces() -> dict[str, Any]:
         return {"items": state.list_spaces(), "next_cursor": None}
 
     @app.post("/api/v1/learning-spaces", status_code=201)
-    async def create_learning_space(payload: dict[str, Any]) -> JSONResponse:
+    def create_learning_space(payload: CreateSpace, idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None) -> JSONResponse:
         try:
-            return JSONResponse(status_code=201, content=state.create_space(payload))
+            return JSONResponse(status_code=201, content=state.create_space(payload.model_dump(mode="json", exclude_unset=True), idempotency_key=idempotency_key))
         except (DomainNotFound, DomainConflict) as exc:
             return _domain_error(exc)
 
     @app.patch("/api/v1/learning-spaces/{space_id}")
-    async def update_learning_space(space_id: str, payload: dict[str, Any]) -> JSONResponse:
+    def update_learning_space(space_id: str, payload: UpdateSpace, idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None) -> JSONResponse:
         try:
-            return JSONResponse(status_code=200, content=state.update_space(space_id, payload))
+            return JSONResponse(status_code=200, content=state.update_space(space_id, payload.model_dump(mode="json", exclude_unset=True), idempotency_key=idempotency_key))
         except (DomainNotFound, DomainConflict) as exc:
             return _domain_error(exc)
 
     @app.get("/api/v1/learning-spaces/{space_id}")
-    async def get_learning_space(space_id: str) -> JSONResponse:
+    def get_learning_space(space_id: str) -> JSONResponse:
         try:
             return JSONResponse(status_code=200, content=state.get_space(space_id))
         except DomainNotFound as exc:
             return _domain_error(exc)
 
     @app.post("/api/v1/learning-spaces/{space_id}/scope")
-    async def set_learning_scope(space_id: str, payload: dict[str, Any]) -> JSONResponse:
+    def set_learning_scope(space_id: str, payload: SetScope, idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None) -> JSONResponse:
         try:
-            return JSONResponse(status_code=200, content=state.set_scope(space_id, payload))
+            return JSONResponse(status_code=200, content=state.set_scope(space_id, payload.model_dump(mode="json", exclude_unset=True), idempotency_key=idempotency_key))
         except (DomainNotFound, DomainConflict) as exc:
             return _domain_error(exc)
 
     @app.get("/api/v1/learning-spaces/{space_id}/profile")
-    async def get_learning_profile(space_id: str) -> JSONResponse:
+    def get_learning_profile(space_id: str) -> JSONResponse:
         try:
-            return JSONResponse(status_code=200, content={"profile": state.get_profile(space_id)})
+            space = state.get_space(space_id)
+            return JSONResponse(status_code=200, content={"profile": space["profile"], "profile_version": space["profile_version"]})
         except DomainNotFound as exc:
             return _domain_error(exc)
 
     @app.patch("/api/v1/learning-spaces/{space_id}/profile")
-    async def update_learning_profile(space_id: str, payload: dict[str, Any]) -> JSONResponse:
+    def update_learning_profile(space_id: str, payload: UpdateProfile, idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None) -> JSONResponse:
         try:
-            return JSONResponse(status_code=200, content=state.update_profile(space_id, payload))
+            return JSONResponse(status_code=200, content=state.update_profile(space_id, payload.model_dump(mode="json", exclude_unset=True), idempotency_key=idempotency_key))
         except (DomainNotFound, DomainConflict) as exc:
             return _domain_error(exc)
 
@@ -598,15 +604,24 @@ def create_app(
 
     @app.delete("/api/v1/materials/{material_id}", status_code=202)
     async def delete_material(material_id: str, payload: dict[str, Any] | None = None) -> JSONResponse:
-        material = service.repository.get_material(material_id)
-        if material is None:
-            return _error_response(404, "RESOURCE_NOT_FOUND", "资料不存在", {"material_id": material_id})
-        if any(material_id in [binding["material_id"] for binding in space["bindings"]] for space in state.spaces.values()) and not (payload or {}).get("cascade", False):
-            return _error_response(409, "MATERIAL_IN_USE", "资料仍被学习空间引用")
-        await asyncio.to_thread(service.repository.delete_material, material_id)
+        def delete_atomically():
+            with service.repository.transaction():
+                material = service.repository.get_material(material_id)
+                if material is None:
+                    raise DomainNotFound("material", material_id)
+                referenced = any(material_id in [binding["material_id"] for binding in space["bindings"]]
+                                for space in state.list_spaces())
+                if referenced:
+                    raise DomainConflict("MATERIAL_IN_USE", "资料仍被学习空间引用；请先删除引用空间，级联删除尚未实现")
+                service.repository.delete_material(material_id)
+        try:
+            await asyncio.to_thread(delete_atomically)
+        except DomainNotFound as exc:
+            return _domain_error(exc)
+        except DomainConflict as exc:
+            return _domain_error(exc)
         run = state.run("material_delete", {"type": "material", "id": material_id})
         return JSONResponse(status_code=202, content={"run_id": run["id"], "status": "queued"})
-
     return app
 
 

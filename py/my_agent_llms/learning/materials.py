@@ -133,25 +133,30 @@ class InMemoryMaterialRepository:
         self.materials: dict[str, Material] = {}
         self.versions: dict[str, MaterialVersion] = {}
         self.by_content_hash: dict[str, tuple[str, str]] = {}
-        self.idempotency: dict[str, tuple[str, str, str]] = {}
+        self.idempotency: dict[str, tuple[str, str, str | None]] = {}
         self.idempotency_runs: dict[str, str] = {}
+        self.idempotency_responses: dict[str, dict] = {}
+        self.learning_spaces: dict[str, dict] = {}
         self._lock = RLock()
 
     @contextmanager
     def transaction(self):
         with self._lock:
             previous = copy.deepcopy((self.materials, self.versions, self.by_content_hash,
-                                      self.idempotency, self.idempotency_runs))
+                                      self.idempotency, self.idempotency_runs, self.idempotency_responses, self.learning_spaces))
             try:
                 yield
             except BaseException:
                 (self.materials, self.versions, self.by_content_hash,
-                 self.idempotency, self.idempotency_runs) = previous
+                 self.idempotency, self.idempotency_runs, self.idempotency_responses, self.learning_spaces) = previous
                 raise
 
     def get_idempotency(self, key: str) -> tuple[str, str, str] | None:
         with self._lock:
-            return self.idempotency.get(key)
+            record = self.idempotency.get(key)
+            if record is not None and record[2] is None:
+                raise IdempotencyConflict("idempotency key was reused for another operation")
+            return record
 
     def get_idempotency_run(self, key: str) -> str | None:
         with self._lock:

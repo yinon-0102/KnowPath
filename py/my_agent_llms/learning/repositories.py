@@ -8,7 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .db import IdempotencyRow, MaterialRow, MaterialVersionRow, SourceChunkRow
-from .materials import Material, MaterialVersion, SourceChunk
+from .materials import IdempotencyConflict, Material, MaterialVersion, SourceChunk
 from .unit_of_work import SqlAlchemyUnitOfWork
 
 
@@ -22,8 +22,10 @@ class SqlAlchemyMaterialRepository:
     def get_idempotency(self, key: str) -> tuple[str, str, str] | None:
         with self.unit_of_work.session() as session:
             row = session.get(IdempotencyRow, key)
-            if row is None or row.version_id is None:
+            if row is None:
                 return None
+            if row.resource_type != "material_version" or row.version_id is None:
+                raise IdempotencyConflict("idempotency key was reused for another operation")
             return row.request_fingerprint, row.resource_id, row.version_id
 
     def get_idempotency_run(self, key: str) -> str | None:
@@ -55,7 +57,10 @@ class SqlAlchemyMaterialRepository:
 
     def get_version(self, version_id: str) -> MaterialVersion | None:
         with self.unit_of_work.session() as session:
-            row = session.get(MaterialVersionRow, version_id)
+            query = select(MaterialVersionRow).where(MaterialVersionRow.id == version_id)
+            if self.unit_of_work.active:
+                query = query.with_for_update().execution_options(populate_existing=True)
+            row = session.scalar(query)
             return _version_from_rows(row, session, lock=self.unit_of_work.active) if row else None
 
     def find_by_content_hash(self, content_hash: str) -> tuple[Material, MaterialVersion] | None:
