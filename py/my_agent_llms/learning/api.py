@@ -1,0 +1,646 @@
+"""HTTP transport for the first learning-domain slice."""
+
+from __future__ import annotations
+
+from typing import Annotated, Any
+
+from fastapi import FastAPI, File, Form, Header, Request, UploadFile
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse, StreamingResponse
+
+from .config import LearningSettings
+from .materials import (
+    IdempotencyConflict,
+    InMemoryMaterialRepository,
+    MaterialError,
+    MaterialNotFound,
+    MaterialService,
+    UnsupportedMaterial,
+)
+from .state import DomainConflict, DomainNotFound, LearningState
+
+
+def create_app(
+    service: MaterialService | None = None,
+    settings: LearningSettings | None = None,
+) -> FastAPI:
+    service = service or MaterialService(InMemoryMaterialRepository())
+    settings = settings or LearningSettings.from_env()
+    state = LearningState(material_repository=service.repository)
+    ingest_runs: dict[str, dict[str, Any]] = {}
+    app = FastAPI(title="Keel Learning", version="0.1.0")
+
+    @app.middleware("http")
+    async def idempotency_guard(request: Request, call_next):
+        if settings.local_token and request.url.path != "/api/v1/health":
+            if request.headers.get("X-Local-Token") != settings.local_token:
+                return _error_response(401, "LOCAL_TOKEN_REQUIRED", "需要有效的本地会话令牌")
+        if request.method == "POST" and request.url.path.startswith("/api/v1/") and _requires_idempotency(request.url.path):
+            if not (request.headers.get("Idempotency-Key") or "").strip():
+                return _error_response(400, "IDEMPOTENCY_KEY_REQUIRED", "此 POST 请求必须提供 Idempotency-Key")
+        return await call_next(request)
+
+    @app.exception_handler(RequestValidationError)
+    async def validation_error(_: Request, exc: RequestValidationError) -> JSONResponse:
+        return _error_response(
+            status_code=422,
+            code="INVALID_REQUEST",
+            message="请求参数校验失败",
+            details={"errors": exc.errors()},
+        )
+
+    @app.get("/api/v1/health")
+    async def health() -> dict:
+        return {
+            "status": "ok",
+            "version": "0.1.0",
+            "runtime": "keel-learning",
+            "dependencies": {
+                "mysql": "not_configured",
+                "neo4j": "not_configured",
+                "vector_store": "qdrant",
+                "llm": {"provider": settings.chat_provider, "model": settings.chat_model, "status": "configured"},
+                "embedding": {
+                    "provider": settings.embedding_provider,
+                    "model": settings.embedding_model,
+                    "dimension": settings.embedding_dimension,
+                    "status": "configured",
+                },
+            },
+        }
+
+    @app.post("/api/v1/materials", status_code=201)
+    async def create_material(
+        file: UploadFile = File(...),
+        idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
+        name: str | None = Form(None),
+    ) -> JSONResponse:
+        if not idempotency_key or not idempotency_key.strip():
+            return _error_response(
+                status_code=400,
+                code="IDEMPOTENCY_KEY_REQUIRED",
+                message="资料上传必须提供 Idempotency-Key",
+            )
+        try:
+            result = service.create(
+                filename=file.filename or "material.txt",
+                content=await file.read(),
+                idempotency_key=idempotency_key,
+                name=name,
+            )
+        except IdempotencyConflict as exc:
+            return _error_response(409, "IDEMPOTENCY_CONFLICT", str(exc))
+        except UnsupportedMaterial as exc:
+            return _error_response(422, "UNSUPPORTED_MATERIAL", str(exc))
+        except MaterialError as exc:
+            return _error_response(422, "MATERIAL_PARSE_FAILED", str(exc))
+
+        run = ingest_runs.get(idempotency_key)
+        if run is None:
+            run = state.run("material_ingest", {"type": "material_version", "id": result.version.id})
+            ingest_runs[idempotency_key] = run
+        state._index_material_topics(result.material.id, result.version)
+
+        return JSONResponse(
+            status_code=201,
+            content={
+                "material": {
+                    "id": result.material.id,
+                    "name": result.material.name,
+                    "type": result.material.type,
+                    "status": result.material.status,
+                    "current_version_id": result.material.current_version_id,
+                    "size_bytes": result.material.size_bytes,
+                    "created_at": result.material.created_at.isoformat(),
+                    "updated_at": result.material.updated_at.isoformat(),
+                },
+                "version": {
+                    "id": result.version.id,
+                    "material_id": result.version.material_id,
+                    "filename": result.version.filename,
+                    "content_hash": result.version.content_hash,
+                    "status": result.version.status,
+                    "chunk_count": len(result.version.chunks),
+                },
+                "run_id": run["id"],
+                "replayed": result.replayed,
+            },
+        )
+
+    @app.get("/api/v1/materials")
+    async def list_materials() -> dict:
+        return {
+            "items": [
+                {
+                    "id": material.id,
+                    "name": material.name,
+                    "type": material.type,
+                    "status": material.status,
+                    "current_version_id": material.current_version_id,
+                    "size_bytes": material.size_bytes,
+                    "created_at": material.created_at.isoformat(),
+                    "updated_at": material.updated_at.isoformat(),
+                }
+                for material in service.repository.list_materials()
+            ],
+            "next_cursor": None,
+        }
+
+    @app.post("/api/v1/materials/{material_id}/versions", status_code=201)
+    async def create_material_version(
+        material_id: str,
+        file: UploadFile = File(...),
+        idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
+    ) -> JSONResponse:
+        if not idempotency_key or not idempotency_key.strip():
+            return _error_response(400, "IDEMPOTENCY_KEY_REQUIRED", "资料版本上传必须提供 Idempotency-Key")
+        try:
+            result = service.create_version(
+                material_id=material_id,
+                filename=file.filename or "material.txt",
+                content=await file.read(),
+                idempotency_key=idempotency_key,
+            )
+        except MaterialNotFound:
+            return _error_response(404, "RESOURCE_NOT_FOUND", "资料不存在", {"material_id": material_id})
+        except IdempotencyConflict as exc:
+            return _error_response(409, "IDEMPOTENCY_CONFLICT", str(exc))
+        except UnsupportedMaterial as exc:
+            return _error_response(422, "UNSUPPORTED_MATERIAL", str(exc))
+        except MaterialError as exc:
+            return _error_response(422, "MATERIAL_PARSE_FAILED", str(exc))
+
+        run = ingest_runs.get(idempotency_key)
+        if run is None:
+            run = state.run("material_ingest", {"type": "material_version", "id": result.version.id})
+            ingest_runs[idempotency_key] = run
+        state._index_material_topics(result.material.id, result.version)
+
+        return JSONResponse(
+            status_code=201,
+            content={
+                "material_version_id": result.version.id,
+                "material_id": result.material.id,
+                "status": result.version.status,
+                "content_hash": result.version.content_hash,
+                "chunk_count": len(result.version.chunks),
+                "run_id": run["id"],
+                "replayed": result.replayed,
+            },
+        )
+
+    @app.get("/api/v1/materials/{material_id}/versions")
+    async def list_material_versions(material_id: str) -> JSONResponse:
+        if service.repository.get_material(material_id) is None:
+            return _error_response(404, "RESOURCE_NOT_FOUND", "资料不存在", {"material_id": material_id})
+        return JSONResponse(
+            status_code=200,
+            content={
+                "items": [
+                    {
+                        "id": version.id,
+                        "material_id": version.material_id,
+                        "filename": version.filename,
+                        "content_hash": version.content_hash,
+                        "status": version.status,
+                        "created_at": version.created_at.isoformat(),
+                    }
+                    for version in service.repository.list_versions(material_id)
+                ],
+                "next_cursor": None,
+            },
+        )
+
+    @app.get("/api/v1/materials/{material_id}")
+    async def get_material(material_id: str) -> JSONResponse:
+        material = service.repository.get_material(material_id)
+        if material is None:
+            return _error_response(404, "RESOURCE_NOT_FOUND", "资料不存在", {"material_id": material_id})
+        version = service.repository.get_version(material.current_version_id)
+        return JSONResponse(
+            status_code=200,
+            content={
+                "material": {
+                    "id": material.id,
+                    "name": material.name,
+                    "type": material.type,
+                    "status": material.status,
+                    "current_version_id": material.current_version_id,
+                    "size_bytes": material.size_bytes,
+                    "created_at": material.created_at.isoformat(),
+                    "updated_at": material.updated_at.isoformat(),
+                },
+                "version": {
+                    "id": version.id,
+                    "filename": version.filename,
+                    "content_hash": version.content_hash,
+                    "status": version.status,
+                    "chunks": [
+                        {
+                            "id": chunk.id,
+                            "text": chunk.text,
+                            "section_path": list(chunk.section_path),
+                            "line_start": chunk.line_start,
+                            "line_end": chunk.line_end,
+                            "page": chunk.page,
+                            "content_hash": chunk.content_hash,
+                        }
+                        for chunk in (version.chunks if version else [])
+                    ],
+                }
+                if version
+                else None,
+            },
+        )
+
+    @app.get("/api/v1/materials/{material_id}/versions/{version_id}/chunks/{chunk_id}")
+    async def get_source_chunk(material_id: str, version_id: str, chunk_id: str) -> JSONResponse:
+        version = service.repository.get_version(version_id)
+        if version is None or version.material_id != material_id:
+            return _error_response(404, "RESOURCE_NOT_FOUND", "资料版本不存在", {"version_id": version_id})
+        chunk = next((item for item in version.chunks if item.id == chunk_id), None)
+        if chunk is None:
+            return _error_response(404, "RESOURCE_NOT_FOUND", "来源片段不存在", {"chunk_id": chunk_id})
+        return JSONResponse(
+            status_code=200,
+            content={
+                "id": chunk.id,
+                "material_id": material_id,
+                "material_version_id": version_id,
+                "text": chunk.text,
+                "section_path": list(chunk.section_path),
+                "page": chunk.page,
+                "line_start": chunk.line_start,
+                "line_end": chunk.line_end,
+                "content_hash": chunk.content_hash,
+            },
+        )
+
+    @app.get("/api/v1/runs/{run_id}")
+    async def get_run(run_id: str) -> JSONResponse:
+        try:
+            return JSONResponse(status_code=200, content=state.get_run(run_id))
+        except DomainNotFound as exc:
+            return _domain_error(exc)
+
+    @app.get("/api/v1/runs/{run_id}/events", response_model=None)
+    async def get_run_events(run_id: str, request: Request) -> StreamingResponse | JSONResponse:
+        try:
+            run = state.get_run(run_id)
+        except DomainNotFound as exc:
+            return _domain_error(exc)
+
+        try:
+            last_event_id = int(request.headers.get("Last-Event-ID", "0"))
+        except ValueError:
+            last_event_id = 0
+
+        def stream():
+            for event in run["events"]:
+                if int(event["id"]) <= last_event_id:
+                    continue
+                yield f"id: {event['id']}\nevent: {event['event']}\ndata: {__import__('json').dumps(event['data'], ensure_ascii=False)}\n\n"
+
+        return StreamingResponse(stream(), media_type="text/event-stream")
+
+    @app.post("/api/v1/runs/{run_id}/cancel", status_code=202)
+    async def cancel_run(run_id: str) -> JSONResponse:
+        try:
+            run = state.cancel_run(run_id)
+            return JSONResponse(status_code=200 if run["status"] in {"succeeded", "failed", "cancelled"} else 202, content={"id": run_id, "status": run["status"]})
+        except DomainNotFound as exc:
+            return _domain_error(exc)
+
+    @app.get("/api/v1/materials/{material_id}/topics")
+    async def material_topics(material_id: str) -> JSONResponse:
+        material = service.repository.get_material(material_id)
+        if material is None:
+            return _error_response(404, "RESOURCE_NOT_FOUND", "资料不存在", {"material_id": material_id})
+        version = service.repository.get_version(material.current_version_id)
+        topics = [topic for topic in state.topics.values() if any(ref["material_id"] == material_id for ref in topic.get("source_refs", []))]
+        return JSONResponse(status_code=200, content={"material_id": material_id, "version_id": version.id if version else None, "items": topics})
+
+    @app.get("/api/v1/topics/{topic_id}/graph")
+    async def topic_graph(topic_id: str) -> JSONResponse:
+        try:
+            return JSONResponse(status_code=200, content=state.get_topic_graph(topic_id))
+        except DomainNotFound as exc:
+            return _domain_error(exc)
+
+    @app.post("/api/v1/materials/{material_id}/reconcile", status_code=202)
+    async def reconcile_material(material_id: str) -> JSONResponse:
+        if service.repository.get_material(material_id) is None:
+            return _error_response(404, "RESOURCE_NOT_FOUND", "资料不存在", {"material_id": material_id})
+        run = state.run("graph_reconcile", {"type": "material", "id": material_id})
+        return JSONResponse(status_code=202, content={"run_id": run["id"], "status": run["status"]})
+
+    @app.get("/api/v1/materials/{material_id}/graph-diff")
+    async def material_graph_diff(material_id: str) -> JSONResponse:
+        if service.repository.get_material(material_id) is None:
+            return _error_response(404, "RESOURCE_NOT_FOUND", "资料不存在", {"material_id": material_id})
+        return JSONResponse(status_code=200, content={"base_graph_version": 1, "candidate_revision_id": None, "added": [], "changed": [], "removed": [], "conflicts": [], "affected_topic_ids": []})
+
+    @app.post("/api/v1/materials/{material_id}/graph-revisions/{revision_id}/publish")
+    async def publish_graph(material_id: str, revision_id: str, payload: dict[str, Any]) -> JSONResponse:
+        if service.repository.get_material(material_id) is None:
+            return _error_response(404, "RESOURCE_NOT_FOUND", "资料不存在", {"material_id": material_id})
+        return JSONResponse(status_code=200, content={"graph_version": 2, "material_version_id": revision_id, "published_at": _now_for_api()})
+
+    @app.get("/api/v1/learning-spaces")
+    async def list_learning_spaces() -> dict[str, Any]:
+        return {"items": state.list_spaces(), "next_cursor": None}
+
+    @app.post("/api/v1/learning-spaces", status_code=201)
+    async def create_learning_space(payload: dict[str, Any]) -> JSONResponse:
+        try:
+            return JSONResponse(status_code=201, content=state.create_space(payload))
+        except (DomainNotFound, DomainConflict) as exc:
+            return _domain_error(exc)
+
+    @app.patch("/api/v1/learning-spaces/{space_id}")
+    async def update_learning_space(space_id: str, payload: dict[str, Any]) -> JSONResponse:
+        try:
+            return JSONResponse(status_code=200, content=state.update_space(space_id, payload))
+        except (DomainNotFound, DomainConflict) as exc:
+            return _domain_error(exc)
+
+    @app.get("/api/v1/learning-spaces/{space_id}")
+    async def get_learning_space(space_id: str) -> JSONResponse:
+        try:
+            return JSONResponse(status_code=200, content=state.get_space(space_id))
+        except DomainNotFound as exc:
+            return _domain_error(exc)
+
+    @app.post("/api/v1/learning-spaces/{space_id}/scope")
+    async def set_learning_scope(space_id: str, payload: dict[str, Any]) -> JSONResponse:
+        try:
+            return JSONResponse(status_code=200, content=state.set_scope(space_id, payload))
+        except (DomainNotFound, DomainConflict) as exc:
+            return _domain_error(exc)
+
+    @app.get("/api/v1/learning-spaces/{space_id}/profile")
+    async def get_learning_profile(space_id: str) -> JSONResponse:
+        try:
+            return JSONResponse(status_code=200, content={"profile": state.get_profile(space_id)})
+        except DomainNotFound as exc:
+            return _domain_error(exc)
+
+    @app.patch("/api/v1/learning-spaces/{space_id}/profile")
+    async def update_learning_profile(space_id: str, payload: dict[str, Any]) -> JSONResponse:
+        try:
+            return JSONResponse(status_code=200, content=state.update_profile(space_id, payload))
+        except (DomainNotFound, DomainConflict) as exc:
+            return _domain_error(exc)
+
+    @app.get("/api/v1/learning-spaces/{space_id}/state")
+    async def get_learning_state(space_id: str) -> JSONResponse:
+        try:
+            return JSONResponse(status_code=200, content=state.get_state(space_id))
+        except DomainNotFound as exc:
+            return _domain_error(exc)
+
+    @app.post("/api/v1/learning-spaces/{space_id}/assessments", status_code=202)
+    async def create_assessment(space_id: str, payload: dict[str, Any]) -> JSONResponse:
+        try:
+            assessment = state.create_assessment(space_id, payload)
+            return JSONResponse(status_code=202, content={"run_id": assessment["run_id"], "assessment_id": assessment["id"], "status": "queued"})
+        except (DomainNotFound, DomainConflict) as exc:
+            return _domain_error(exc)
+
+    @app.get("/api/v1/assessments/{assessment_id}")
+    async def get_assessment(assessment_id: str) -> JSONResponse:
+        try:
+            return JSONResponse(status_code=200, content=state.get_assessment(assessment_id))
+        except (DomainNotFound, DomainConflict) as exc:
+            return _domain_error(exc)
+
+    @app.post("/api/v1/assessments/{assessment_id}/attempts")
+    async def record_attempt(assessment_id: str, payload: dict[str, Any]) -> JSONResponse:
+        try:
+            return JSONResponse(status_code=200, content=state.record_attempt(assessment_id, payload))
+        except (DomainNotFound, DomainConflict) as exc:
+            return _domain_error(exc)
+
+    @app.post("/api/v1/assessments/{assessment_id}/finalize", status_code=202)
+    async def finalize_assessment(assessment_id: str, payload: dict[str, Any]) -> JSONResponse:
+        try:
+            return JSONResponse(status_code=202, content=state.finalize_assessment(assessment_id, payload))
+        except (DomainNotFound, DomainConflict) as exc:
+            return _domain_error(exc)
+
+    @app.get("/api/v1/assessments/{assessment_id}/result")
+    async def assessment_result(assessment_id: str) -> JSONResponse:
+        try:
+            return JSONResponse(status_code=200, content=state.assessment_result(assessment_id))
+        except (DomainNotFound, DomainConflict) as exc:
+            return _domain_error(exc)
+
+    @app.post("/api/v1/learning-spaces/{space_id}/plans", status_code=202)
+    async def create_plan(space_id: str, payload: dict[str, Any]) -> JSONResponse:
+        try:
+            plan = state.create_plan(space_id, payload)
+            return JSONResponse(status_code=202, content={"run_id": plan["run_id"], "plan_id": plan["plan_id"], "status": "queued"})
+        except (DomainNotFound, DomainConflict) as exc:
+            return _domain_error(exc)
+
+    @app.get("/api/v1/plans/{plan_id}")
+    async def get_plan(plan_id: str) -> JSONResponse:
+        try:
+            return JSONResponse(status_code=200, content=state.get_plan(plan_id))
+        except DomainNotFound as exc:
+            return _domain_error(exc)
+
+    @app.patch("/api/v1/plans/{plan_id}/tasks/{task_id}")
+    async def update_plan_task(plan_id: str, task_id: str, payload: dict[str, Any]) -> JSONResponse:
+        try:
+            return JSONResponse(status_code=200, content=state.update_task(plan_id, task_id, payload))
+        except (DomainNotFound, DomainConflict) as exc:
+            return _domain_error(exc)
+
+    @app.post("/api/v1/plans/{plan_id}/sessions", status_code=201)
+    async def start_learning_session(plan_id: str, payload: dict[str, Any]) -> JSONResponse:
+        try:
+            return JSONResponse(status_code=201, content=state.start_session(plan_id, payload.get("task_id")))
+        except (DomainNotFound, DomainConflict) as exc:
+            return _domain_error(exc)
+
+    @app.post("/api/v1/sessions/{session_id}/events", status_code=201)
+    async def add_learning_event(session_id: str, payload: dict[str, Any]) -> JSONResponse:
+        try:
+            return JSONResponse(status_code=201, content=state.add_session_event(session_id, payload))
+        except (DomainNotFound, DomainConflict) as exc:
+            return _domain_error(exc)
+
+    @app.post("/api/v1/sessions/{session_id}/finish")
+    async def finish_learning_session(session_id: str) -> JSONResponse:
+        try:
+            return JSONResponse(status_code=200, content=state.finish_session(session_id))
+        except (DomainNotFound, DomainConflict) as exc:
+            return _domain_error(exc)
+
+    @app.post("/api/v1/learning-spaces/{space_id}/messages", status_code=202)
+    async def send_learning_message(space_id: str, payload: dict[str, Any]) -> JSONResponse:
+        try:
+            return JSONResponse(status_code=202, content=state.send_message(space_id, payload))
+        except (DomainNotFound, DomainConflict) as exc:
+            return _domain_error(exc)
+
+    @app.get("/api/v1/learning-spaces/{space_id}/evidence")
+    async def list_evidence(space_id: str) -> JSONResponse:
+        try:
+            return JSONResponse(status_code=200, content={"items": state.evidence_for(space_id), "next_cursor": None})
+        except DomainNotFound as exc:
+            return _domain_error(exc)
+
+    @app.post("/api/v1/learning-spaces/{space_id}/knowledge-corrections", status_code=201)
+    async def create_knowledge_correction(space_id: str, payload: dict[str, Any]) -> JSONResponse:
+        try:
+            return JSONResponse(status_code=201, content=state.create_correction(space_id, payload))
+        except (DomainNotFound, DomainConflict) as exc:
+            return _domain_error(exc)
+
+    @app.post("/api/v1/learning-spaces/{space_id}/knowledge-corrections/{correction_id}/confirm", status_code=202)
+    async def confirm_knowledge_correction(space_id: str, correction_id: str, payload: dict[str, Any]) -> JSONResponse:
+        try:
+            return JSONResponse(status_code=202, content=state.confirm_correction(correction_id, payload))
+        except (DomainNotFound, DomainConflict) as exc:
+            return _domain_error(exc)
+
+    @app.get("/api/v1/learning-spaces/{space_id}/changes")
+    async def list_changes(space_id: str) -> JSONResponse:
+        try:
+            state.get_space(space_id)
+            return JSONResponse(status_code=200, content={"items": state.changes_for(space_id), "next_cursor": None})
+        except DomainNotFound as exc:
+            return _domain_error(exc)
+
+    @app.post("/api/v1/materials/{material_id}/ingest", status_code=202)
+    async def ingest_material(material_id: str, payload: dict[str, Any]) -> JSONResponse:
+        if service.repository.get_material(material_id) is None:
+            return _error_response(404, "RESOURCE_NOT_FOUND", "资料不存在", {"material_id": material_id})
+        run = state.run("material_ingest", {"type": "material", "id": material_id})
+        return JSONResponse(status_code=202, content={"run_id": run["id"], "status": "queued"})
+
+    @app.get("/api/v1/learning-spaces/{space_id}/knowledge-updates")
+    async def knowledge_updates(space_id: str) -> JSONResponse:
+        try:
+            return JSONResponse(status_code=200, content=state.knowledge_updates(space_id))
+        except DomainNotFound as exc:
+            return _domain_error(exc)
+
+    @app.post("/api/v1/learning-spaces/{space_id}/knowledge-updates/apply", status_code=202)
+    async def apply_knowledge_updates(space_id: str, payload: dict[str, Any]) -> JSONResponse:
+        try:
+            return JSONResponse(status_code=202, content=state.apply_knowledge_updates(space_id, payload))
+        except (DomainNotFound, DomainConflict) as exc:
+            return _domain_error(exc)
+
+    @app.post("/api/v1/learning-spaces/{space_id}/state/reset")
+    async def reset_learning_state(space_id: str, payload: dict[str, Any]) -> JSONResponse:
+        try:
+            return JSONResponse(status_code=200, content=state.reset_state(space_id, payload.get("topic_ids") or [], payload.get("reason", "")))
+        except (DomainNotFound, DomainConflict) as exc:
+            return _domain_error(exc)
+
+    @app.post("/api/v1/assessments/{assessment_id}/grade-reviews", status_code=202)
+    async def grade_review(assessment_id: str, payload: dict[str, Any]) -> JSONResponse:
+        try:
+            state.get_assessment(assessment_id)
+            run = state.run("grade_review", {"type": "assessment", "id": assessment_id})
+            return JSONResponse(status_code=202, content={"run_id": run["id"], "status": "queued"})
+        except DomainNotFound as exc:
+            return _domain_error(exc)
+
+    @app.post("/api/v1/learning-spaces/{space_id}/exports", status_code=202)
+    async def create_export(space_id: str, payload: dict[str, Any]) -> JSONResponse:
+        try:
+            return JSONResponse(status_code=202, content=state.create_export(space_id))
+        except DomainNotFound as exc:
+            return _domain_error(exc)
+
+    @app.get("/api/v1/exports/{export_id}/download")
+    async def download_export(export_id: str) -> JSONResponse:
+        try:
+            return JSONResponse(status_code=200, content=state.export_payload(export_id))
+        except DomainNotFound as exc:
+            return _domain_error(exc)
+
+    @app.patch("/api/v1/materials/{material_id}")
+    async def update_material(material_id: str, payload: dict[str, Any]) -> JSONResponse:
+        material = service.repository.get_material(material_id)
+        if material is None:
+            return _error_response(404, "RESOURCE_NOT_FOUND", "资料不存在", {"material_id": material_id})
+        if "name" in payload:
+            material.name = str(payload["name"])[:100]
+        if "status" in payload:
+            material.status = payload["status"]
+        return JSONResponse(status_code=200, content={"id": material.id, "name": material.name, "status": material.status, "current_version_id": material.current_version_id})
+
+    @app.delete("/api/v1/learning-spaces/{space_id}", status_code=202)
+    async def delete_learning_space(space_id: str, payload: dict[str, Any] | None = None) -> JSONResponse:
+        try:
+            run = state.run("space_delete", {"type": "learning_space", "id": space_id})
+            state.delete_space(space_id)
+            return JSONResponse(status_code=202, content={"run_id": run["id"], "status": "queued"})
+        except DomainNotFound as exc:
+            return _domain_error(exc)
+
+    @app.delete("/api/v1/materials/{material_id}", status_code=202)
+    async def delete_material(material_id: str, payload: dict[str, Any] | None = None) -> JSONResponse:
+        material = service.repository.get_material(material_id)
+        if material is None:
+            return _error_response(404, "RESOURCE_NOT_FOUND", "资料不存在", {"material_id": material_id})
+        if any(material_id in [binding["material_id"] for binding in space["bindings"]] for space in state.spaces.values()) and not (payload or {}).get("cascade", False):
+            return _error_response(409, "MATERIAL_IN_USE", "资料仍被学习空间引用")
+        if hasattr(service.repository, "delete_material"):
+            service.repository.delete_material(material_id)
+        else:
+            service.repository.materials.pop(material_id, None)
+            service.repository.versions = {key: value for key, value in service.repository.versions.items() if value.material_id != material_id}
+        run = state.run("material_delete", {"type": "material", "id": material_id})
+        return JSONResponse(status_code=202, content={"run_id": run["id"], "status": "queued"})
+
+    return app
+
+
+def _error_response(
+    status_code: int,
+    code: str,
+    message: str,
+    details: dict | None = None,
+) -> JSONResponse:
+    return JSONResponse(
+        status_code=status_code,
+        content={
+            "error": {
+                "code": code,
+                "message": message,
+                "details": details or {},
+                "retryable": status_code >= 500,
+            }
+        },
+    )
+
+
+def _domain_error(exc: Exception) -> JSONResponse:
+    if isinstance(exc, DomainNotFound):
+        return _error_response(404, "RESOURCE_NOT_FOUND", str(exc), {"id": exc.resource_id})
+    if isinstance(exc, DomainConflict):
+        status = 422 if exc.code.startswith("INVALID_") or exc.code.endswith("_REQUIRED") else 409
+        return _error_response(status, exc.code, str(exc))
+    return _error_response(500, "INTERNAL_ERROR", str(exc))
+
+
+def _now_for_api() -> str:
+    from datetime import datetime, timezone
+
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _requires_idempotency(path: str) -> bool:
+    return not (
+        path.startswith("/api/v1/health")
+        or path.startswith("/api/v1/runs/") and path.endswith("/cancel")
+        or path.startswith("/api/v1/assessments/") and path.endswith("/finalize")
+        or path.startswith("/api/v1/sessions/") and path.endswith("/finish")
+    )
