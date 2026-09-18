@@ -31,4 +31,4 @@ htmlcov/
 .DS_Store
 
 # Local Git metadata from the former keel repository
-keel/.git.keel-backup/
+py/.git.keel-backup/
