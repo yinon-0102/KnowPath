@@ -11,6 +11,8 @@ from uuid import uuid4
 from .assessment_schemas import CreateAssessment, RecordAttempt, FinalizeAssessment, ResetState
 from .errors import DomainConflict, DomainNotFound
 from .mastery import aggregate, MasteryPolicy
+from .assessment_grading import grade_answer
+from .grade_reviews import review_grade
 from .question_generation import DashScopeQuestionGenerator, QuestionGenerationError, validate_questions
 from .spaces import SpaceService, now
 
@@ -200,14 +202,7 @@ class AssessmentService:
         timestamp, question_results, topic_results, evidence = now(), [], [], []
         for question in assessment["questions"]:
             answer = answers.get(question["id"])
-            score, verdict, feedback = None, "unverified", "insufficient_evidence: 未作答"
-            if answer is not None:
-                if question["type"] == "single_choice":
-                    score = 1.0 if answer["answer"] == question["answer_key"] else 0.0
-                    verdict = "correct" if score else "incorrect"
-                    feedback = "已按封存客观答案判分"
-                else:
-                    feedback = "开放题尚无可靠判分，保存反馈并建议替代客观题"
+            score, verdict, feedback = grade_answer(question, answer)
             topic_id = question["topic_id"]
             epoch = assessment["snapshot"]["epochs"].get(topic_id, 0)
             assisted = bool(question.get("assisted") or (answer and answer["assisted"]))
@@ -253,11 +248,14 @@ class AssessmentService:
         old = self.repository.records("states", space_id=space_id, topic_id=topic_id)
         previous = old[0] if old else {}
         evidence = [e for e in self.repository.records("evidence", space_id=space_id, topic_id=topic_id)
-                    if e.get("epoch") == epoch and e.get("topic_revision_id") == revision_id]
+                    if e.get("epoch") == epoch and e.get("topic_revision_id") == revision_id and not e.get("revoked_by_review_id")]
         same_cycle = previous.get("epoch") == epoch and previous.get("topic_revision_id") == revision_id
         value = aggregate(topic_id, revision_id, evidence, previous if same_cycle else {}, version, timestamp, policy=self.mastery_policy)
         value.update(id=previous.get("id", uid()), space_id=space_id, epoch=epoch)
         self.repository.put_record("states", value)
+
+    def review_grade(self, assessment_id, payload, key=None):
+        return review_grade(self, assessment_id, payload, key)
 
     def result(self, assessment_id):
         assessment = self.repository.get_record("assessments", assessment_id)

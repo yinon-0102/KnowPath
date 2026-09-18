@@ -48,3 +48,13 @@ def test_mastered_state_becomes_unstable_on_valid_lower_score():
     result = estimate([row(1, score=0)], previous={"status": "mastered"})
     assert result["status"] == "unstable"
     assert estimate([])["status"] == "unseen"
+
+
+def test_review_keeps_observation_order_at_window_boundary():
+    evidence = [row(f"{i:02}", score=0 if i == 0 else 1, submission_sequence=1) for i in range(25)]
+    before = estimate(evidence)
+    replacement = dict(evidence[0], id="zz-new-review", observation_id=evidence[0]["id"])
+    after = estimate([replacement, *evidence[1:]])
+    assert after["mastery_score"] == before["mastery_score"]
+    assert after["evidence_ids"] == before["evidence_ids"]
+    assert after["next_review_at"] == before["next_review_at"]

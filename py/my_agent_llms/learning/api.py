@@ -29,7 +29,7 @@ from .runs import RunService, stream_run_events
 from .state import LearningState
 from .space_schemas import CreateSpace, UpdateSpace, SetScope, UpdateProfile
 from .spaces import topics_for_version
-from .assessment_schemas import CreateAssessment, RecordAttempt, FinalizeAssessment, ResetState
+from .assessment_schemas import CreateAssessment, RecordAttempt, FinalizeAssessment, ResetState, GradeReview
 from .question_generation import DashScopeQuestionGenerator
 from .planner_schemas import CreatePlan, UpdateTask, StartSession, SessionEvent, EmptyObject
 
@@ -572,11 +572,10 @@ def create_app(
             return _domain_error(exc)
 
     @app.post("/api/v1/assessments/{assessment_id}/grade-reviews", status_code=202)
-    async def grade_review(assessment_id: str, payload: dict[str, Any]) -> JSONResponse:
+    def grade_review(assessment_id: str, payload: GradeReview, idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None) -> JSONResponse:
         try:
-            state.get_assessment(assessment_id)
-            return _error_response(501, "GRADE_REVIEW_NOT_IMPLEMENTED", "评分复核执行器尚未接入，未创建复核任务")
-        except DomainNotFound as exc:
+            return JSONResponse(status_code=202, content=state.grade_review(assessment_id, payload.model_dump(), idempotency_key=idempotency_key))
+        except (DomainNotFound, DomainConflict) as exc:
             return _domain_error(exc)
 
     @app.post("/api/v1/learning-spaces/{space_id}/exports", status_code=202)

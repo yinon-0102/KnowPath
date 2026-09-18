@@ -212,6 +212,9 @@ class LearningState:
         run = self.run("knowledge_update_apply", {"type": "learning_space", "id": space_id})
         return {"run_id": run["id"], "space_id": space_id, "space_version": new_version, "affected_topic_ids": [], "stale_state_count": 0, "plan_replan_run_id": None}
 
+    def grade_review(self, assessment_id, payload, idempotency_key=None):
+        return self.assessment_service.review_grade(assessment_id, payload, idempotency_key)
+
     def reset_state(self, space_id, topic_ids, reason, *, expected_state_version, idempotency_key=None):
         return self.assessment_service.reset(space_id, {"topic_ids": topic_ids, "reason": reason,
             "expected_state_version": expected_state_version}, idempotency_key)

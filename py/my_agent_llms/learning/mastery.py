@@ -23,7 +23,7 @@ def aggregate(topic_id, revision_id, evidence, previous, state_version, assessed
     eligible = [e for e in evidence if e.get("eligible") and e.get("topic_revision_id") == revision_id
                 and e.get("score") is not None and not e.get("assisted")]
     first_by_family = {}
-    for item in sorted(eligible, key=lambda e: (e.get("submission_sequence", 0), e["created_at"], e["id"])):
+    for item in sorted(eligible, key=lambda e: (e.get("submission_sequence", 0), e["created_at"], e.get("observation_id", e["id"]))):
         first_by_family.setdefault(item["family_id"], item)
     selected = list(first_by_family.values())[-policy.window:]
     score = sum(e["score"] for e in selected) / len(selected) if selected else None

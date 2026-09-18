@@ -67,3 +67,8 @@ class ResetState(StrictRequest):
         if len(set(self.topic_ids)) != len(self.topic_ids):
             raise ValueError("topic_ids 不可重复")
         return self
+
+
+class GradeReview(StrictRequest):
+    question_id: str = Field(min_length=1)
+    reason: str = Field(min_length=1, max_length=2000)
