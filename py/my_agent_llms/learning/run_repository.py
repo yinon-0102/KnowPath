@@ -4,15 +4,14 @@ from __future__ import annotations
 
 import copy
 from datetime import datetime, timezone
-from threading import RLock
 from typing import Callable
 
 from sqlalchemy import select
-from sqlalchemy.orm import sessionmaker
 
 from .db import RunEventRow, RunRow
 from .errors import DomainNotFound
 from .runs import ACTIVE_STATUSES, Run
+from .unit_of_work import SqlAlchemyUnitOfWork
 
 
 def _iso(value: datetime | None) -> str | None:
@@ -25,10 +24,11 @@ def _date(value: str | None) -> datetime | None:
 
 
 class SqlAlchemyRunRepository:
-    def __init__(self, engine):
-        self._sessions = sessionmaker(bind=engine, expire_on_commit=False)
-        # SQLite tests/local use; MySQL additionally uses SELECT FOR UPDATE.
-        self._lock = RLock()
+    def __init__(self, engine, *, unit_of_work=None):
+        self.unit_of_work = unit_of_work or SqlAlchemyUnitOfWork(engine)
+
+    def transaction(self):
+        return self.unit_of_work.transaction()
 
     @staticmethod
     def _read(session, row):
@@ -54,7 +54,7 @@ class SqlAlchemyRunRepository:
                            data=copy.deepcopy(event["data"]), created_at=_date(event["created_at"]))
 
     def create(self, run: Run) -> None:
-        with self._lock, self._sessions.begin() as session:
+        with self.unit_of_work.transaction(), self.unit_of_work.session() as session:
             row = RunRow(id=run["id"])
             self._write_fields(row, run)
             session.add(row)
@@ -62,14 +62,14 @@ class SqlAlchemyRunRepository:
             session.add_all(self._event_row(run["id"], e) for e in run["events"])
 
     def get(self, run_id: str) -> Run:
-        with self._lock, self._sessions.begin() as session:
+        with self.unit_of_work.session() as session:
             row = session.get(RunRow, run_id)
             if row is None:
                 raise DomainNotFound("run", run_id)
             return self._read(session, row)
 
     def mutate(self, run_id: str, change: Callable[[Run], None]) -> Run:
-        with self._lock, self._sessions.begin() as session:
+        with self.unit_of_work.transaction(), self.unit_of_work.session() as session:
             row = session.scalar(select(RunRow).where(RunRow.id == run_id).with_for_update())
             if row is None:
                 raise DomainNotFound("run", run_id)
@@ -85,5 +85,5 @@ class SqlAlchemyRunRepository:
             return copy.deepcopy(run)
 
     def active_ids(self) -> list[str]:
-        with self._lock, self._sessions() as session:
+        with self.unit_of_work.session() as session:
             return list(session.scalars(select(RunRow.id).where(RunRow.status.in_(ACTIVE_STATUSES))))

@@ -15,9 +15,10 @@ def build_app():
 
         engine = create_db_engine()
         # Apply Alembic migrations before starting this single-process runtime.
-        runs = RunService(SqlAlchemyRunRepository(engine))
+        materials = SqlAlchemyMaterialRepository(engine)
+        runs = RunService(SqlAlchemyRunRepository(engine, unit_of_work=materials.unit_of_work))
         runs.recover_interrupted()
-        return create_app(MaterialService(SqlAlchemyMaterialRepository(engine)), run_service=runs)
+        return create_app(MaterialService(materials), run_service=runs)
     return create_app()
 
 

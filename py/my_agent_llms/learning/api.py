@@ -12,6 +12,9 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from .config import LearningSettings
+from .ingestion import MaterialIngestionService
+from .repositories import SqlAlchemyMaterialRepository
+from .run_repository import SqlAlchemyRunRepository
 from .materials import (
     IdempotencyConflict,
     InMemoryMaterialRepository,
@@ -33,8 +36,13 @@ def create_app(
 ) -> FastAPI:
     service = service or MaterialService(InMemoryMaterialRepository())
     settings = settings or LearningSettings.from_env()
+    if run_service is None and isinstance(service.repository, SqlAlchemyMaterialRepository):
+        uow = service.repository.unit_of_work
+        run_service = RunService(SqlAlchemyRunRepository(uow.engine, unit_of_work=uow))
+    if run_service is None and isinstance(service.repository, InMemoryMaterialRepository):
+        run_service = RunService(service.repository.run_repository)
     state = LearningState(material_repository=service.repository, run_service=run_service)
-    ingest_runs: dict[str, dict[str, Any]] = {}
+    ingestion = MaterialIngestionService(service, state.run_service)
     app = FastAPI(title="Keel Learning", version="0.1.0")
     app.state.learning_state = state
 
@@ -90,7 +98,7 @@ def create_app(
                 message="资料上传必须提供 Idempotency-Key",
             )
         try:
-            result = service.create(
+            uploaded = await asyncio.to_thread(ingestion.create,
                 filename=file.filename or "material.txt",
                 content=await file.read(),
                 idempotency_key=idempotency_key,
@@ -103,10 +111,7 @@ def create_app(
         except MaterialError as exc:
             return _error_response(422, "MATERIAL_PARSE_FAILED", str(exc))
 
-        run = ingest_runs.get(idempotency_key)
-        if run is None:
-            run = state.run("material_ingest", {"type": "material_version", "id": result.version.id})
-            ingest_runs[idempotency_key] = run
+        result, run = uploaded.resource, uploaded.run
         state._index_material_topics(result.material.id, result.version)
 
         return JSONResponse(
@@ -163,7 +168,7 @@ def create_app(
         if not idempotency_key or not idempotency_key.strip():
             return _error_response(400, "IDEMPOTENCY_KEY_REQUIRED", "资料版本上传必须提供 Idempotency-Key")
         try:
-            result = service.create_version(
+            uploaded = await asyncio.to_thread(ingestion.create_version,
                 material_id=material_id,
                 filename=file.filename or "material.txt",
                 content=await file.read(),
@@ -178,10 +183,7 @@ def create_app(
         except MaterialError as exc:
             return _error_response(422, "MATERIAL_PARSE_FAILED", str(exc))
 
-        run = ingest_runs.get(idempotency_key)
-        if run is None:
-            run = state.run("material_ingest", {"type": "material_version", "id": result.version.id})
-            ingest_runs[idempotency_key] = run
+        result, run = uploaded.resource, uploaded.run
         state._index_material_topics(result.material.id, result.version)
 
         return JSONResponse(
@@ -601,11 +603,7 @@ def create_app(
             return _error_response(404, "RESOURCE_NOT_FOUND", "资料不存在", {"material_id": material_id})
         if any(material_id in [binding["material_id"] for binding in space["bindings"]] for space in state.spaces.values()) and not (payload or {}).get("cascade", False):
             return _error_response(409, "MATERIAL_IN_USE", "资料仍被学习空间引用")
-        if hasattr(service.repository, "delete_material"):
-            service.repository.delete_material(material_id)
-        else:
-            service.repository.materials.pop(material_id, None)
-            service.repository.versions = {key: value for key, value in service.repository.versions.items() if value.material_id != material_id}
+        await asyncio.to_thread(service.repository.delete_material, material_id)
         run = state.run("material_delete", {"type": "material", "id": material_id})
         return JSONResponse(status_code=202, content={"run_id": run["id"], "status": "queued"})
 

@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import copy
 import json
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from threading import RLock
 from typing import Any, Callable, Protocol
@@ -27,6 +28,7 @@ def utc_now() -> datetime:
 
 
 class RunRepository(Protocol):
+    def transaction(self): ...
     def create(self, run: Run) -> None: ...
     def get(self, run_id: str) -> Run: ...
     def mutate(self, run_id: str, change: Callable[[Run], None]) -> Run: ...
@@ -37,6 +39,16 @@ class InMemoryRunRepository:
     def __init__(self):
         self._runs: dict[str, Run] = {}
         self._lock = RLock()
+
+    @contextmanager
+    def transaction(self):
+        with self._lock:
+            previous = copy.deepcopy(self._runs)
+            try:
+                yield
+            except BaseException:
+                self._runs = previous
+                raise
 
     def create(self, run: Run) -> None:
         with self._lock:

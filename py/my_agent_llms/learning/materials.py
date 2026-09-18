@@ -7,7 +7,10 @@ repositories can implement the same small repository contract.
 
 from __future__ import annotations
 
+import copy
 import hashlib
+from contextlib import contextmanager
+from threading import RLock
 import mimetypes
 import re
 from dataclasses import dataclass, field, replace
@@ -15,6 +18,8 @@ from datetime import datetime, timezone
 from pathlib import PurePath
 from typing import Protocol
 from uuid import uuid4
+
+from .runs import InMemoryRunRepository
 
 
 class MaterialError(Exception):
@@ -81,6 +86,12 @@ class CreateMaterialResult:
 
 
 class MaterialRepository(Protocol):
+    def transaction(self): ...
+
+    def get_idempotency_run(self, key: str) -> str | None: ...
+
+    def bind_idempotency_run(self, key: str, run_id: str) -> None: ...
+
     def get_idempotency(self, key: str) -> tuple[str, str, str] | None: ...
 
     def get_material(self, material_id: str) -> Material | None: ...
@@ -107,69 +118,99 @@ class MaterialRepository(Protocol):
         version_id: str,
     ) -> None: ...
 
+    def delete_material(self, material_id: str) -> None: ...
+
     def list_materials(self) -> list[Material]: ...
 
     def list_versions(self, material_id: str) -> list[MaterialVersion]: ...
 
 
 class InMemoryMaterialRepository:
-    """Small deterministic repository used by the domain tests and local demo."""
+    """Transactional memory adapter for local use and contract tests."""
 
     def __init__(self) -> None:
+        self.run_repository = InMemoryRunRepository()
         self.materials: dict[str, Material] = {}
         self.versions: dict[str, MaterialVersion] = {}
         self.by_content_hash: dict[str, tuple[str, str]] = {}
         self.idempotency: dict[str, tuple[str, str, str]] = {}
+        self.idempotency_runs: dict[str, str] = {}
+        self._lock = RLock()
+
+    @contextmanager
+    def transaction(self):
+        with self._lock:
+            previous = copy.deepcopy((self.materials, self.versions, self.by_content_hash,
+                                      self.idempotency, self.idempotency_runs))
+            try:
+                yield
+            except BaseException:
+                (self.materials, self.versions, self.by_content_hash,
+                 self.idempotency, self.idempotency_runs) = previous
+                raise
 
     def get_idempotency(self, key: str) -> tuple[str, str, str] | None:
-        return self.idempotency.get(key)
+        with self._lock:
+            return self.idempotency.get(key)
+
+    def get_idempotency_run(self, key: str) -> str | None:
+        with self._lock:
+            return self.idempotency_runs.get(key)
+
+    def bind_idempotency_run(self, key: str, run_id: str) -> None:
+        with self._lock:
+            if key not in self.idempotency:
+                raise ValueError("cannot attach run to missing idempotency record")
+            previous = self.idempotency_runs.get(key)
+            if previous is not None and previous != run_id:
+                raise ValueError("idempotency run is already bound")
+            self.idempotency_runs[key] = run_id
 
     def get_material(self, material_id: str) -> Material | None:
-        return self.materials.get(material_id)
+        with self._lock:
+            return copy.deepcopy(self.materials.get(material_id))
 
     def get_version(self, version_id: str) -> MaterialVersion | None:
-        return self.versions.get(version_id)
+        with self._lock:
+            return copy.deepcopy(self.versions.get(version_id))
 
     def find_by_content_hash(self, content_hash: str) -> tuple[Material, MaterialVersion] | None:
-        ids = self.by_content_hash.get(content_hash)
-        if ids is None:
-            return None
-        material = self.materials.get(ids[0])
-        version = self.versions.get(ids[1])
-        return (material, version) if material and version else None
+        with self._lock:
+            ids = self.by_content_hash.get(content_hash)
+            if ids is None:
+                return None
+            material = self.materials.get(ids[0])
+            version = self.versions.get(ids[1])
+            return copy.deepcopy((material, version)) if material and version else None
 
-    def save(
-        self,
-        material: Material,
-        version: MaterialVersion,
-        *,
-        idempotency_key: str,
-        request_fingerprint: str,
-    ) -> None:
-        self.materials[material.id] = material
-        self.versions[version.id] = version
-        self.by_content_hash[version.content_hash] = (material.id, version.id)
-        self.idempotency[idempotency_key] = (
-            request_fingerprint,
-            material.id,
-            version.id,
-        )
+    def save(self, material: Material, version: MaterialVersion, *,
+             idempotency_key: str, request_fingerprint: str) -> None:
+        with self._lock:
+            self.materials[material.id] = copy.deepcopy(material)
+            self.versions[version.id] = copy.deepcopy(version)
+            self.by_content_hash[version.content_hash] = (material.id, version.id)
+            self.idempotency[idempotency_key] = (request_fingerprint, material.id, version.id)
 
-    def record_idempotency(
-        self,
-        *,
-        key: str,
-        request_fingerprint: str,
-        material_id: str,
-        version_id: str,
-    ) -> None:
-        self.idempotency[key] = (request_fingerprint, material_id, version_id)
+    def record_idempotency(self, *, key: str, request_fingerprint: str,
+                           material_id: str, version_id: str) -> None:
+        with self._lock:
+            self.idempotency[key] = (request_fingerprint, material_id, version_id)
+
+    def delete_material(self, material_id: str) -> None:
+        with self._lock:
+            self.materials.pop(material_id, None)
+            self.versions = {key: value for key, value in self.versions.items()
+                             if value.material_id != material_id}
+            self.by_content_hash = {key: value for key, value in self.by_content_hash.items()
+                                    if value[0] != material_id}
 
     def list_materials(self) -> list[Material]:
-        return list(self.materials.values())
+        with self._lock:
+            return copy.deepcopy(list(self.materials.values()))
 
     def list_versions(self, material_id: str) -> list[MaterialVersion]:
-        return [version for version in self.versions.values() if version.material_id == material_id]
+        with self._lock:
+            return copy.deepcopy([v for v in self.versions.values() if v.material_id == material_id])
 
 
 class MaterialParser:
@@ -234,7 +275,7 @@ class MaterialParser:
             end = next(index for index, line in reversed(paragraph) if line.strip())
             chunks.append(
                 SourceChunk(
-                    id=f"chunk_{uuid4().hex}",
+                    id=str(uuid4()),
                     text=body,
                     section_path=tuple(headings),
                     line_start=start,
