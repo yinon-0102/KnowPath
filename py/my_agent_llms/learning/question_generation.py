@@ -227,9 +227,6 @@ class DashScopeQuestionGenerator:
         self._client = client
 
     def generate(self, topics: list[dict], payload: dict) -> list[dict]:
-        key = os.getenv("DASHSCOPE_API_KEY", "").strip()
-        if self.settings.chat_provider != "dashscope" or not key:
-            raise QuestionGenerationError("MODEL_UNAVAILABLE")
         count, types, topic_map, quotas = _request_constraints(topics, payload)
         supplied_topics = []
         for topic in topic_map.values():
@@ -238,31 +235,16 @@ class DashScopeQuestionGenerator:
                                     "source_text": source_text, "source_refs": topic["source_refs"]})
         request = {"kind": payload.get("kind", "diagnostic"), "question_count": count,
                    "question_types": types, "difficulty_counts": quotas, "topics": supplied_topics}
-        body = {"model": self.settings.chat_model, "response_format": {"type": "json_object"},
-                "enable_thinking": False,
-                "messages": [{"role": "system", "content": _SYSTEM_PROMPT},
-                             {"role": "user", "content": _serialized(request)}]}
-        base = os.getenv("LEARNING_CHAT_BASE_URL", _DEFAULT_BASE_URL).rstrip("/")
+        from .model_adapters import chat_model, ModelError
         try:
-            if self._client is None:
-                with httpx.Client(timeout=60.0, follow_redirects=False) as client:
-                    response = client.post(base + "/chat/completions", json=body,
-                                           headers={"Authorization": f"Bearer {key}"})
-            else:
-                response = self._client.post(base + "/chat/completions", json=body,
-                                             headers={"Authorization": f"Bearer {key}"},
-                                             timeout=60.0, follow_redirects=False)
-            response.raise_for_status()
-        except (httpx.HTTPError, httpx.InvalidURL, ValueError):
-            raise QuestionGenerationError("MODEL_UNAVAILABLE") from None
-        try:
-            completion = response.json()["choices"][0]
-            if completion.get("finish_reason") not in (None, "stop"):
-                _invalid()
-            content = completion["message"]["content"]
-            parsed = json.loads(content)
+            parsed = chat_model(self.settings, client=self._client).generate_json([
+                {"role": "system", "content": _SYSTEM_PROMPT},
+                {"role": "user", "content": _serialized(request)}])
             raw = parsed["questions"]
-        except (ValueError, TypeError, KeyError, IndexError, AttributeError):
+        except ModelError as exc:
+            code = "QUESTION_VALIDATION_FAILED" if exc.code == "MODEL_INVALID_RESPONSE" else exc.code
+            raise QuestionGenerationError(code) from None
+        except (KeyError, TypeError):
             raise QuestionGenerationError("QUESTION_VALIDATION_FAILED") from None
         validate_questions(raw, topics, payload)
         return raw

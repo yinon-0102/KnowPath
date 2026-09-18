@@ -26,31 +26,14 @@ class DashScopeAnswerGenerator:
         self.client = client
 
     def generate(self, snapshot):
-        key = os.getenv("DASHSCOPE_API_KEY", "").strip()
-        if not key:
-            raise MessageGenerationError("MODEL_UNAVAILABLE")
-        body = {"model": self.settings.chat_model, "response_format": {"type": "json_object"},
-                "enable_thinking": False,
-                "messages": [{"role": "system", "content": SYSTEM_PROMPT},
-                             {"role": "user", "content": json.dumps(snapshot, ensure_ascii=False)}]}
-        base = os.getenv("LEARNING_CHAT_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1").rstrip("/")
+        from .model_adapters import chat_model, ModelError
         try:
-            if self.client is None:
-                with httpx.Client(timeout=60.0, follow_redirects=False) as client:
-                    response = client.post(base + "/chat/completions", json=body, headers={"Authorization": f"Bearer {key}"})
-            else:
-                response = self.client.post(base + "/chat/completions", json=body,
-                    headers={"Authorization": f"Bearer {key}"}, timeout=60.0, follow_redirects=False)
-            response.raise_for_status()
-        except (httpx.HTTPError, httpx.InvalidURL, ValueError):
-            raise MessageGenerationError("MODEL_UNAVAILABLE") from None
-        try:
-            choice = response.json()["choices"][0]
-            if choice.get("finish_reason") not in (None, "stop"):
-                raise ValueError()
-            return json.loads(choice["message"]["content"])
-        except (ValueError, KeyError, IndexError, TypeError, AttributeError):
-            raise MessageGenerationError("MESSAGE_VALIDATION_FAILED") from None
+            return chat_model(self.settings, client=self.client).generate_json([
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": json.dumps(snapshot, ensure_ascii=False)}])
+        except ModelError as exc:
+            code = "MESSAGE_VALIDATION_FAILED" if exc.code == "MODEL_INVALID_RESPONSE" else exc.code
+            raise MessageGenerationError(code) from None
 
 
 def validate_answer(raw, sources):

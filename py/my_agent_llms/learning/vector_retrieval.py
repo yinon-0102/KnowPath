@@ -58,15 +58,23 @@ class DashScopeEmbedder:
                 "dashscope", "text-embedding-v3", 1024):
             raise ValueError("vector retrieval currently requires DashScope text-embedding-v3 / 1024")
 
+    @property
+    def dimension(self):
+        return self.settings.embedding_dimension
+
+    @property
+    def model_version(self):
+        return self.settings.embedding_model
+
     def embed(self, texts, *, query=False):
         if not texts:
             return []
         if any(not isinstance(t, str) or not t.strip() or len(t) > 8000 for t in texts):
             raise RetrievalError("EMBEDDING_INPUT_INVALID")
-        key = os.getenv("DASHSCOPE_API_KEY", "").strip()
+        key = os.getenv(self.settings.embedding_api_key_env, "").strip()
         if not key:
             raise RetrievalError("EMBEDDING_UNAVAILABLE")
-        base = os.getenv("LEARNING_EMBEDDING_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1").rstrip("/")
+        base = self.settings.embedding_base_url.rstrip("/")
         owned = self.client is None
         client = self.client if self.client is not None else httpx.Client(timeout=60.0, follow_redirects=False)
         vectors = []
@@ -78,6 +86,8 @@ class DashScopeEmbedder:
                 try:
                     response = client.post(base + "/embeddings", json=body,
                         headers={"Authorization": f"Bearer {key}"}, timeout=60.0, follow_redirects=False)
+                    if response.status_code == 429:
+                        raise RetrievalError("RATE_LIMITED")
                     response.raise_for_status()
                 except (httpx.HTTPError, httpx.InvalidURL, ValueError):
                     raise RetrievalError("EMBEDDING_UNAVAILABLE") from None
@@ -220,18 +230,32 @@ class VectorRetriever:
         return self.backend.search(vector, sources, limit=limit)
 
 
+class UnsupportedRetriever:
+    configuration_error = "UNSUPPORTED_MODEL"
+
+    def select(self, message, sources, *, limit=8):
+        raise RetrievalError(self.configuration_error)
+
+
 def configured_retriever(settings=None):
     mode = os.getenv("LEARNING_RETRIEVAL_BACKEND", "keyword")
     if mode == "keyword":
         return KeywordRetriever()
     if mode != "qdrant":
         raise ValueError("LEARNING_RETRIEVAL_BACKEND must be keyword or qdrant")
-    return configured_vector_retriever(settings)
+    from .model_adapters import ModelError
+    try:
+        return configured_vector_retriever(settings)
+    except ModelError:
+        # The HTTP service remains available to explain a configuration error.
+        # Background indexing still rejects this configuration at worker startup.
+        return UnsupportedRetriever()
 
 
 def configured_vector_retriever(settings=None):
     settings = settings or LearningSettings.from_env()
-    embedder = DashScopeEmbedder(settings)
+    from .model_adapters import embedding_model
+    embedder = embedding_model(settings)
     client = QdrantClient(url=os.getenv("QDRANT_URL", "http://127.0.0.1:6333"),
                           api_key=os.getenv("QDRANT_API_KEY") or None, timeout=30, check_compatibility=False)
     return VectorRetriever(embedder, QdrantVectorBackend(client, settings))

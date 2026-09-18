@@ -74,7 +74,7 @@ def test_embedding_provider_errors_are_redacted(monkeypatch, status):
     with httpx.Client(transport=httpx.MockTransport(lambda r: httpx.Response(status, text="test-secret"))) as client:
         with pytest.raises(m.RetrievalError) as error:
             m.DashScopeEmbedder(client=client).embed(["text"])
-    assert str(error.value) == "EMBEDDING_UNAVAILABLE"
+    assert str(error.value) == ("RATE_LIMITED" if status == 429 else "EMBEDDING_UNAVAILABLE")
 
 
 def test_embedding_missing_key_does_not_call_provider(monkeypatch):

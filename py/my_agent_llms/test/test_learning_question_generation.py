@@ -125,7 +125,7 @@ def test_invalid_configuration_never_calls_network(monkeypatch, topics, payload,
     with httpx.Client(transport=httpx.MockTransport(forbidden)) as client:
         with pytest.raises(QuestionGenerationError) as error:
             DashScopeQuestionGenerator(LearningSettings(chat_provider=provider), client=client).generate(topics, payload)
-    assert error.value.code == "MODEL_UNAVAILABLE"
+    assert error.value.code == ("UNSUPPORTED_MODEL" if provider == "unsupported" else "MODEL_UNAVAILABLE")
 
 @pytest.mark.parametrize("patch", [
     {"question_count": 4}, {"question_count": True}, {"question_count": 11},
@@ -156,15 +156,16 @@ def test_source_less_topic_fails_before_model_call(monkeypatch, topics, payload)
 def test_configured_endpoint_and_unselected_sources(monkeypatch, topics, payload, raw):
     monkeypatch.setenv("DASHSCOPE_API_KEY", "secret")
     monkeypatch.setenv("LEARNING_CHAT_BASE_URL", "https://model.example/compatible-mode/v1/")
+    monkeypatch.setenv("LEARNING_CHAT_MODEL", "qwen-turbo")
     topics.append({**copy.deepcopy(topics[0]), "id": "unselected", "source_text": "excluded text"})
     def respond(request):
         assert str(request.url) == "https://model.example/compatible-mode/v1/chat/completions"
         body = json.loads(request.content)
-        assert body["model"] == "configured-model"
+        assert body["model"] == "qwen-turbo"
         assert "excluded text" not in body["messages"][1]["content"]
         return httpx.Response(200, json={"choices": [{"message": {"content": json.dumps({"questions": raw})}}]})
     with httpx.Client(transport=httpx.MockTransport(respond)) as client:
-        assert len(DashScopeQuestionGenerator(LearningSettings(chat_model="configured-model"), client=client).generate(topics, payload)) == 5
+        assert len(DashScopeQuestionGenerator(LearningSettings.from_env(), client=client).generate(topics, payload)) == 5
         assert not client.is_closed
 
 
