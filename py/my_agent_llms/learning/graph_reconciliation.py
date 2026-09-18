@@ -9,6 +9,7 @@ from uuid import uuid4
 
 from .errors import DomainConflict, DomainNotFound
 from .spaces import SpaceService, now, topics_for_version
+from .graph_relations import extract_relations, confirm_grounded_relations
 
 
 def digest(value):
@@ -16,8 +17,8 @@ def digest(value):
 
 
 def extract_snapshot(material_id, version):
-    # This is a structural projection of parsed headings/chunks, not semantic
-    # relation inference. Future extractors must provide validated source refs.
+    # Structural hierarchy and explicit source declarations are deterministic.
+    # No model/network call runs inside the graph staging SQL transaction.
     # SQL does not guarantee source row order. Canonical document order must
     # precede node grouping, source refs and hashing (including tied positions).
     ordered = sorted(version.chunks, key=lambda chunk: (
@@ -36,7 +37,7 @@ def extract_snapshot(material_id, version):
                 "page": chunk.page, "line_start": chunk.line_start, "line_end": chunk.line_end}
                for chunk in version.chunks]
     return {"schema_version": 1, "material_id": material_id, "material_version_id": version.id,
-            "nodes": nodes, "relations": [], "sources": sources}
+            "nodes": nodes, "relations": extract_relations(material_id, version, nodes), "sources": sources}
 
 
 def compare_snapshots(base, candidate):
@@ -51,6 +52,10 @@ def compare_snapshots(base, candidate):
             result[category].append({"kind": kind, "id": identifier, "before": before, "after": after})
             if category != "unchanged" and kind == "node":
                 affected.add(identifier)
+            if category != "unchanged" and kind == "relation":
+                for side in (before, after):
+                    if side:
+                        affected.update(side[key] for key in ("from_id", "to_id"))
             reviewed_fields = ("name", "description", "status", "automatic_questions", "prerequisites", "alternatives")
             if kind == "node" and before and after and (
                     before["content_hash"] != after["content_hash"]
@@ -232,11 +237,32 @@ class GraphReconciliationService:
                     node["status"], node["automatic_questions"] = "conflicted", False
                     node["content_hash"] = digest([side["content_hash"] for side in node["alternatives"]])
             effective["nodes"] = list(nodes.values())
+            kept_old = {conflict["topic_id"] for conflict in revision["diff"]["conflicts"]
+                        if decisions[conflict["conflict_id"]]["action"] == "keep_old"}
+            if kept_old and published:
+                previous_edges = {edge["id"]: edge for edge in published["publication"]["snapshot"]["relations"]}
+                edges = {edge["id"]: edge for edge in effective["relations"]}
+                for identifier, edge in list(edges.items()):
+                    if kept_old.intersection((edge["from_id"], edge["to_id"])):
+                        if identifier in previous_edges:
+                            edges[identifier] = copy.deepcopy(previous_edges[identifier])
+                        elif edge.get("status") not in {"rejected", "superseded", "inactive"}:
+                            # Keeping an old assertion does not implicitly accept
+                            # new relationships asserted only by rejected content.
+                            edge.update(status="pending", confirmed=False, review_required=True)
+                for identifier, edge in previous_edges.items():
+                    if kept_old.intersection((edge["from_id"], edge["to_id"])):
+                        edges.setdefault(identifier, copy.deepcopy(edge))
+                effective["relations"] = list(edges.values())
             sources = {source["id"]: source for source in effective["sources"]}
             if published:
                 sources.update({source["id"]: source for source in published["publication"]["snapshot"]["sources"]})
             used = {ref["chunk_id"] for node in effective["nodes"] for ref in node["source_refs"]}
+            used.update(ref["chunk_id"] for edge in effective["relations"] for ref in edge.get("source_refs", []))
+            if not used <= sources.keys():
+                raise DomainConflict("INVALID_RELATION_SOURCE", "正式快照不能丢失节点或关系引用的来源")
             effective["sources"] = [sources[identifier] for identifier in sorted(used)]
+            confirm_grounded_relations(effective)
             timestamp = now()
             revision.update(status="published", graph_version=current + 1,
                 publication={"snapshot": effective, "snapshot_hash": digest(effective),

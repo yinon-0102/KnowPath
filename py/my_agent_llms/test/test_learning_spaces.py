@@ -133,13 +133,14 @@ def test_command_rolls_back_when_replay_record_cannot_be_saved(workspace, monkey
             raise RuntimeError("replay storage failed")
         with monkeypatch.context() as patch:
             patch.setattr(repository, "remember", fail)
-            with pytest.raises(RuntimeError, match="replay storage failed"):
-                if command == "create":
-                    create_space(client, material_id, key="failed", name="Rollback")
-                elif command == "scope":
-                    client.post(path + "/scope", json={"topic_ids": [topic_id], "expected_version": 1}, headers={"Idempotency-Key": "failed"})
-                else:
-                    client.patch(path + "/profile", json={"goal": "Rollback", "expected_version": 1}, headers={"Idempotency-Key": "failed"})
+            if command == "create":
+                failed = create_space(client, material_id, key="failed", name="Rollback")
+            elif command == "scope":
+                failed = client.post(path + "/scope", json={"topic_ids": [topic_id], "expected_version": 1}, headers={"Idempotency-Key": "failed"})
+            else:
+                failed = client.patch(path + "/profile", json={"goal": "Rollback", "expected_version": 1}, headers={"Idempotency-Key": "failed"})
+            assert failed.status_code == 500
+            assert "replay storage failed" not in failed.text
         assert client.get(path).json() == before
         assert len(client.get("/api/v1/learning-spaces").json()["items"]) == 1
         assert create_space(client, material_id, key="failed", name="Retry").status_code == 201
@@ -184,7 +185,7 @@ def test_scope_keeps_old_binding_and_invalidates_only_old_plans(workspace):
         old_plan = app.state.learning_state.create_plan(space["id"], {})
         upload = client.post(f"/api/v1/materials/{material_id}/versions", files={"file": ("new.md", b"# New topic\n\nNew content.", "text/markdown")}, headers={"Idempotency-Key": "v2"})
         assert upload.status_code == 201
-        new_topic = client.get(f"/api/v1/materials/{material_id}/topics").json()["items"][0]["id"]
+        new_topic = client.get(f"/api/v1/materials/{material_id}/topics", params={"version_id": upload.json()["material_version_id"]}).json()["items"][0]["id"]
         assert new_topic != topic_id
         assert client.post(path + "/scope", json={"topic_ids": [new_topic], "expected_version": 1}, headers={"Idempotency-Key": "scope"}).status_code == 409
         body = {"topic_ids": [topic_id], "expected_version": 1}
@@ -200,9 +201,10 @@ def test_bound_material_cannot_be_deleted_after_restart(workspace):
     with ParsedUploadClient(factory()) as client:
         assert create_space(client, material_id).status_code == 201
     with ParsedUploadClient(factory()) as client:
-        for cascade in (False, True):
-            response = client.request("DELETE", f"/api/v1/materials/{material_id}", json={"cascade": cascade})
-            assert response.status_code == 409
+        response = client.request("DELETE", f"/api/v1/materials/{material_id}",
+                                  json={"expected_version": 1, "confirm": True, "cascade": False})
+        assert response.status_code == 409
+        assert response.json()["error"]["details"]["impacted_spaces"]
         assert client.get(f"/api/v1/materials/{material_id}").status_code == 200
 
 

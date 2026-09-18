@@ -186,7 +186,7 @@ def test_material_deletion_cancels_graph_work_and_tombstones_replay(graph_worksp
     state = factory()
     app = create_app(service=state.material_service, run_service=state.run_service)
     with TestClient(app) as client:
-        response = client.delete(f"/api/v1/materials/{upload.material.id}")
+        response = client.request("DELETE", f"/api/v1/materials/{upload.material.id}", json={"expected_version": 1, "confirm": True})
         assert response.status_code == 202
     restored = factory()
     assert restored.material_repository.get_material(upload.material.id) is None

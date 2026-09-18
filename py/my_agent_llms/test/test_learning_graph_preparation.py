@@ -77,3 +77,34 @@ def test_neo4j_preparation_is_idempotent_and_readback_verifies_sources():
         with driver.session() as session:
             session.run("MATCH (n) WHERE n.kp_revision_id = $id OR (n:KPRevision AND n.id = $id) DETACH DELETE n", id=identifier).consume()
         driver.close()
+
+
+def test_neo4j_stores_versioned_relations_and_source_provenance():
+    if not os.getenv("LEARNING_TEST_NEO4J_URI"):
+        pytest.skip("requires explicit Neo4j test URI")
+    from neo4j import GraphDatabase
+    from my_agent_llms.learning.graph_preparation import Neo4jGraphBackend
+    from my_agent_llms.learning.graph_worker import preparation_manifest
+    from my_agent_llms.learning.graph_reconciliation import digest
+    identifier = str(uuid4())
+    nodes = [{"id": name, "name": name, "source_refs": [{"chunk_id":"chunk"}]} for name in ("first","second")]
+    relations = [{"id": kind, "type":kind,"from_id":"first","to_id":"second","status":"pending",
+                  "source_refs":[{"chunk_id":"chunk"}]} for kind in ("contains","prerequisite_of","related_to","assessed_by","explained_by","supersedes","contradicts")]
+    snapshot = {"nodes":nodes,"relations":relations}
+    manifest = preparation_manifest({"id":identifier,"snapshot":snapshot,"snapshot_hash":digest(snapshot),"base_graph_version":0,"diff":{"conflicts":[]}})
+    sources = [{"chunk_id":"chunk","material_id":identifier,"material_version_id":identifier,"text":"source","graph_version":1,"topic_id":"first"}]
+    driver = GraphDatabase.driver(os.environ["LEARNING_TEST_NEO4J_URI"], auth=(os.getenv("NEO4J_USERNAME","neo4j"),os.environ["NEO4J_PASSWORD"]))
+    try:
+        backend = Neo4jGraphBackend(driver)
+        assert backend.prepare(manifest,sources)["verified"]
+        assert backend.prepare(manifest,sources)["verified"]
+        with driver.session() as session:
+            rows = list(session.run("MATCH (a:KPTopicVariant {kp_revision_id:$id})-[r]->(b:KPTopicVariant {kp_revision_id:$id}) RETURN type(r) AS kind, r.payload AS payload, a.variant AS variant",id=identifier))
+            assert {r["kind"] for r in rows} == {"contains","prerequisite_of","related_to","assessed_by","explained_by","supersedes","contradicts"}
+            assert len(rows) == 7
+            import json
+            assert all(json.loads(row["payload"])["source_refs"] == [{"chunk_id":"chunk"}] and row["variant"] == "new" for row in rows)
+    finally:
+        with driver.session() as session:
+            session.run("MATCH (n) WHERE n.kp_revision_id=$id OR (n:KPRevision AND n.id=$id) DETACH DELETE n",id=identifier).consume()
+        driver.close()

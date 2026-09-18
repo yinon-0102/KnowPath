@@ -33,7 +33,7 @@ class DatedContract(Contract):
 
 class CreateSpace(DatedContract):
     name: Name = "未命名学习空间"
-    material_ids: Annotated[list[Identifier], Field(min_length=1)]
+    material_ids: Annotated[list[Identifier], Field(min_length=1, max_length=5)]
     goal: Goal | None = None
     weekly_minutes: Budget | None = None
 

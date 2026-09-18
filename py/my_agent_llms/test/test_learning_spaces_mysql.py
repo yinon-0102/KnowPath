@@ -130,8 +130,16 @@ def test_mysql_space_creation_reads_version_published_after_old_snapshot(mysql_w
         pending = pool.submit(client.post, "/api/v1/learning-spaces", json=body, headers={"Idempotency-Key": label + "-space"})
         try:
             assert snapshot_ready.wait(timeout=10)
-            uploaded = factory().post(f"/api/v1/materials/{material_id}/versions", files={"file": (label + "-v2.md", f"# Parameters\n\n{label}".encode(), "text/markdown")}, headers={"Idempotency-Key": label + "-version"})
+            publishing = factory()
+            uploaded = publishing.post(f"/api/v1/materials/{material_id}/versions", files={"file": (label + "-v2.md", f"# Parameters\n\n{label}".encode(), "text/markdown")}, headers={"Idempotency-Key": label + "-version"})
             assert uploaded.status_code == 201
+            graph = publishing.app.state.learning_state.graph_service
+            candidate = next(row for row in graph._history(material_id)
+                             if row["run_id"] == uploaded.json()["run_id"])
+            published = graph.publish(material_id, candidate["id"],
+                                      {"expected_graph_version": 1, "resolutions": []},
+                                      label + "-publish-v2")
+            assert published["graph_version"] == 2
         finally:
             upload_done.set()
         response = pending.result(timeout=10)
@@ -162,7 +170,8 @@ def test_mysql_delete_waits_for_creation_and_rejects_bound_material(mysql_worksp
         create = pool.submit(creating.post, "/api/v1/learning-spaces", json=body, headers={"Idempotency-Key": label + "-space"})
         try:
             assert locked.wait(timeout=10)
-            deletion = pool.submit(deleting.delete, f"/api/v1/materials/{material_id}")
+            deletion = pool.submit(deleting.request, "DELETE", f"/api/v1/materials/{material_id}",
+                                   json={"expected_version": 1, "confirm": True})
             assert deleting_started.wait(timeout=10)
         finally:
             release.set()
