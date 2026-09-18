@@ -232,7 +232,7 @@ def test_message_preparation_failure_rolls_back_run_and_conversation(workspace, 
     monkeypatch.setattr(state.run_service, "create", track)
     def fail(*args, **kwargs):
         raise RuntimeError("injected transaction failure")
-    monkeypatch.setattr(state.run_service, "append_event", fail)
+    monkeypatch.setattr(state.message_service.commands.repository, "remember", fail)
     with pytest.raises(RuntimeError):
         state.send_message(space_id, {"message": "Explain"}, idempotency_key="rollback-message")
     assert ids and generator.calls == []

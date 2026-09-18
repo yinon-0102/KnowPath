@@ -31,7 +31,7 @@ def _id(prefix: str) -> str:
 
 class LearningState:
     def __init__(self, material_repository: MaterialRepository | None = None, *,
-                 run_service: RunService | None = None, space_service: SpaceService | None = None, question_generator=None, answer_generator=None) -> None:
+                 run_service: RunService | None = None, space_service: SpaceService | None = None, question_generator=None, answer_generator=None, source_retriever=None) -> None:
         self.material_repository = material_repository or InMemoryMaterialRepository()
         self.material_service = MaterialService(self.material_repository)
         uow = getattr(self.material_repository, "unit_of_work", None)
@@ -46,7 +46,7 @@ class LearningState:
         self.space_service = space_service
         learning_repository = SqlAlchemyLearningRepository(uow) if uow else InMemoryLearningRepository(self.material_repository, self.run_service)
         self.assessment_service = AssessmentService(learning_repository, space_service, self.run_service, question_generator)
-        self.message_service = MessageService(learning_repository, space_service, self.assessment_service, self.run_service, answer_generator)
+        self.message_service = MessageService(learning_repository, space_service, self.assessment_service, self.run_service, answer_generator, source_retriever)
         self.spaces: dict[str, dict[str, Any]] = {}
         self.topics: dict[str, dict[str, Any]] = {}
         self.plans: dict[str, dict[str, Any]] = {}

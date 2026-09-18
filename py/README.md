@@ -288,7 +288,25 @@ Run/SSE 当前支持递增事件 ID、UTC 时间戳、Last-Event-ID 续传、15 
 
 评分复核会持久化审计、替换证据并重算相关状态；不会删除旧证据链。学习空间删除要求 confirm=true 与 expected_version，在事务中清除该空间历史、导出、对话和关联 Run，保留其他空间及共享资料；删除后旧命令重放返回 410。导出为有效期 24 小时的 ZIP，采用公开字段白名单。
 
-对话仅使用空间绑定资料版本和当前范围，按主题/关键词选择最多 8 个片段；向量召回尚未接入。session_id 为空时建立独立对话，指定时验证会话归属与学习会话活动状态。同一会话只允许一条生成中的消息。模型返回 JSON 后先校验引用，再经 SSE 分块发送；这是经校验后的分块输出，不是上游 token 级透传。活动测验中的明确索答请求转为提示并记录 assisted，不写入成绩；规则仍有自然语言识别局限。生成期间取消、删除空间、改变范围或结束学习会话均不会发布迟到正文。进程内后台任务不具备独立队列的恢复能力；服务重启后中断任务标记失败，需要用新的幂等键重新请求。
+对话仅使用空间绑定资料版本和当前范围，最多选择 8 个片段。默认 `LEARNING_RETRIEVAL_BACKEND=keyword` 使用关键词；设置为 `qdrant` 后使用 DashScope `text-embedding-v3`、1024 维和 Cosine 做向量召回。检索前不再提前裁掉候选片段，Qdrant 命中必须匹配资料版本、图版本、chunk_id 与正文哈希；正文仍从数据库来源快照读取。session_id 为空时建立独立对话，指定时验证会话归属与学习会话活动状态。同一会话只允许一条生成中的消息。模型返回 JSON 后先校验引用，再经 SSE 分块发送；这是经校验后的分块输出，不是上游 token 级透传。活动测验中的明确索答请求转为提示并记录 assisted，不写入成绩；规则仍有自然语言识别局限。生成期间取消、删除空间、改变范围或结束学习会话均不会发布迟到正文。进程内后台任务不具备独立队列的恢复能力；服务重启后中断任务标记失败，需要用新的幂等键重新请求。
+
+向量索引目前通过显式命令准备。先在项目根目录启动 Qdrant：
+
+```powershell
+docker compose -f .\infra\docker-compose.yml up -d qdrant
+```
+
+在 `py/` 中为需要使用的每个绑定资料版本执行（将占位值替换为 API 返回的 material_version_id）：
+
+```powershell
+uv run python -m my_agent_llms.learning.vector_indexing --version-id "<material_version_id>"
+```
+
+命令从 SQL 读取指定版本，要求资料已解析为 ready，使用 `DASHSCOPE_API_KEY` 调用真实 Embedding 服务并写入 Qdrant，因此会产生模型调用。它不会切换空间绑定或发布图谱；当前适配现有的 graph_version=1 主题投影。片段使用与对话一致的前 6000 字，批次最多 10 个；正文和题目答案键不写入向量 payload。重复运行按确定性 ID 覆盖同一组点。Qdrant collection 名由 `QDRANT_COLLECTION` 前缀加模型、维度和索引格式的摘要构成，不覆盖旧模型集合；首版客户端只接受 DashScope text-embedding-v3 / 1024，其他配置会启动失败。
+
+全部绑定版本建好索引后，在 `py/.env` 设置 `LEARNING_RETRIEVAL_BACKEND=qdrant` 并重启服务。索引不完整返回 `VECTOR_INDEX_NOT_READY`，不会降级成关键词；失败的 Run 保留原结果，修复索引后使用新的 Idempotency-Key 重试。客户端连接超时为 Qdrant 30 秒、Embedding 每批 60 秒，不自动重试或跟随模型重定向。新版本需要重新建索引，原来固定的旧版本仍可查询。
+
+这个命令是自动摄入前的维护入口。完整 GraphService、跨存储 outbox、自动重试和物理删除清理仍待实现；索引与资料删除并发时可能留下不可通过当前来源白名单检索的孤儿向量，后续删除流程仍须负责物理清理，不能把该命令当作完整发布/删除工作流。
 
 运行学习模块回归测试（PowerShell 先展开测试文件）：
 
@@ -298,6 +316,8 @@ uv run python -m pytest @learningTests -q
 ```
 
 可选 MySQL 集成测试需要已迁移的本地测试库。先设置 `$env:LEARNING_TEST_MYSQL_URL = $env:DATABASE_URL`，再运行同一测试命令；这些测试验证 Run 并发写入和接口续传，以及上传的跨应用重放、旧记录补关联、同 key 和不同 key 的并发上传；还覆盖空间同键并发更新、不同键版本冲突、旧快照下绑定新资料版本、空间创建与资料删除互斥；还覆盖测验与证据的重启恢复、同时交卷、同键原子提交、失败回滚、取消发布锁和删除保护；结束时只清理测试自身创建的数据。未设置此变量时会跳过 MySQL 用例。
+
+设置 `$env:LEARNING_TEST_QDRANT_URL = "http://127.0.0.1:6333"` 可在同一回归命令中验证真实 Qdrant。每个测试只创建和清理带唯一随机前缀的测试集合；Embedding 使用测试向量，不调用真实模型。
 
 ---
 

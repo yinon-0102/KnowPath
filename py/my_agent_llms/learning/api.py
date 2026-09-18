@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import asynccontextmanager
 import re
 from datetime import datetime
 
@@ -34,6 +35,7 @@ from .assessment_schemas import CreateAssessment, RecordAttempt, FinalizeAssessm
 from .question_generation import DashScopeQuestionGenerator
 from .message_generation import DashScopeAnswerGenerator
 from .message_schemas import SendMessage
+from .vector_retrieval import configured_retriever
 from .planner_schemas import CreatePlan, UpdateTask, StartSession, SessionEvent, EmptyObject
 
 
@@ -44,6 +46,7 @@ def create_app(
     run_service: RunService | None = None,
     question_generator=None,
     answer_generator=None,
+    source_retriever=None,
 ) -> FastAPI:
     service = service or MaterialService(InMemoryMaterialRepository())
     settings = settings or LearningSettings.from_env()
@@ -54,9 +57,20 @@ def create_app(
         run_service = RunService(service.repository.run_repository)
     state = LearningState(material_repository=service.repository, run_service=run_service,
                           question_generator=question_generator if question_generator is not None else DashScopeQuestionGenerator(settings),
-                          answer_generator=answer_generator if answer_generator is not None else DashScopeAnswerGenerator(settings))
+                          answer_generator=answer_generator if answer_generator is not None else DashScopeAnswerGenerator(settings),
+                          source_retriever=source_retriever if source_retriever is not None else configured_retriever(settings))
     ingestion = MaterialIngestionService(service, state.run_service)
-    app = FastAPI(title="Keel Learning", version="0.1.0")
+    @asynccontextmanager
+    async def lifespan(app):
+        try:
+            yield
+        finally:
+            if source_retriever is None:
+                close = getattr(state.message_service.retriever, "close", None)
+                if close is not None:
+                    close()
+
+    app = FastAPI(title="Keel Learning", version="0.1.0", lifespan=lifespan)
     app.state.learning_state = state
 
     @app.middleware("http")

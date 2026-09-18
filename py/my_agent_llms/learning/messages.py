@@ -8,6 +8,7 @@ from .message_schemas import SendMessage
 from .message_generation import DashScopeAnswerGenerator, MessageGenerationError, validate_answer
 from .runs import ACTIVE_STATUSES
 from .spaces import SpaceService, now
+from .vector_retrieval import KeywordRetriever, RetrievalError, configured_retriever
 
 
 def uid():
@@ -15,10 +16,11 @@ def uid():
 
 
 class MessageService:
-    def __init__(self, repository, spaces, assessments, runs, generator=None):
+    def __init__(self, repository, spaces, assessments, runs, generator=None, retriever=None):
         self.repository, self.spaces, self.assessments, self.runs = repository, spaces, assessments, runs
         self.generator = generator if generator is not None else DashScopeAnswerGenerator()
         self.commands = SpaceService(repository, spaces.materials)
+        self.retriever = retriever if retriever is not None else configured_retriever()
 
     def send(self, space_id, payload, key=None, *, dispatch=None):
         payload = SendMessage.model_validate(payload).model_dump()
@@ -27,7 +29,7 @@ class MessageService:
             # Hint requests must serialize with grading before taking space locks.
             assessments = self.repository.records("assessments", space_id=space_id)
             space = self.spaces.repository.get(space_id)
-            sources = self._sources(space, payload["message"])
+            sources = self._sources(space)
             if not sources:
                 raise DomainConflict("NO_LEARNING_SOURCES", "当前学习范围没有可引用的资料")
             conversation = self._conversation(space_id, payload["session_id"])
@@ -50,8 +52,6 @@ class MessageService:
                       "run_id": run["id"], "status": "pending", "message": payload["message"],
                       "sequence": len(previous) + 1, "snapshot": snapshot, "response": None, "created_at": now()}
             self.repository.put_record("messages", record)
-            refs = [{k: v for k, v in row.items() if k not in {"text", "topic_id", "topic_name"}} for row in sources]
-            self.runs.append_event(run["id"], "tool.completed", {"tool": "learning_sources", "source_refs": refs})
             created.append((identifier, run["id"]))
             return {"run_id": run["id"], "session_id": conversation["id"], "status": "running"}
         response = self.commands._execute("message.send", space_id, payload, key, prepare)
@@ -87,8 +87,8 @@ class MessageService:
         self.repository.put_record("conversations", conversation)
         return conversation
 
-    def _sources(self, space, message):
-        tokens = set(re.findall(r"[a-z0-9_]+|[\u4e00-\u9fff]", message.casefold()))
+    def _sources(self, space):
+        graphs = {b["material_version_id"]: b["graph_version"] for b in space["bindings"]}
         sources, versions = {}, {}
         for topic in self.assessments._topics(space):
             for ref in topic["source_refs"]:
@@ -100,11 +100,9 @@ class MessageService:
                     raise DomainConflict("BOUND_VERSION_UNAVAILABLE", "绑定资料版本不可用")
                 chunk = next((c for c in version.chunks if c.id == ref["chunk_id"]), None)
                 if chunk is not None:
-                    sources[chunk.id] = {**ref, "topic_id": topic["id"], "topic_name": topic["name"], "text": chunk.text[:6000]}
-        def rank(row):
-            searchable = (row["topic_name"] + " " + row["text"]).casefold()
-            return (-sum(token in searchable for token in tokens), row["chunk_id"])
-        return sorted(sources.values(), key=rank)[:8]
+                    sources[chunk.id] = {**ref, "topic_id": topic["id"], "topic_name": topic["name"], "text": chunk.text[:6000],
+                                         "graph_version": graphs[version_id]}
+        return list(sources.values())
 
     def _hint(self, assessments, message):
         active = [a for a in assessments if a["status"] in {"ready", "in_progress"}]
@@ -145,13 +143,28 @@ class MessageService:
         snapshot = current["snapshot"]
         error = None
         try:
+            # Active assessment hints remain deterministic and require no provider.
+            retriever = KeywordRetriever() if snapshot["hint"] else self.retriever
+            try:
+                selected = retriever.select(snapshot["message"], copy.deepcopy(snapshot["sources"]), limit=8)
+            except RetrievalError:
+                raise
+            except Exception:
+                raise RetrievalError("VECTOR_UNAVAILABLE") from None
+            if (not isinstance(selected, list) or not 1 <= len(selected) <= 8
+                    or any(row not in snapshot["sources"] for row in selected)
+                    or len({row["chunk_id"] for row in selected}) != len(selected)):
+                raise RetrievalError("RETRIEVAL_VALIDATION_FAILED")
+            snapshot = {**snapshot, "sources": copy.deepcopy(selected)}
+            if not self._record_sources(identifier, snapshot):
+                return
             if snapshot["hint"]:
                 raw = {"text": "先在引用资料中定位相关概念，列出题目的已知条件，再逐步检查自己的推理。这里提供学习提示，不直接给出活动测验答案。",
                        "citation_ids": [snapshot["sources"][0]["chunk_id"]]}
             else:
-                raw = self.generator.generate(snapshot)
+                raw = self.generator.generate(copy.deepcopy(snapshot))
             text, citations = validate_answer(raw, snapshot["sources"])
-        except MessageGenerationError as exc:
+        except (MessageGenerationError, RetrievalError) as exc:
             error = exc.code
         except Exception:
             # An injected/custom provider must never leak upstream credentials or
@@ -163,18 +176,19 @@ class MessageService:
                 current = self.repository.get_record("messages", identifier)
                 if current["status"] != "generating" or self._terminal(current):
                     return
-                if space["scope_version"] != snapshot["scope_version"] or space["bindings"] != snapshot["bindings"]:
-                    error = "STALE_LEARNING_CONTEXT"
-                conversation = self.repository.get_record("conversations", current["conversation_id"])
-                if conversation.get("learning_session_id"):
-                    learning = self.repository.get_record("sessions", conversation["learning_session_id"])
-                    if learning["status"] != "active":
-                        error = "SESSION_FINISHED"
+                error = self._context_error(space, current, snapshot) or error
                 if error:
                     public = {"MODEL_UNAVAILABLE": "对话模型暂时不可用", "MESSAGE_VALIDATION_FAILED": "回答未通过来源校验",
-                              "STALE_LEARNING_CONTEXT": "学习范围已变化，请重新发送消息", "SESSION_FINISHED": "学习会话已经结束"}
+                              "STALE_LEARNING_CONTEXT": "学习范围已变化，请重新发送消息", "SESSION_FINISHED": "学习会话已经结束",
+                              "EMBEDDING_UNAVAILABLE": "向量模型暂时不可用", "EMBEDDING_INVALID_RESPONSE": "向量模型返回无效数据",
+                              "EMBEDDING_INPUT_INVALID": "检索文本不符合向量模型要求",
+                              "VECTOR_UNAVAILABLE": "向量检索服务暂时不可用", "VECTOR_INDEX_NOT_READY": "当前学习资料的向量索引尚未就绪",
+                              "VECTOR_PROFILE_MISMATCH": "向量索引配置不匹配，需要重建索引",
+                              "RETRIEVAL_VALIDATION_FAILED": "检索结果未通过来源校验"}
+                    if error not in public:
+                        error = "MODEL_UNAVAILABLE"
                     self.runs.fail(current["run_id"], {"code": error, "message": public.get(error, "对话生成失败"),
-                        "details": {}, "retryable": error == "MODEL_UNAVAILABLE"})
+                        "details": {}, "retryable": error in {"MODEL_UNAVAILABLE", "EMBEDDING_UNAVAILABLE", "VECTOR_UNAVAILABLE", "VECTOR_INDEX_NOT_READY"}})
                     current["status"] = "failed"
                 else:
                     response = {"message_id": identifier, "session_id": current["conversation_id"], "text": text, "citations": citations}
@@ -186,6 +200,36 @@ class MessageService:
                 self.repository.put_record("messages", current)
         except DomainNotFound:
             return  # A deleted space must never be recreated by a late result.
+
+    def _context_error(self, space, current, snapshot):
+        if space["scope_version"] != snapshot["scope_version"] or space["bindings"] != snapshot["bindings"]:
+            return "STALE_LEARNING_CONTEXT"
+        conversation = self.repository.get_record("conversations", current["conversation_id"])
+        if conversation.get("learning_session_id"):
+            learning = self.repository.get_record("sessions", conversation["learning_session_id"])
+            if learning["status"] != "active":
+                return "SESSION_FINISHED"
+        return None
+
+    def _record_sources(self, identifier, snapshot):
+        try:
+            initial = self.repository.get_record("messages", identifier, lock=False)
+            with self.repository.transaction():
+                space = self.spaces.repository.get(initial["space_id"])
+                current = self.repository.get_record("messages", identifier)
+                if current["status"] != "generating" or self._terminal(current):
+                    return False
+                error = self._context_error(space, current, snapshot)
+                if error:
+                    raise RetrievalError(error)
+                current["snapshot"] = snapshot
+                self.repository.put_record("messages", current)
+                refs = [{k: v for k, v in row.items() if k not in {"text", "topic_id", "topic_name"}}
+                        for row in snapshot["sources"]]
+                self.runs.append_event(current["run_id"], "tool.completed", {"tool": "learning_sources", "source_refs": refs})
+                return True
+        except DomainNotFound:
+            return False
 
     def _terminal(self, current):
         run = self.runs.get(current["run_id"])
