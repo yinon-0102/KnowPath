@@ -465,12 +465,15 @@ class PlanSessionService:
                 self.spaces.repository.get(row.space_id)
                 row = self._find_session_sql(session_id, lock=True)
                 if row.status == "finished":
-                    elapsed = int(max(0, (row.finished_at - row.started_at).total_seconds())) if row.finished_at else None
+                    elapsed = (row.context or {}).get("finish_elapsed_seconds")
+                    if elapsed is None and row.finished_at:
+                        elapsed = int(max(0, (row.finished_at - row.started_at).total_seconds()))
                     return {"session_id": row.id, "status": "finished", "elapsed_seconds": elapsed, "reported_active_seconds": None, "task_ids": [row.task_id]}
                 row.status = "finished"
                 row.active_space_id = None
                 row.finished_at = parse_dt(now())
                 elapsed = int(max(0, (row.finished_at - row.started_at).total_seconds()))
+                row.context = {**(row.context or {}), "finish_elapsed_seconds": elapsed}
                 return {"session_id": row.id, "status": "finished", "elapsed_seconds": elapsed, "reported_active_seconds": None, "task_ids": [row.task_id]}
             session = self._load_session_memory(session_id)
             if session is None:
