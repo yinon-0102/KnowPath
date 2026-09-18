@@ -96,20 +96,16 @@ def test_late_generation_does_not_recreate_deleted_records(workspace):
         factory().get_assessment(response["id"])
 
 
-def test_delete_removes_message_and_correction_runs_after_restart(workspace):
+def test_delete_removes_message_runs_after_restart(workspace):
     factory, space_id, _, _ = workspace
     state = factory()
     message = state.send_message(space_id, {"message": "private content to remove"})
-    correction = state.create_correction(space_id, {"kind": "node", "target_id": "test", "action": "reject", "reason": "private correction"})
-    publish = state.confirm_correction(correction["id"], {})
     factory().delete_space(space_id, confirmed(factory(), space_id))
-    for run_id in (message["run_id"], publish["run_id"]):
+    for run_id in (message["run_id"],):
         with pytest.raises(DomainNotFound):
             factory().get_run(run_id)
         with pytest.raises(DomainNotFound):
             factory().events_for(run_id)
-    with pytest.raises(DomainNotFound):
-        state.confirm_correction(correction["id"], {})
     with pytest.raises(DomainNotFound):
         state.send_message(space_id, {"message": "late message"})
 

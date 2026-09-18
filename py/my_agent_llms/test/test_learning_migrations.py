@@ -48,7 +48,7 @@ def test_empty_database_upgrade_matches_current_schema(migration_database):
     config, engine = migration_database
     command.upgrade(config, "head")
     with engine.connect() as connection:
-        assert connection.scalar(sa.text("SELECT version_num FROM alembic_version")) == "0011_graph_preparation"
+        assert connection.scalar(sa.text("SELECT version_num FROM alembic_version")) == "0012_correction_context"
         context = MigrationContext.configure(connection, opts={"compare_type": True})
         assert compare_metadata(context, Base.metadata) == []
     assert "run_events" in sa.inspect(engine).get_table_names()
@@ -177,3 +177,28 @@ def test_assessment_context_backfill_preserves_result_and_snapshot(migration_dat
     command.downgrade(config, "0007_material_version")
     with engine.connect() as connection:
         assert connection.scalar(sa.text("SELECT id FROM assessments")) == "audit-assessment"
+
+
+def test_correction_context_backfill_preserves_audit(migration_database):
+    from datetime import datetime
+    config, engine = migration_database
+    command.upgrade(config, '0011_graph_preparation')
+    meta = sa.MetaData()
+    spaces = sa.Table('learning_spaces', meta, autoload_with=engine)
+    corrections = sa.Table('knowledge_corrections', meta, autoload_with=engine)
+    with engine.begin() as connection:
+        connection.execute(spaces.insert().values(id='correction-space', name='Audit', status='active',
+            bindings=[], topic_ids=[], excluded_topic_ids=[], space_version=1, scope_version=0,
+            profile_version=1, state_version=0, profile={}, created_at=datetime(2026, 9, 19), updated_at=datetime(2026, 9, 19)))
+        connection.execute(corrections.insert().values(id='old-correction', space_id='correction-space', kind='node',
+            target_id='old-topic', action='reject', reason='preserve audit', status='pending', created_at=datetime(2026, 9, 19)))
+    command.upgrade(config, 'head')
+    corrections = sa.Table('knowledge_corrections', sa.MetaData(), autoload_with=engine)
+    with engine.connect() as connection:
+        row = connection.execute(sa.select(corrections)).mappings().one()
+        assert row['context'] == {}
+        assert row['reason'] == 'preserve audit'
+        assert compare_metadata(MigrationContext.configure(connection), Base.metadata) == []
+    command.downgrade(config, '0011_graph_preparation')
+    with engine.connect() as connection:
+        assert connection.scalar(sa.text('SELECT reason FROM knowledge_corrections')) == 'preserve audit'

@@ -25,6 +25,17 @@ class SpaceDeletionService:
             space = self.spaces.repository.get(space_id)
             if space["space_version"] != payload["expected_version"]:
                 raise DomainConflict("VERSION_CONFLICT", "学习空间版本已变化")
+            # The worker holds this same space lock before material/revision locks.
+            # Candidate history belongs to the material, but deleted spaces cannot publish corrections.
+            for correction in self.repository.records('corrections', space_id=space_id):
+                if correction.get('candidate_revision_id') and correction['status'] != 'published':
+                    self.spaces.materials.get_material(correction['material_id'])
+                    self.repository.get_record('graph_revisions', correction['candidate_revision_id'])
+                    for event in self.repository.records('outbox', aggregate_id=correction['candidate_revision_id']):
+                        event.update(status='cancelled', lease_token=None, lease_until=None)
+                        self.repository.put_record('outbox', event)
+                    self.runs.request_cancel(correction['run_id'])
+                    self.runs.acknowledge_cancel(correction['run_id'])
             assessments = self.repository.records("assessments", space_id=space_id)
             plans = self.repository.records("plans", space_id=space_id)
             sessions = self.repository.records("sessions", space_id=space_id)
@@ -46,7 +57,8 @@ class SpaceDeletionService:
 
     @staticmethod
     def _filters(space_id, assessments, plans, sessions):
-        return [("messages", "space_id", {space_id}),
+        return [("corrections", "space_id", {space_id}),
+                ("messages", "space_id", {space_id}),
                 ("conversations", "space_id", {space_id}),
                 ("session_events", "session_id", {r["id"] for r in sessions}),
                 ("sessions", "space_id", {space_id}),

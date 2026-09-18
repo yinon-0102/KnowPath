@@ -6,7 +6,7 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
-from .errors import DomainNotFound
+from .errors import DomainNotFound, DomainConflict
 from .graph_reconciliation import digest
 
 
@@ -45,6 +45,8 @@ class GraphWorker:
         # Match reconcile/delete/publish order: material -> revision -> outbox -> Run.
         peek = self.repository.get_record("outbox", event_id, lock=False)
         with self.repository.transaction():
+            if peek["payload"].get("space_id"):
+                self.repository.get(peek["payload"]["space_id"])
             self.graph._material(peek["payload"]["material_id"])
             revision = self.repository.get_record("graph_revisions", peek["aggregate_id"])
             event = self.repository.get_record("outbox", event_id)
@@ -57,6 +59,10 @@ class GraphWorker:
         if run["status"] in {"cancelling", "cancelled", "failed", "succeeded"}:
             event.update(status="cancelled", lease_token=None, lease_until=None)
             self.repository.put_record("outbox", event)
+            if event["payload"].get("correction_id") and run["status"] in {"cancelling", "cancelled"}:
+                correction = self.repository.get_record("corrections", event["payload"]["correction_id"])
+                correction["status"] = "cancelled"
+                self.repository.put_record("corrections", correction)
             return True
         return False
 
@@ -102,14 +108,18 @@ class GraphWorker:
         except DomainNotFound:
             return False
 
-    def _fail(self, event, revision, *, terminal=False):
+    def _fail(self, event, revision, *, terminal=False, error_code="GRAPH_PREPARATION_FAILED"):
         terminal = terminal or event["attempts"] >= self.max_attempts
         event.update(status="failed" if terminal else "pending", lease_token=None, lease_until=None,
                      available_at=None if terminal else (self.clock() + timedelta(seconds=min(300, 2 ** min(event["attempts"], 8)))).isoformat())
         self.repository.put_record("outbox", event)
         if terminal:
-            self.graph.runs.fail(revision["run_id"], {"code": "GRAPH_PREPARATION_FAILED",
-                "message": "图谱或向量索引准备失败，可重新提交任务", "details": {}, "retryable": True})
+            self.graph.runs.fail(revision["run_id"], {"code": error_code,
+                "message": "图谱版本已变化，请重新提交纠错" if error_code == "VERSION_CONFLICT" else "图谱或向量索引准备失败，可重新提交任务", "details": {}, "retryable": error_code != "VERSION_CONFLICT"})
+            if event["payload"].get("correction_id"):
+                correction = self.repository.get_record("corrections", event["payload"]["correction_id"])
+                correction["status"] = "failed"
+                self.repository.put_record("corrections", correction)
 
     def execute(self, claimed):
         def heartbeat():
@@ -132,17 +142,30 @@ class GraphWorker:
                 event.update(status="completed", lease_token=None, lease_until=None)
                 self.repository.put_record("graph_revisions", current)
                 self.repository.put_record("outbox", event)
-                self.graph.runs.complete(current["run_id"], {"candidate_revision_id": current["id"],
-                    "material_id": current["material_id"], "material_version_id": current["material_version_id"]})
+                result = {"candidate_revision_id": current["id"], "material_id": current["material_id"],
+                          "material_version_id": current["material_version_id"]}
+                correction_id = event['payload'].get('correction_id')
+                if correction_id:
+                    correction = self.repository.get_record('corrections', correction_id)
+                    resolutions = [{'conflict_id': item['conflict_id'], 'action': 'use_new',
+                                    'reason': correction['confirmation']['request']['reason']} for item in current['diff']['conflicts']]
+                    result.update(self.graph.publish(current['material_id'], current['id'],
+                        {'expected_graph_version': correction['base_graph_version'], 'resolutions': resolutions},
+                        None, correction_id=correction_id))
+                    result.update(correction_id=correction_id, affected_topic_ids=current['diff']['affected_topic_ids'], update_available=True)
+                    correction.update(status='published', result=copy.deepcopy(result))
+                    self.repository.put_record('corrections', correction)
+                self.graph.runs.complete(current['run_id'], result)
             return True
         except (LeaseLost, DomainNotFound):
             return False
-        except Exception:
+        except Exception as exc:
             # Never expose provider messages, URLs, credentials or source text.
             try:
                 with self._locked(claimed["id"]) as (event, revision):
                     if self._owned(event, claimed) and not self._cancelled(event, revision):
-                        self._fail(event, revision)
+                        stale = isinstance(exc, DomainConflict) and exc.code == "VERSION_CONFLICT"
+                        self._fail(event, revision, terminal=stale, error_code="VERSION_CONFLICT" if stale else "GRAPH_PREPARATION_FAILED")
             except DomainNotFound:
                 pass
             return False

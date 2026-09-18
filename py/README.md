@@ -272,9 +272,9 @@ uv run uvicorn my_agent_llms.learning.main:app --host 127.0.0.1 --port 8000 --wo
 
 SQL 模式要求先完成迁移；启动时不再用 `create_all()` 隐式建表。`.env.example` 只是配置示例，以上命令显式设置环境变量。Docker 配置见 `../infra/docker-compose.yml`。
 
-Run/SSE 当前支持递增事件 ID、UTC 时间戳、Last-Event-ID 续传、15 秒心跳、终态关闭和七天历史过期检查。取消请求先进入 `cancelling`，执行器确认停止后才能变成 `cancelled`；此期间拒绝发布迟到的结果和消息。SQL 启动时将残留的非 graph_reconcile 类 queued/running/cancelling 任务标记为 `failed / RUN_INTERRUPTED`；graph_reconcile 由独立持久 worker 按租约恢复和重试。
+Run/SSE 当前支持递增事件 ID、UTC 时间戳、Last-Event-ID 续传、15 秒心跳、终态关闭和七天历史过期检查。取消请求先进入 `cancelling`，执行器确认停止后才能变成 `cancelled`；此期间拒绝发布迟到的结果和消息。SQL 启动时将残留的非 graph_reconcile / knowledge_publish 类 queued/running/cancelling 任务标记为 `failed / RUN_INTERRUPTED`；graph_reconcile 和已确认 knowledge_publish 由独立持久 worker 按租约恢复和重试。
 
-当前 SQL 模式只支持单个服务进程；多个进程同时启动会错误地将彼此任务判断为中断。学习空间的基础字段、固定资料版本绑定、学习范围、画像及 space/scope/profile 版本号已持久化到 MySQL。测验冻结快照、答题修订、证据、掌握度、状态重置和 state_version 已随 0004 迁移持久化；重启后可恢复测验、评分结果、Run 和证据。计划、任务、学习会话、会话事件、评分复核审计和导出快照也已持久化。0009 迁移增加独立对话与消息表；出题和对话在事务提交后通过 FastAPI 后台任务调用 DashScope，模型不可用会将对应 Run 标记为 failed。尚未实现可重试的独立 worker 或真实图谱发布/版本采用。
+当前 SQL 模式只支持单个服务进程；多个进程同时启动会错误地将彼此任务判断为中断。学习空间的基础字段、固定资料版本绑定、学习范围、画像及 space/scope/profile 版本号已持久化到 MySQL。测验冻结快照、答题修订、证据、掌握度、状态重置和 state_version 已随 0004 迁移持久化；重启后可恢复测验、评分结果、Run 和证据。计划、任务、学习会话、会话事件、评分复核审计和导出快照也已持久化。0009 迁移增加独立对话与消息表；出题和对话在事务提交后通过 FastAPI 后台任务调用 DashScope，模型不可用会将对应 Run 标记为 failed。0011/0012 已实现图谱持久 worker、真实图谱发布和知识纠错；空间版本采用及其他异步任务的持久重试仍待实现。
 
 资料上传和新增版本把资料、版本、片段、幂等记录、Run 与事件写入同一个 SQL 事务；任一步失败会一起回滚。相同 key 和请求在重启后返回原 material/version/run，不同内容复用 key 返回 409。旧幂等记录尚未关联 Run 时，会在首次匹配重试中补建关联，并发重试仍复用同一 Run。MySQL 默认 REPEATABLE READ 隔离级别下，上传按文件哈希加锁去重；锁冲突导致的死锁会有限重试。
 
@@ -338,7 +338,7 @@ Questions or ideas? Feel free to open an [Issue](https://github.com/HHHH-LK/keel
 
 执行 `uv run alembic upgrade head` 后，reconcile 接口要求 `version_id` 和 `expected_graph_version`，并与候选快照、queued Run、待处理事件及幂等响应一起提交。首次正式发布前基版本是 0；旧空间使用的临时 graph_version=1 投影不代表已经发布的图谱。graph-diff 返回真实节点/来源差异，支持指定 revision_id 和 include_unchanged。
 
-0011 迁移已补齐 graph.prepare worker、Neo4j/Qdrant 准备读回校验及原子发布。SQL API 启动保留 graph_reconcile 任务，由独立 worker 按租约恢复和重试；其他异步任务仍沿用原启动恢复规则。publish 对未就绪快照返回 409 REVISION_NOT_READY，对未决冲突返回 409 GRAPH_CONFLICTS_PENDING；发布不改变已有空间，新空间默认绑定最新发布的精确 revision。keep_both 保留双方来源，并保守排除整个冲突主题的自动出题。
+0011 迁移已补齐 graph.prepare worker、Neo4j/Qdrant 准备读回校验及原子发布。SQL API 启动保留 graph_reconcile / knowledge_publish 任务，由独立 worker 按租约恢复和重试；其他异步任务仍沿用原启动恢复规则。publish 对未就绪快照返回 409 REVISION_NOT_READY，对未决冲突返回 409 GRAPH_CONFLICTS_PENDING；发布不改变已有空间，新空间默认绑定最新发布的精确 revision。keep_both 保留双方来源，并保守排除整个冲突主题的自动出题。
 
 在 py/ 目录运行（先配置本地 .env 或环境变量中的数据库、Neo4j、Qdrant、DashScope 连接信息）：
 
@@ -347,4 +347,16 @@ uv run alembic upgrade head
 uv run python -m my_agent_llms.learning.graph_worker_cli
 ```
 
-API 必须设置 LEARNING_PERSISTENCE=sql 才能与 worker 共用任务。可加 --once 处理至多一个可执行任务；job_claimed 只表示已领取，最终状态请查询对应 Run。真实 embedding 会使用 DashScope text-embedding-v3（1024 维）。当前标题/片段提取不推断语义关系，上传后的自动图谱编排、纠错确认、空间更新采纳和外部物理清理仍待实现。详情见 ../docs/implementation/2026-09-19-graph-worker-publication.md。
+API 必须设置 LEARNING_PERSISTENCE=sql 才能与 worker 共用任务。可加 --once 处理至多一个可执行任务；job_claimed 只表示已领取，最终状态请查询对应 Run。真实 embedding 会使用 DashScope text-embedding-v3（1024 维）。当前标题/片段提取不推断语义关系，上传后的自动图谱编排、空间更新采纳和外部物理清理仍待实现。详情见 ../docs/implementation/2026-09-19-graph-worker-publication.md。
+
+### 知识纠错与确认发布（0012）
+
+两个 knowledge-corrections POST 均要求 Idempotency-Key。创建时校验空间绑定的正式快照、目标和来源，事务保存纠错事件、不可变候选及等待确认的 Run，返回 correction_id、status=pending、candidate_revision_id；尚不入队外部准备。source_ref 是当前快照的 chunk ID。旧空间必须先采用最新正式快照才能纠错；版本采纳接口仍待补齐，可新建空间绑定已发布快照进行当前流程验证。
+
+replace 的 proposed_value 为非空字段补丁：node 支持 name、description；relation 支持 from_id、to_id、type（见 API 关系类型）。拒绝修改目标 ID、来源、版本等审计字段。reject 保留历史并标记目标 rejected；关系端点必须同属快照，prerequisite_of 不允许成环。
+
+confirm 要求 expected_graph_version 和非空 reason，保存确认审计并入队 graph.prepare，返回 queued Run。独立 worker 准备 Neo4j/Qdrant 后，在同一业务事务发布、记录纠错结果并完成 Run；结果包含真实 graph_version、affected_topic_ids、update_available。直接 graph publish 不接受纠错候选，返回 CORRECTION_CONFIRMATION_REQUIRED。若其他发布抢先推进版本，本任务以 VERSION_CONFLICT 失败，需刷新后重新纠错。
+
+同一资料版本再次 reconcile 保留已审核的有效快照，避免撤销已确认纠错；跨版本的节点审核字段变化需要显式解决冲突。
+
+确认和发布不会移动已有空间绑定。空间删除会取消尚未完成的纠错任务，删除空间所属纠错记录，并保留资料快照审计；取消和外部准备失败不会发布结果。旧纠错数据迁移时保留，缺少候选上下文的旧记录需要重新提交。详情见 ../docs/implementation/2026-09-18-knowledge-corrections.md。

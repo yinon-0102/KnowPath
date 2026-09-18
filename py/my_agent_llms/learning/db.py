@@ -305,6 +305,7 @@ class GraphRevisionRow(Base):
 
 class KnowledgeCorrectionRow(Base):
     __tablename__ = "knowledge_corrections"
+    context: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     space_id: Mapped[str] = mapped_column(ForeignKey("learning_spaces.id"), nullable=False, index=True)
     kind: Mapped[str] = mapped_column(String(32), nullable=False)

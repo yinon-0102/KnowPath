@@ -7,7 +7,7 @@
 
 本文档定义学习助手后端的业务接口。首版按本地单用户设计，不包含账号和权限接口；接口中的资源标识仍保留，便于后续扩展多人服务。
 
-性质：接口契约草案，尚未实现；架构和算法规则见 [ARCHITECTURE.md](ARCHITECTURE.md)。所有示例值仅用于说明，不代表真实测量结果。
+性质：接口契约，正在按模块实现；实际进度及限制见第 14 节；架构和算法规则见 [ARCHITECTURE.md](ARCHITECTURE.md)。所有示例值仅用于说明，不代表真实测量结果。
 
 存储选型已确认：业务数据采用 MySQL，知识图谱采用 Neo4j，向量检索采用 Qdrant。资源 ID 和 REST 路径保持与存储实现解耦。所有“同一事务”特指 MySQL 内部业务写入；图谱/向量的同步采用 outbox 与幂等后台任务，在就绪之前不发布版本，不能假设跨三个存储原子提交。
 
@@ -638,9 +638,13 @@ session_count=3—5，minutes_per_session=10—120，必须满足 profile 时间
 
 纠正作为新的事件保存，不直接删除原始抽取结果。后续图谱版本会标记原关系失效。
 
+当前请求必须带 Idempotency-Key；kind=node/relation，action=reject/replace，reason 非空，source_ref 为当前绑定正式快照中的 chunk ID。目标必须属于此快照，且该快照仍为资料最新发布版本，否则返回 VERSION_CONFLICT。201 返回 correction_id、status=pending、candidate_revision_id。创建候选与等待确认的 Run，但不执行外部准备。
+
+replace 必须带非空 proposed_value 字段补丁：node 支持 name、description；relation 支持 from_id、to_id、type。type 支持 contains、prerequisite_of、related_to、assessed_by、explained_by、supersedes、contradicts。禁止覆盖 ID、来源或版本字段；reject 不接受 proposed_value。关系端点必须在同一快照，前置关系必须无环。
+
 ### `POST /learning-spaces/{space_id}/knowledge-corrections/{correction_id}/confirm`
 
-确认一条用户纠正；请求 expected_graph_version 和 reason。202 返回 run_id，由内部调用同一 GraphService 发布新快照。完成后返回 graph_version、affected_topic_ids 和 update_available；仍由 `/learning-spaces/{space_id}/knowledge-updates/apply` 确认空间采用新快照，不在此入口自动切换学习状态。
+确认一条用户纠正；请求 expected_graph_version 和非空 reason，并带 Idempotency-Key。必须验证路径 space_id 与纠错归属一致。202 返回 run_id、status=queued、candidate_revision_id，独立图谱 worker 准备索引后调用同一 GraphService 发布新快照。Run 完成结果包含 graph_version、affected_topic_ids 和 update_available；仍由 `/learning-spaces/{space_id}/knowledge-updates/apply` 确认空间采用新快照，不在此入口自动切换学习状态。并发发布推进基版本时，本任务 failed / VERSION_CONFLICT；准备失败或取消不发布。纠错候选不能通过普通 graph publish 绕过确认。同一资料版本再次 reconcile 会保留最新已审核的有效快照；跨版本的名称、描述、状态等审核字段变化进入 reviewed_change 冲突，必须显式处理。
 
 ### `GET /learning-spaces/{space_id}/changes`
 
@@ -728,7 +732,7 @@ TopicNode 和图谱边响应增加 revision_id、material_version_id、graph_ver
 
 graph-diff 返回 base_graph_version、candidate_revision_id、added/changed/removed 数组、conflicts 数组和 affected_topic_ids。reconcile 请求包含 version_id、expected_graph_version，首次发布基版本为 0。候选图谱与索引由 worker 准备就绪，再允许 publish 在 MySQL 中原子切换发布状态；未就绪返回 409 REVISION_NOT_READY。只有自动规则确认的无冲突首次提取可直接 ready；其他结果 needs_review，等待 publish。knowledge-corrections 请求 kind=node/relation、target_id、action=reject/replace、reason、source_ref；replace 需要 proposed_value。201 返回 correction_id、status=pending、candidate_revision_id。confirm 不改变学习空间绑定。
 
-**当前实现进度（0011 迁移）**：reconcile 事务性保存候选、queued Run、graph.prepare outbox 事件及幂等响应；graph-diff 读取持久化差异，条目为 `{kind,id,before,after}`。独立 SQL worker 已实现持久租约、过期接管、失败重试、Neo4j 来源图和 Qdrant 向量准备读回；准备成功才原子进入 pending_review。publish 已实现就绪校验、冲突决策审计、原子发布和旧快照 superseded；未决冲突返回 GRAPH_CONFLICTS_PENDING。keep_both 当前保守排除整个冲突主题的自动出题。已有空间保持绑定，新空间优先绑定最新正式 revision；缺少 graph_revision_id 的旧空间保留临时投影，首次正式 reconcile 基版本仍为 0。提取器仍只投影标题和片段，关系数组为空；纠错确认、自动摄入编排、空间更新采纳和外部物理清理仍待实现。
+**当前实现进度（0012 迁移）**：reconcile 事务性保存候选、queued Run、graph.prepare outbox 事件及幂等响应；graph-diff 读取持久化差异，条目为 `{kind,id,before,after}`。独立 SQL worker 已实现持久租约、过期接管、失败重试、Neo4j 来源图和 Qdrant 向量准备读回；准备成功才原子进入 pending_review。publish 已实现就绪校验、冲突决策审计、原子发布和旧快照 superseded；未决冲突返回 GRAPH_CONFLICTS_PENDING。keep_both 当前保守排除整个冲突主题的自动出题。已有空间保持绑定，新空间优先绑定最新正式 revision；缺少 graph_revision_id 的旧空间保留临时投影，首次正式 reconcile 基版本仍为 0。提取器仍只投影标题和片段，关系数组为空；0012 已实现纠错持久化、确认入队及 worker 自动发布，确认记录、候选和 Run 均可重启恢复；空间删除阻止尚未完成的纠错发布。自动摄入编排、空间更新采纳和外部物理清理仍待实现。
 
 ### 14.2 版本字段的含义
 

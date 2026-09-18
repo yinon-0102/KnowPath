@@ -142,7 +142,7 @@ class InMemoryMaterialRepository:
         self.idempotency_runs: dict[str, str] = {}
         self.idempotency_responses: dict[str, dict] = {}
         self.learning_spaces: dict[str, dict] = {}
-        self.assessment_data = {"assessments": {}, "attempts": {}, "states": {}, "evidence": {}, "resets": {}, "plans": {}, "tasks": {}, "sessions": {}, "session_events": {}, "conversations": {}, "messages": {}, "graph_revisions": {}, "outbox": {}}
+        self.assessment_data = {"assessments": {}, "attempts": {}, "states": {}, "evidence": {}, "resets": {}, "plans": {}, "tasks": {}, "sessions": {}, "session_events": {}, "conversations": {}, "messages": {}, "graph_revisions": {}, "outbox": {}, "corrections": {}}
         self.planner_idempotency: dict[str, tuple[str, str, dict]] = {}
         self.export_data: dict[str, dict] = {}
         self._lock = RLock()

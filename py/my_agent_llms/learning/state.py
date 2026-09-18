@@ -3,9 +3,7 @@
 from __future__ import annotations
 
 import copy
-from datetime import datetime, timezone
 from typing import Any
-from uuid import uuid4
 
 from .materials import InMemoryMaterialRepository, MaterialRepository, MaterialService
 from .errors import DomainConflict, DomainNotFound
@@ -20,15 +18,9 @@ from .exports import ExportService
 from .space_deletion import SpaceDeletionService
 from .messages import MessageService
 from .graph_reconciliation import GraphReconciliationService
+from .corrections import CorrectionService
 from .graph_repository import InMemoryGraphRepository, SqlAlchemyGraphRepository
 
-
-def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
-
-
-def _id(prefix: str) -> str:
-    return f"{prefix}_{uuid4().hex}"
 
 
 class LearningState:
@@ -50,13 +42,13 @@ class LearningState:
         graph_repository = SqlAlchemyGraphRepository(uow) if uow else InMemoryGraphRepository(self.material_repository, self.run_service)
         self.graph_service = GraphReconciliationService(graph_repository, self.material_repository, self.run_service)
         self.space_service.graphs = self.graph_service
+        self.correction_service = CorrectionService(self.graph_service, self.space_service)
         self.assessment_service = AssessmentService(learning_repository, space_service, self.run_service, question_generator)
         self.message_service = MessageService(learning_repository, space_service, self.assessment_service, self.run_service, answer_generator, source_retriever)
         self.spaces: dict[str, dict[str, Any]] = {}
         self.topics: dict[str, dict[str, Any]] = {}
         self.plans: dict[str, dict[str, Any]] = {}
         self.sessions: dict[str, dict[str, Any]] = {}
-        self.corrections: dict[str, dict[str, Any]] = {}
         self.changes: list[dict[str, Any]] = []
         self.plan_sessions = PlanSessionService(learning_repository, space_service, self.run_service, self.assessment_service, self.plans, self.sessions)
         self.export_service = ExportService(learning_repository, space_service, self.assessment_service, self.plan_sessions, self.run_service)
@@ -179,22 +171,11 @@ class LearningState:
     def send_message(self, space_id: str, payload: dict[str, Any], *, idempotency_key=None, dispatch=None) -> dict[str, Any]:
         return self.message_service.send(space_id, payload, idempotency_key, dispatch=dispatch)
 
-    def create_correction(self, space_id: str, payload: dict[str, Any]) -> dict[str, Any]:
-        with self.assessment_service.repository.transaction():
-            self.space_service.repository.get(space_id)
-            correction = {**payload, "id": _id("correction"), "space_id": space_id, "status": "pending", "created_at": _now()}
-            self.corrections[correction["id"]] = correction
-            return copy.deepcopy(correction)
+    def create_correction(self, space_id, payload, *, idempotency_key=None):
+        return self.correction_service.create(space_id, payload, idempotency_key)
 
-    def confirm_correction(self, correction_id: str, payload: dict[str, Any]) -> dict[str, Any]:
-        correction = self.corrections.get(correction_id)
-        if correction is None:
-            raise DomainNotFound("correction", correction_id)
-        with self.assessment_service.repository.transaction():
-            self.space_service.repository.get(correction["space_id"])
-            run = self.run("knowledge_publish", {"type": "correction", "id": correction_id, "space_id": correction["space_id"]})
-        correction.update(status="confirmed", run_id=run["id"])
-        return {"run_id": run["id"], "status": "processing", "graph_version": 2, "affected_topic_ids": [], "update_available": True}
+    def confirm_correction(self, space_id, correction_id, payload, *, idempotency_key=None):
+        return self.correction_service.confirm(space_id, correction_id, payload, idempotency_key)
 
     def knowledge_updates(self, space_id: str) -> dict[str, Any]:
         space = self.get_space(space_id)
@@ -231,7 +212,7 @@ class LearningState:
     def delete_space(self, space_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         result = SpaceDeletionService(self.assessment_service.repository, self.space_service, self.run_service).delete(space_id, payload)
         self.spaces.pop(space_id, None)
-        for cache in (self.plans, self.sessions, self.corrections):
+        for cache in (self.plans, self.sessions):
             for identifier, row in list(cache.items()):
                 if row.get("space_id") == space_id:
                     del cache[identifier]

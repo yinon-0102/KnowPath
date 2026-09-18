@@ -16,6 +16,7 @@ from fastapi.responses import JSONResponse, StreamingResponse, Response
 from .config import LearningSettings
 from .material_schemas import UpdateMaterial
 from .graph_schemas import ReconcileGraph, PublishGraph
+from .correction_schemas import CreateCorrection, ConfirmCorrection
 from .ingestion import MaterialIngestionService
 from .repositories import SqlAlchemyMaterialRepository
 from .run_repository import SqlAlchemyRunRepository
@@ -553,16 +554,18 @@ def create_app(
             return _domain_error(exc)
 
     @app.post("/api/v1/learning-spaces/{space_id}/knowledge-corrections", status_code=201)
-    async def create_knowledge_correction(space_id: str, payload: dict[str, Any]) -> JSONResponse:
+    async def create_knowledge_correction(space_id: str, payload: CreateCorrection,
+                                          idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None) -> JSONResponse:
         try:
-            return JSONResponse(status_code=201, content=state.create_correction(space_id, payload))
+            return JSONResponse(status_code=201, content=state.create_correction(space_id, payload.model_dump(), idempotency_key=idempotency_key))
         except (DomainNotFound, DomainConflict) as exc:
             return _domain_error(exc)
 
     @app.post("/api/v1/learning-spaces/{space_id}/knowledge-corrections/{correction_id}/confirm", status_code=202)
-    async def confirm_knowledge_correction(space_id: str, correction_id: str, payload: dict[str, Any]) -> JSONResponse:
+    async def confirm_knowledge_correction(space_id: str, correction_id: str, payload: ConfirmCorrection,
+                                           idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None) -> JSONResponse:
         try:
-            return JSONResponse(status_code=202, content=state.confirm_correction(correction_id, payload))
+            return JSONResponse(status_code=202, content=state.confirm_correction(space_id, correction_id, payload.model_dump(), idempotency_key=idempotency_key))
         except (DomainNotFound, DomainConflict) as exc:
             return _domain_error(exc)
 

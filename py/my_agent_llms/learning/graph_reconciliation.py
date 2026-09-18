@@ -51,9 +51,13 @@ def compare_snapshots(base, candidate):
             result[category].append({"kind": kind, "id": identifier, "before": before, "after": after})
             if category != "unchanged" and kind == "node":
                 affected.add(identifier)
-            if kind == "node" and before and after and before["content_hash"] != after["content_hash"]:
+            reviewed_fields = ("name", "description", "status", "automatic_questions", "prerequisites", "alternatives")
+            if kind == "node" and before and after and (
+                    before["content_hash"] != after["content_hash"]
+                    or any(before.get(field) != after.get(field) for field in reviewed_fields)):
                 result["conflicts"].append({"conflict_id": "conflict_" + digest([identifier, before, after])[:32],
-                    "kind": "content_change", "topic_id": identifier, "status": "pending",
+                    "kind": "content_change" if before["content_hash"] != after["content_hash"] else "reviewed_change",
+                    "topic_id": identifier, "status": "pending",
                     "before": before, "after": after})
     result["affected_topic_ids"] = sorted(affected)
     return result
@@ -96,10 +100,14 @@ class GraphReconciliationService:
             if payload["expected_graph_version"] != base_version:
                 raise DomainConflict("VERSION_CONFLICT", "图谱版本已变化，请刷新后重试", {"graph_version": base_version})
             for row in reversed(history):
-                if row["material_version_id"] == version.id and row["base_graph_version"] == base_version and row["status"] == "draft":
+                if row["material_version_id"] == version.id and row["base_graph_version"] == base_version and row["status"] == "draft" and not row["diff"].get("correction_id"):
                     if self.runs.get(row["run_id"])["status"] in {"queued", "running"}:
                         return self._response(row)
-            snapshot = extract_snapshot(material_id, version)
+            # Rebuilding an immutable material version must preserve prior review
+            # decisions, including corrections and keep_old/keep_both publication.
+            snapshot = (copy.deepcopy(published["publication"]["snapshot"])
+                        if published and published["material_version_id"] == version.id
+                        else extract_snapshot(material_id, version))
             revision_id = str(uuid4())
             run = self.runs.create("graph_reconcile")
             timestamp = now()
@@ -142,13 +150,19 @@ class GraphReconciliationService:
                           material_version_id=revision["material_version_id"], status=revision["status"])
             return result
 
-    def publish(self, material_id, revision_id, payload, key):
+    def publish(self, material_id, revision_id, payload, key, *, correction_id=None):
         def change():
             self._material(material_id)
             history = self._history(material_id)
             revision = next((row for row in history if row["id"] == revision_id), None)
             if revision is None:
                 raise DomainNotFound("graph_revision", revision_id)
+            if revision['diff'].get('correction_id'):
+                if revision['diff']['correction_id'] != correction_id:
+                    raise DomainConflict('CORRECTION_CONFIRMATION_REQUIRED', '纠错候选必须经纠错确认入口发布')
+                correction = self.repository.get_record('corrections', correction_id)
+                if correction['status'] != 'confirming' or not correction.get('confirmation'):
+                    raise DomainConflict('CORRECTION_CONFIRMATION_REQUIRED', '纠错尚未确认')
             published = self._published(history)
             current = published["graph_version"] if published else 0
             if payload["expected_graph_version"] != current or revision["base_graph_version"] != current:
@@ -188,6 +202,11 @@ class GraphReconciliationService:
             revision.update(status="published", graph_version=current + 1,
                 publication={"snapshot": effective, "snapshot_hash": digest(effective),
                              "resolutions": list(decisions.values()), "published_at": timestamp})
+            if correction_id:
+                revision['publication']['correction'] = {
+                    'correction_id': correction_id, 'kind': correction['kind'], 'target_id': correction['target_id'],
+                    'action': correction['action'], 'reason': correction['reason'], 'source_ref': correction['source_ref'],
+                    'confirmation': copy.deepcopy(correction['confirmation'])}
             if published:
                 published["status"] = "superseded"
                 self.repository.put_record("graph_revisions", published)

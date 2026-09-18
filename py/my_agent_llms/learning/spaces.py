@@ -145,6 +145,8 @@ class SpaceService:
             else:
                 bound = topics_for_version(binding["material_id"], version)
             for topic in bound:
+                if topic.get("status") == "rejected":
+                    continue
                 topics[topic["id"]] = topic
                 slug = "".join(ch.lower() if ch.isalnum() else "_" for ch in topic["name"]).strip("_")
                 if slug and len(space["bindings"]) == 1:
