@@ -1,16 +1,18 @@
-# Keel Learning 后端架构设计
+# KnowPath 后端架构设计
 
-版本：v0.1-draft  
-日期：2026-09-17  
-定位：基于 Keel Agent Runtime 的个人学习与技能成长助手
+版本：v0.2-web
 
-性质：待评审的后端设计，非已实现功能清单。配套接口见 [API.md](API.md)。产品名称暂定为 Keel Learning，基础项目正式名称为 Keel。
+日期：2026-09-19
+
+定位：面向个人资料学习的 Web 后端
+
+性质：领域设计与当前运行边界，非全部设计目标的验收清单。配套接口见 [API.md](API.md)。项目名称为 KnowPath，源于 Keel；当前 Web 服务使用独立学习业务模块，完整 Agent 基座保留在同一包中，尚未接入这些 Web 请求。第 4、8 节记录当前代码边界；算法阈值、性能目标和评测方案仍需按实现与实验分别验证。
 
 已确认：用户自带资料、选主题后诊断、保留学习知识图谱、删除 CLI 与系统操作工具、同时保留资料知识和学习者状态更新；知识图谱采用 Neo4j，业务数据库采用 MySQL，向量检索采用 Qdrant。设计默认值：本地单用户服务、FastAPI、REST/SSE 和下文算法阈值；这些是可调整的实现选择，不代表用户已逐项确认。前端和考试备考不属于本次实现范围。
 
 ## 1. 设计结论
 
-Keel Learning 面向普通用户的自有学习资料。用户导入 PDF、Markdown 或 TXT，选择要学习的主题，系统根据资料内容和用户的学习证据生成学习安排，并通过练习和复测更新后续计划。
+KnowPath 面向普通用户的自有学习资料。用户导入 PDF、Markdown 或 TXT，选择要学习的主题，系统根据资料内容和用户的学习证据生成学习安排，并通过练习和复测更新后续计划。
 
 第一版的业务闭环是：
 
@@ -62,61 +64,56 @@ Keel Learning 面向普通用户的自有学习资料。用户导入 PDF、Markd
 2. **知识内容与用户状态分离。** 教材事实、知识关系和用户掌握程度属于不同类型的数据，更新规则不同。
 3. **证据优先。** 每个知识点状态、题目答案和重要解释都尽量关联资料片段、题目记录或用户确认。
 4. **确定性检查优先。** 能用规则、解析器或计算工具判断的内容，不交给模型自由判断。
-5. **可替换运行时。** 业务层依赖 Agent、Memory、Context、Verify 的稳定接口，不直接依赖 CLI 实现。
-6. **最小权限。** 学习业务只开放资料解析、检索、出题、判分和计划工具，不继承 Keel 的任意命令执行权限。
+5. **业务与适配分离。** 学习业务通过模型适配器、检索器和存储仓储调用外部能力；API 与后台 worker 共用业务服务，不依赖旧 Agent 或终端界面。
+6. **最小权限。** 学习业务只开放资料解析、检索、出题、判分和计划服务，不提供任意命令执行或代码编辑能力。
 7. **可验证的算法贡献。** 每项新增策略都要有基线、消融实验和可复现指标。
 
 ## 4. 总体分层
 
 ```text
-┌──────────────────────────────────────────────┐
-│ API Transport                                │
-│ REST JSON / SSE / 请求校验 / 错误映射          │
-└──────────────────────┬───────────────────────┘
-                       │
-┌──────────────────────▼───────────────────────┐
-│ Learning Domain                              │
-│ 学习空间 · 知识图谱 · 学习者状态 · 评估与计划     │
-└──────────────┬──────────────────┬─────────────┘
-               │                  │
-┌──────────────▼──────────────┐ ┌─▼─────────────┐
-│ Keel Agent Runtime           │ │ Persistence    │
-│ Agent / Tool / Context       │ │ MySQL / Neo4j  │
-│ Memory / Verify              │ │ 文件 / 向量库   │
-└──────────────┬──────────────┘ └───────────────┘
-               │
-┌──────────────▼───────────────────────────────┐
-│ LLM Provider / Embedding Provider             │
-└──────────────────────────────────────────────┘
+Web client (frontend/ reserved)
+  -> FastAPI REST / SSE / authentication / request validation
+     -> Learning domain services (knowpath_backend.learning)
+        -> MySQL repositories / snapshots / Run events / outbox
+        -> graph worker: parse / prepare / reconcile / delete
+           -> Neo4j graph snapshots + Qdrant vectors + embedding adapter
+        -> model worker: assessments / messages
+           -> chat adapter + source-bound retrieval
 ```
 
-### 4.1 Keel Runtime 保留范围
+### 4.1 当前 Web 运行范围
 
-保留或改造以下部分：
+后端源码和虚拟环境均位于 `py/`，三个生产入口是：
 
-- `my_agent_llms/core/agent.py`：Agent 生命周期、系统提示词和统一收尾；
-- `my_agent_llms/core/llm.py`：多厂商 LLM 客户端；
-- `my_agent_llms/core/message.py`、`core/hooks.py`：消息和钩子；
-- `my_agent_llms/agents/function_call_agent.py`：提取工具调用循环，保留与传输层无关的文本、工具、取消事件接口；删除终端展示耦合和 TDD/文件操作分支；
-- `my_agent_llms/tools/base.py`、`tools/registry.py`、`tools/chain.py`：业务工具协议和注册机制；
-- `my_agent_llms/memory/`：分层记忆、语义索引、冲突处理和来源追踪；
-- `my_agent_llms/context/engine.py`：相关性、去重和 token 预算编排；
-- `my_agent_llms/verify/`：借鉴验证、重试和停止控制；删除 `command_ok` 子进程执行分支，新增来源、题目与计划校验器；
-- `my_agent_llms/planning/`：计划状态的通用能力；
-- `my_agent_llms/bench/`：作为评测基础改造成学习任务离线评测工具；原代码任务用例不等于学习评测集。
+- `knowpath_backend.learning.main:app`：FastAPI 应用；
+- `knowpath_backend.learning.graph_worker_cli`：资料解析、图谱和向量准备、纠正及外部数据清理；
+- `knowpath_backend.learning.model_worker_cli`：持久化出题和对话任务。
 
-基座核对版本为 `01322ef`。现有知识图谱主要服务事实冲突消解，并非课程依赖图；`TodoStore` 是进程内清单，不是持久化计划库；现有 Verify 的触发与副作用工具关联，不能直接覆盖学习问答。其 `semantic_support` 检查器尚未实现，`judge` 仅返回 PASS/FAIL，也不是带证据的教育评分器。以上能力均需显式适配，不标为开箱即用。源代码中的测试不能代替裁剪后的回归验证。
+`*_cli.py` 负责后台进程的参数解析和启动，不是面向用户的终端聊天界面。学习业务集中在
+`learning/`：模型通过 `model_adapters.py` 调用，检索使用 `vector_retrieval.py`，
+图谱查询、评估、画像、掌握度、计划和消息各自使用领域服务和仓储。
+当前 HTTP 图谱读取 MySQL 的版本快照；Neo4j 用于按版本准备图谱和发布前验证。
+没有把旧 Agent 工具循环重新接入 Web 请求。
 
-### 4.2 产品中移除的部分
+### 4.2 完整保留的 Agent 基座
 
-- `my_agent_llms/cli/`、`chat.py` 和终端审批、渲染、输入历史等逻辑；
-- `BashTool` 以及任何任意 Shell 执行能力；
-- 面向代码改动的 `WriteFile`、`EditFile`、通用目录浏览和通用代码搜索工具；
-- 依赖本地代码工作区的 `Workspace` 安全模型；资料导入改由受控的 `MaterialService` 处理。
+`agents/`、`core/`、`memory/`、`context/`、`planning/`、`verify/`、
+`tdd/`、`workspace/`、`tools/`、`bench/` 及非界面测试全部保留在当前源码中。
+包含模型客户端、Agent 执行循环、上下文预算与去重、分层记忆、摘要、召回、冲突处理、
+工具注册、验证和评测。现有 Web 学习管线尚未直接调用完整基座，保留代码不代表已完成业务接入。
 
-`Tool` 和 `ToolRegistry` 不是命令行功能，仍作为 Agent Runtime 的内部扩展点保留。学习产品只注册白名单业务工具。
+原 CLI 内可复用的配置与装配逻辑已迁至 `core/runtime.py`；审批枚举、会话授权台账及
+调用方回调桥接迁至 `core/permissions.py`。评测默认工厂使用无界面的装配模块。
+Shell、文件编辑等工具保留为基座能力，当前 Web API 不注册或开放它们。
 
-原 `tdd/`、Shell/文件检查器及相关代码任务测试退出新产品运行路径；先记录基座版本并在独立开发分支裁剪，再移除仅服务已删除功能的依赖。不要删除仍服务运行时能力的测试。资料上传在服务入口完成，不通过 Agent 任意路径读取。当前文档交付不实际删除或修改 Keel 源码。
+只移除 `cli/` 中的终端聊天、渲染、键盘输入、交互式配置和审批界面、
+`chat.py`、`knowpath` 聊天命令以及界面专用测试。
+后台 worker、评测命令和数据库维护脚本不是聊天界面，继续保留。
+
+完整清理前源码保存在本地分支 `codex/archive-agent-before-web-cleanup-20260919`，
+提交 `0e9ca632155b34ec0e9ddb194b5a1b92791aa6e3`，可查询已移除的终端界面。
+保留 Keel 的 MIT 版权说明。正常建表与升级仍推荐 Alembic；
+`init_mysql.sql` 仅是空库快照，直接 ORM 建表维护入口不替代迁移流程。
 
 ## 5. 领域模型
 
@@ -258,15 +255,15 @@ topic_revision_id, policy_version, independent_evidence_count
 
 ### 7.1 主题范围感知检索
 
-当前问题进入 Context Engine 前，先经过学习范围过滤：
+当前实现按学习空间绑定的资料与图谱快照筛选来源，再调用检索适配器：
 
-1. 过滤不属于当前学习空间或已排除主题的片段；
-2. 加入选中主题的前置知识和相关证据；
-3. 使用语义相关性、主题关系、资料来源权威性和当前薄弱程度排序；
-4. 通过 Keel 的去重和 token 预算选择最终上下文；
-5. 为每条关键结论保留来源片段。
+1. 只接受当前空间、版本和主题范围内允许访问的片段；
+2. Qdrant 以版本过滤的向量相似度选取来源，`keyword` 提供显式配置的词法检索备选；
+3. 对命中重新核对 MySQL 中的来源、内容哈希及访问条件，索引不决定访问权限；
+4. 受限数量的来源和历史消息组成模型输入，返回结果必须关联允许的来源引用。
 
-目标不是把更多资料放入上下文，而是在固定预算下提高相关信息比例和来源准确率。
+此流程不使用旧 Context Engine。主题关系、来源权威性、薄弱程度的联合排序和精细
+token 预算的 Web 集成属于后续可评测的设计；保留的 `context/` 中已有通用预算与去重能力，但当前学习检索流程没有调用它。
 
 ### 7.2 证据加权掌握度估计
 
@@ -313,25 +310,27 @@ topic_revision_id, policy_version, independent_evidence_count
 
 验证失败时返回具体原因，例如“缺少资料依据”“前置知识未掌握”“答案只复述原题”，供计划模块生成补救任务。
 
-必须分开三种验证：题目/解释是否可靠、学生本次答案是否符合评分标准、长期学习效果是否提升。Agent 的 Verify 只可重试系统生成的题目和讲解（默认最多 2 次修正），不得替学生改写答案直到通过，更不能因模型内容验证成功而提高学生掌握度。首版题型仅单选和短答；单选按答案键判分，短答按预先冻结的评分要点与原文评分，存在歧义时标记 unverified 并安排替代客观题。评估中不得向学生泄露答案键、评分要点或直接暴露包含答案的来源原文；提交完成后再开放解析与定位。
+必须分开三种验证：题目/解释是否可靠、学生本次答案是否符合评分标准、长期学习效果是否提升。生成服务只可在有限重试预算内重试系统生成的题目和讲解，不得替学生改写答案直到通过，更不能因模型内容验证成功而提高学生掌握度。首版题型仅单选和短答；单选按答案键判分，短答按预先冻结的评分要点与原文评分，存在歧义时标记 unverified 并安排替代客观题。评估中不得向学生泄露答案键、评分要点或直接暴露包含答案的来源原文；提交完成后再开放解析与定位。
 
-## 8. Keel 记忆机制的领域化使用
+## 8. 学习数据与对话上下文
 
-| Keel 层 | 学习助手用途 | 是否作为学习状态真相 |
+| 当前组件 | 学习助手用途 | 权威数据位置 |
 |---|---|---|
-| L0 Playbook | 稳定目标、时间约束、讲解偏好 | 否，需同步到结构化 Profile |
-| L1 Working | 当前学习会话 | 否，属于临时上下文 |
-| L2 Summary | 阶段性学习总结 | 否，作为辅助摘要 |
-| 冷存储思想 + 独立领域事件表 | 不可变答题、评分、版本事件；不直接当普通对话写入 | 领域事件表是真相，Keel 对话冷存储不是 |
-| 语义索引 | 检索资料片段和历史证据 | 否，索引可重建 |
-| 冲突处理 | 资料版本和用户纠正 | 关系更新依据之一 |
-| 知识图谱 | 资料知识和前置关系 | 是，需带来源和版本 |
+| Profile 与画像候选 | 目标、时间、偏好与用户确认 | MySQL 学习空间及相关业务记录 |
+| Conversation / Message | 会话历史、回答与引用 | MySQL 对话和消息记录 |
+| Assessment / Attempt / Evidence | 题目、作答、评分与不可变证据 | MySQL 业务记录与冻结快照 |
+| LearnerState / Plan | 掌握度和学习安排 | MySQL 版本化状态 |
+| 来源与图谱快照 | 资料依据、主题和关系版本 | MySQL 来源和快照；Neo4j 保存准备的图谱 |
+| Qdrant 索引 | 检索允许访问的资料片段 | 可重建索引，正文与权限由 MySQL 校验 |
 
-模型不能通过通用 `remember` 工具写入掌握度。只有评分服务能登记有效证据，只有 MasteryEstimator 能按规则计算状态；Agent 可以请求读取或触发评估，不能提交自拟成绩。用户主动修改的目标与偏好由 Profile 表持久化；Memory 仅缓存可重建摘要，过期摘要不得覆盖结构化真相。
+模型不能直接写入掌握度。评分服务登记证据，掌握度估计器按规则计算状态，计划服务据此
+安排任务。用户确认的目标与偏好由结构化记录保存，模型提取的画像候选需确认。
+通用基座中的 L0/L1/L2 Memory、Playbook、冷存储、召回和 `remember` 工具全部保留。
+当前 Web 使用上表的结构化学习数据，没有将通用记忆库接为第二套学习状态真相；后续接入需明确空间隔离、持久化位置和生命周期。
 
-## 9. 业务工具白名单
+## 9. 受控业务能力
 
-首版业务服务如下，其中只有只读/受控生成类能力可以注册为 Agent 工具：
+以下是业务能力的概念名称，由 API、领域服务与 worker 受控调用，不代表存在旧 ToolRegistry 注册项：
 
 - `import_material`：由上传 API 触发的服务，不开放模型指定磁盘路径；
 - `search_material`：在学习范围内检索资料片段；
@@ -344,33 +343,33 @@ topic_revision_id, policy_version, independent_evidence_count
 
 所有工具都应有输入校验、超时和可追踪的 `run_id`。不注册 Bash、文件编辑和任意外部网络工具。
 
-建议的领域接口：`MaterialParser.parse(blob)->chunks`、`GraphService.stage/publish`、`AssessmentService.generate/grade`、`MasteryEstimator.apply(evidence)->state`、`PlanService.build/replan`、`LearningContextBuilder.build(scope,state,query)`。接口均传入服务端解析的 space_id 和版本快照，不能接受模型自行切换学习空间。API DTO 使用 Pydantic 校验，Agent 工具的文本返回值不能作为未经校验的数据库写入对象。
+建议的领域接口：`MaterialParser.parse(blob)->chunks`、`GraphService.stage/publish`、`AssessmentService.generate/grade`、`MasteryEstimator.apply(evidence)->state`、`PlanService.build/replan`、`LearningContextBuilder.build(scope,state,query)`。接口均传入服务端解析的 space_id 和版本快照，不能接受模型自行切换学习空间。API DTO 使用 Pydantic 校验，模型返回值不能作为未经校验的数据库写入对象。
 
 ## 10. 持久化与一致性
 
 MySQL（InnoDB、utf8mb4）作为业务记录和版本发布状态的权威数据库，保存：
 
 - 资料元数据和版本；
-- 图谱快照登记、抽取及纠正事件、来源映射（图谱节点与关系由 Neo4j 承担）；
+- 图谱节点与关系的版本快照、抽取及纠正事件、来源映射；
 - 学习空间和学习者模型；
 - 诊断、题目、答题和证据；
 - 计划、学习任务和状态变更事件。
 
-原始资料和导出文件存放在受控资料目录。Neo4j 保存知识点版本、章节、来源关联和前置/替代/冲突关系，并执行路径与依赖查询；掌握度、答题和计划仍在 MySQL，不复制成另一套可独立修改的图谱状态。对掌握度和计划采用“追加事件 + 当前派生状态”的方式，更新带有 `state_version`，避免重复提交覆盖较新的状态。
+当前原始上传内容和导出快照均由 SQL 保存。Neo4j 保存准备的知识点和关系版本，并参与发布前检查；当前 HTTP 图谱和依赖查询使用 MySQL 冻结快照，不宣称已经通过 Neo4j 执行所有遍历。掌握度、答题和计划也在 MySQL，不复制成另一套可独立修改的图谱状态。对掌握度和计划采用“追加事件 + 当前派生状态”的方式，更新带有 `state_version`，避免重复提交覆盖较新的状态。
 
-Qdrant 通过独立 VectorBackend 适配器接入；这是新增组件，不是 Keel 当前已具备的组件。原 Keel 的 SQLiteVectorBackend 将向量存为 BLOB，并在启动时全量加载到 Python 内存做余弦排序，无 embedder 时退化为 TF-IDF，不是独立的向量检索数据库。迁移时保留其后端协议思想，增加资料版本与空间过滤，不能只替换连接字符串。
+Qdrant 通过独立的 `QdrantVectorBackend` 接入，不依赖保留在通用 Memory 基座中的 SQLiteVectorBackend。`KeywordRetriever` 是显式选择的词法检索备选，不是向量库故障时无提示切换的另一条路径。
 
-Qdrant collection 保存资料片段或允许检索的记忆向量，以及 chunk_id/material_version_id/graph_version/space_id/topic_id/content_hash/embedding_model 等 payload 过滤字段；正文与权威来源从 MySQL 读取，知识关系从 Neo4j 补充。题目答案键不进入通用向量索引。Embedding 模型与向量库是不同组件，首版固定使用 DashScope `text-embedding-v3`、1024 维和 Cosine 距离；更换模型必须重建 Qdrant collection，不能混用向量空间。Qdrant 的 collection、payload 索引、快照和备份策略在实现阶段固化。
+Qdrant collection 保存资料片段向量，以及 material_id/chunk_id/material_version_id/graph_version/topic_id/content_hash/embedding_model/embedding_profile 等 payload 过滤字段；空间范围由服务解析为允许的版本与主题，正文及权威来源从 MySQL 读取。题目答案键不进入通用向量索引。Embedding 模型与向量库是不同组件，首版固定使用 DashScope `text-embedding-v3`、1024 维和 Cosine 距离；更换模型必须重建 Qdrant collection，不能混用向量空间。当前 collection 名包含模型配置哈希，以区分向量空间；备份与恢复策略仍需按部署场景验证。
 
-MySQL 最小表集合：`materials/material_versions/chunks`、`graph_snapshots/graph_change_events`、`learning_spaces/space_material_bindings/profiles/scopes`、`assessments/questions/submissions/grades/evidence`、`learner_states/plans/plan_tasks/sessions`、`runs/run_events/change_events/idempotency_keys/outbox_events`。Neo4j 实现 MaterialVersion、TopicRevision、SourceChunkRef 等节点及其关系，设置业务 ID 唯一约束，查询必须限定资料/图谱版本。题目答案键和内部评分标准不进入公共 DTO 或通用对话索引。
+以下为领域设计中的逻辑集合，实际表名和 JSON 聚合边界以 `learning/db.py` 与 Alembic 迁移为准。MySQL 逻辑集合：`materials/material_versions/chunks`、`graph_snapshots/graph_change_events`、`learning_spaces/space_material_bindings/profiles/scopes`、`assessments/questions/submissions/grades/evidence`、`learner_states/plans/plan_tasks/sessions`、`runs/run_events/change_events/idempotency_keys/outbox_events`。Neo4j 实现 MaterialVersion、TopicRevision、SourceChunkRef 等节点及其关系，设置业务 ID 唯一约束，查询必须限定资料/图谱版本。题目答案键和内部评分标准不进入公共 DTO 或通用对话索引。
 
 跨存储采用 MySQL outbox 事件和幂等 worker：先登记待处理版本与事件，再写 Neo4j 和向量库，以稳定对象 ID 去重；全部准备完成才发布 MySQL 版本指针。读请求固定到已发布版本；失败保留旧版并重试，禁止半成品进入出题。MySQL 保存可重放的图谱变更事件以便恢复。删除先写不可读标记，再清除图谱、向量和文件，全部成功后标记清除完成。无跨库分布式事务，不把失败后的部分清除报告为成功。
 
-Keel 的 Playbook、事实图谱和记忆冷存储也存在 SQLite 耦合，须分别迁移到 MySQL 记忆仓储和 Neo4j 图谱适配器，不能保留与新存储并行更新的第二套权威数据。
+通用基座的 Playbook、SQLite 事实图谱和冷存储继续保留，但不进入当前学习 Web 运行路径。本次只移除终端界面，不迁移记忆数据，也不修改现有学习库、数据库名或 Docker 卷。
 
 单次有效评分登记 evidence 与更新 LearnerState 在同一事务完成；唯一约束是 evidence_id、submission_id+grading_version、space_id+topic_revision_id+policy_version。失效评分通过撤销事件和状态重算处理，不直接篡改历史。计划重排是独立异步任务，携带所依据的 state/scope/graph 版本，旧任务不得覆盖新状态。
 
-后端建议 FastAPI（Python ≥3.13）+ MySQL + Neo4j + Qdrant + 受限后台 worker。MySQL 访问建议 SQLAlchemy 2.x 与 Alembic，Neo4j 使用官方 Python Driver，Qdrant 使用官方 Python Client；具体版本在依赖锁文件中固定。耗时 LLM/解析任务在 worker 执行，不阻塞 HTTP 事件循环；每个学习空间串行提交状态更新。首版应用单进程、并行任务上限 2、每个模型请求超时 60 秒、每个 run 最长 10 分钟，支持协作取消。重启后 running 标记为 interrupted/failed，事务外未发布结果不对外可见；按 run 类型安全重试，证据去重约束避免重复计分。SSE 事件持久化 7 天，最终状态由 MySQL 查询获得。
+当前后端为 FastAPI（Python ≥3.13）+ MySQL + Neo4j + Qdrant + 后台 worker。MySQL 使用 SQLAlchemy 2.x 与 Alembic，Neo4j 使用官方 Python Driver，Qdrant 使用官方 Python Client；具体版本在依赖锁文件中固定。以下并发、超时和保留时长是设计约束，应按对应配置及测试核验：耗时 LLM/解析任务在 worker 执行，不阻塞 HTTP 事件循环；每个学习空间串行提交状态更新。首版应用单进程、并行任务上限 2、每个模型请求超时 60 秒、每个 run 最长 10 分钟，支持协作取消。当前重启对账保留有持久任务支撑的模型 Run 和可恢复的资料/图谱 Run，由 worker 租约机制继续处理；其余遗留的未完成 Run 标记失败。事务外未发布结果不对外可见，证据去重约束避免重复计分。SSE 事件持久化 7 天，最终状态由 MySQL 查询获得。
 
 ## 11. 安全和隐私
 
@@ -426,7 +425,7 @@ Keel 的 Playbook、事实图谱和记忆冷存储也存在 SQLite 耦合，须�
 
 ### 阶段一：底座裁剪和资料管线
 
-- 从 CLI 应用中分离 Agent Runtime；
+- 将 Web 后端与旧 Agent Runtime 分离，归档旧终端代码；
 - 删除 Bash、代码编辑和终端专用工具；
 - 完成 PDF/Markdown/TXT 解析、版本和来源记录；
 - 建立主题树和基础知识关系。
@@ -460,8 +459,8 @@ Keel 的 Playbook、事实图谱和记忆冷存储也存在 SQLite 耦合，须�
 - 资料类型：文本型 PDF、Markdown、TXT；
 - 知识更新：资料知识更新和学习者状态更新同时保留，但使用两条管线；
 - 图谱策略：保留 Keel 的时态、来源和冲突处理思想，新增学习领域节点和关系；
-- Agent：保留一个经过裁剪的 Function Calling Agent，不在首版同时维护五种 Agent 范式；
+- 模型执行：当前 Web 使用领域服务、模型适配器及持久任务 worker；通用 Function Calling Agent 和其他 Agent 基座完整保留，接入范围另行实现；
 - 安全边界：不执行任意 Shell，不开放通用代码操作；
 - 评测重点：在相同模型和固定预算下验证检索、掌握度估计和计划调整的收益。
 
-文档评审重点：默认本地服务是否符合使用目标、学习评分阈值是否适合试点资料、知识更新影响预览是否足够。评审不阻塞本次文档交付；确认后再进入代码改造和实现计划。
+后续验证重点：学习评分阈值是否适合试点资料、知识更新影响预览是否足够，以及真实模型和外部存储的集成效果。功能测试与架构描述不替代学习效果实验。

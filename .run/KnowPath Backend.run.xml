@@ -1,0 +1,8 @@
+<component name="ProjectRunConfigurationManager">
+  <configuration default="false" name="KnowPath Backend" type="CompoundRunConfigurationType">
+    <toRun name="KnowPath API" type="PythonConfigurationType" />
+    <toRun name="KnowPath Graph Worker" type="PythonConfigurationType" />
+    <toRun name="KnowPath Model Worker" type="PythonConfigurationType" />
+    <method v="2" />
+  </configuration>
+</component>

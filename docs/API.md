@@ -1,4 +1,4 @@
-# Keel Learning 后端接口设计
+# KnowPath 后端接口设计
 
 版本：v0.1；日期：2026-09-18
 
@@ -580,7 +580,7 @@ session_count=3—5，minutes_per_session=10—120，必须满足 profile 时间
 
 空 JSON 请求，200 返回 session_id、status=finished、elapsed_seconds、reported_active_seconds（可空）、task_ids。连接时长不自动解释为持续学习时长。
 
-## 8. 对话与 Agent 运行接口
+## 8. 对话与后台任务接口
 
 ### `POST /learning-spaces/{space_id}/messages`
 
@@ -650,18 +650,22 @@ replace 必须带非空 proposed_value 字段补丁：node 支持 name、descrip
 
 返回资料版本、图谱变更、掌握度变更和计划重排的时间线。
 
-## 10. 接口与 Keel 模块映射
+## 10. 接口与当前后端模块映射
 
-| 接口能力                | Keel 或新增模块                                              |
-| ----------------------- | ------------------------------------------------------------ |
-| `/materials`            | 新增 `MaterialService`、解析器和来源索引                     |
-| `/topics`、`/graph`     | Neo4j + 学习领域图谱适配层，借鉴 Keel 的时态与冲突处理机制   |
-| `/profile`、`/state`    | MySQL 结构化 `LearnerRepository`，辅以可重建的 Keel Memory 摘要 |
-| `/assessments`          | 新增题目生成器、题目存储和 `LearningChecker`                 |
-| `/plans`                | 新增约束计划器，复用 `TodoStore` 的状态思想                  |
-| `/messages`             | 裁剪后的 `FunctionCallAgent` + Context Engine                |
-| `/runs/events`          | Agent 工具和 LLM 回调的 API/SSE 适配器                       |
-| `/evidence`、`/changes` | 事件存储、版本追踪和可解释性服务                             |
+| 接口能力 | `knowpath_backend.learning` 模块 |
+| --- | --- |
+| `/materials` | `materials`、`ingestion`、`material_ingest_worker` 与来源仓储 |
+| `/topics`、`/graph` | `graph_queries` 读取 SQL 版本快照；`graph_worker` 在发布前准备 Neo4j/Qdrant |
+| `/profile`、`/state` | `spaces`、`profile_candidates`、`state`、`mastery` 及 SQL 仓储 |
+| `/assessments` | `assessments`、`question_generation`、`assessment_grading`、`grade_reviews` |
+| `/plans` | `planner`、`planner_policy` 和持久化计划/会话记录 |
+| `/messages` | `messages`、`message_generation`、`vector_retrieval` 与模型适配器 |
+| `/runs/{run_id}/events` | `runs`、`run_repository`、`api` 的持久事件和 SSE 传输 |
+| `/evidence`、`/changes` | 证据仓储、`timeline` 和版本快照 |
+
+Agent Runtime、Memory、Context Engine 和 ToolRegistry 完整保留在包中，终端界面已移除。
+当前接口仍使用上表所列学习业务模块，基座恢复不等于这些接口已接入完整 Agent/Memory 流程。
+API、graph worker 与 model worker 的启动说明见 `py/README.md`；本节调整模块映射，不改变 HTTP 契约。
 
 ## 11. 幂等、并发和状态规则
 

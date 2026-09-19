@@ -13,6 +13,8 @@ env/
 
 # Test and type-check caches
 .pytest_cache/
+.pytest-*/
+.uv-cache/
 .mypy_cache/
 .ruff_cache/
 .coverage

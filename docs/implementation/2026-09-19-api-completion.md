@@ -15,7 +15,7 @@
 
 ## 路由与业务回归映射
 
-路径统一省略 `/api/v1`。实现位于 `py/my_agent_llms/learning/`；测试名称均省略 `py/my_agent_llms/test/test_learning_` 前缀和 `.py` 后缀。
+路径统一省略 `/api/v1`。实现位于 `py/knowpath_backend/learning/`；测试名称均省略 `py/knowpath_backend/test/test_learning_` 前缀和 `.py` 后缀。
 
 每一项除了表内业务测试，还接受 `http_contract` 的严格字段校验。此表提供可追溯性，不把路由数量当作业务完成率。
 
