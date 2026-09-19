@@ -181,7 +181,7 @@ def test_preparer_cannot_write_after_material_erasure():
     from knowpath_backend.learning.errors import DomainNotFound
     from knowpath_backend.learning.graph_preparation import GraphPreparer
     from knowpath_backend.learning.graph_worker import preparation_manifest
-    from knowpath_backend.learning.vector_retrieval import VectorRetriever, QdrantVectorBackend
+    from knowpath_backend.learning.rag.retrieval import VectorRetriever, QdrantVectorBackend
     from knowpath_backend.test.test_learning_graph_preparation import Embedder, GraphBackend
     state = LearningState()
     first, _, _ = seed(state)
@@ -207,7 +207,7 @@ def test_external_cleaner_erases_only_target_material_across_profiles():
     from types import SimpleNamespace
     from qdrant_client import QdrantClient, models
     from knowpath_backend.learning.material_deletion import ExternalMaterialCleaner
-    from knowpath_backend.learning.vector_retrieval import QdrantVectorBackend
+    from knowpath_backend.learning.rag.retrieval import QdrantVectorBackend
     client = QdrantClient(':memory:')
     backend = QdrantVectorBackend(client, collection_prefix='fixture_erasure')
     alternate = 'fixture_erasure_' + 'f' * 16
@@ -301,7 +301,7 @@ def test_neo4j_cleaner_is_idempotent_and_preserves_another_fixture_revision():
     from knowpath_backend.learning.graph_worker import preparation_manifest
     from knowpath_backend.learning.graph_reconciliation import digest
     from knowpath_backend.learning.material_deletion import ExternalMaterialCleaner
-    from knowpath_backend.learning.vector_retrieval import QdrantVectorBackend
+    from knowpath_backend.learning.rag.retrieval import QdrantVectorBackend
     if not os.getenv('LEARNING_TEST_NEO4J_URI'):
         pytest.skip('requires explicit Neo4j test URI')
     ids = [str(uuid4()), str(uuid4())]

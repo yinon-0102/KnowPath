@@ -5,7 +5,7 @@ import pytest
 from knowpath_backend.test.test_learning_state_persistence import workspace, FixedQuestions
 from knowpath_backend.learning.model_tasks import ModelTaskWorker
 from knowpath_backend.learning.question_generation import QuestionGenerationError
-from knowpath_backend.learning.vector_retrieval import KeywordRetriever
+from knowpath_backend.learning.rag.retrieval import KeywordRetriever
 
 
 def sql_state(ctx):

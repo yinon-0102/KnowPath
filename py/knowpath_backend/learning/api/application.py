@@ -16,7 +16,7 @@ from ..run_repository import SqlAlchemyRunRepository
 from ..runs import RunService
 from ..source_access import SourceAccessService
 from ..state import LearningState
-from ..vector_retrieval import configured_retriever
+from knowpath_backend.learning.rag.retrieval import configured_retriever
 from .contract import ContractRoute
 from .errors import install_error_handlers
 from .middleware import install_middleware

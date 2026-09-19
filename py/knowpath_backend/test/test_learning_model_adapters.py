@@ -2,7 +2,7 @@ import json
 import httpx
 import pytest
 from knowpath_backend.learning.config import LearningSettings
-from knowpath_backend.learning.model_adapters import chat_model, ModelError
+from knowpath_backend.learning.providers.models import chat_model, ModelError
 
 
 def test_chat_adapter_structured_tools_and_stream_use_same_port(monkeypatch):
@@ -73,7 +73,7 @@ def test_http_unsupported_model_rejected_before_task_creation(route,body):
 def test_unsupported_embedding_does_not_crash_api_startup(monkeypatch):
     from fastapi.testclient import TestClient
     from knowpath_backend.learning.api import create_app
-    from knowpath_backend.learning.vector_retrieval import KeywordRetriever
+    from knowpath_backend.learning.rag.retrieval import KeywordRetriever
     monkeypatch.setenv("LEARNING_RETRIEVAL_BACKEND", "qdrant")
     app = create_app(settings=LearningSettings(embedding_provider="unsupported"))
     with TestClient(app) as client:

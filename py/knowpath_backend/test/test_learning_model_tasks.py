@@ -5,7 +5,7 @@ from knowpath_backend.test.test_learning_material_deletion import workspace, see
 from knowpath_backend.test.test_learning_state_persistence import FixedQuestions, FixedAnswer
 from knowpath_backend.learning.question_generation import QuestionGenerationError
 from knowpath_backend.learning.message_generation import MessageGenerationError
-from knowpath_backend.learning.vector_retrieval import KeywordRetriever
+from knowpath_backend.learning.rag.retrieval import KeywordRetriever
 
 PAYLOAD = {'kind': 'diagnostic', 'question_count': 5, 'question_types': ['single_choice'],
            'difficulty_mix': {'easy': 1.0, 'medium': 0.0, 'hard': 0.0}}
@@ -213,7 +213,7 @@ def test_publication_storage_failure_rolls_back_and_reclaims(workspace, kind, mo
 
 
 def test_embedding_unavailable_retries_without_answer_model(workspace):
-    from knowpath_backend.learning.vector_retrieval import RetrievalError
+    from knowpath_backend.learning.rag.retrieval import RetrievalError
     state = workspace()
     _, _, space = seed(state)
     response, event = enqueue(state, space['id'], 'message')

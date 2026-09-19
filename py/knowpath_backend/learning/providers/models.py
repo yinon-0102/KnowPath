@@ -150,7 +150,7 @@ def chat_model(settings, *, client=None):
 def embedding_model(settings, *, client=None):
     factory = _EMBEDDING_ADAPTERS.get(settings.embedding_provider)
     if factory is None and settings.embedding_provider == "dashscope":
-        from .vector_retrieval import DashScopeEmbedder
+        from knowpath_backend.learning.rag.retrieval import DashScopeEmbedder
         factory = DashScopeEmbedder
     if factory is None:
         raise ModelError("UNSUPPORTED_MODEL")

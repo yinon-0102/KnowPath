@@ -9,7 +9,7 @@ from .message_generation import DashScopeAnswerGenerator, MessageGenerationError
 from .runs import ACTIVE_STATUSES
 from .model_tasks import ModelTaskWorker, TRANSIENT_ERRORS, LeaseLost, enqueue
 from .spaces import SpaceService, now
-from .vector_retrieval import KeywordRetriever, RetrievalError, configured_retriever
+from knowpath_backend.learning.rag.retrieval import KeywordRetriever, RetrievalError, configured_retriever
 from .config import LearningSettings
 from .conversation_context import bound_snapshot, project_memory
 

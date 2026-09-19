@@ -2,7 +2,7 @@
 import importlib
 import pytest
 from knowpath_backend.learning.materials import MaterialService, InMemoryMaterialRepository
-from knowpath_backend.learning.vector_retrieval import RetrievalError
+from knowpath_backend.learning.rag.retrieval import RetrievalError
 
 
 class Indexer:
@@ -22,7 +22,7 @@ def prepared():
 
 
 def test_index_reads_exact_version_and_keeps_material_pointer_unchanged():
-    module = importlib.import_module("knowpath_backend.learning.vector_indexing")
+    module = importlib.import_module('knowpath_backend.learning.rag.indexing')
     repo, service, old = prepared()
     new = service.create_version(material_id=old.material.id, filename="new.md", content=b"# Changed\nOther material.",
                                  idempotency_key="new-version")
@@ -35,7 +35,7 @@ def test_index_reads_exact_version_and_keeps_material_pointer_unchanged():
 
 
 def test_missing_or_unready_version_does_not_call_indexer():
-    module = importlib.import_module("knowpath_backend.learning.vector_indexing")
+    module = importlib.import_module('knowpath_backend.learning.rag.indexing')
     repo, service, result = prepared()
     indexer = Indexer()
     with pytest.raises(RetrievalError, match="MATERIAL_VERSION_UNAVAILABLE"):
@@ -49,8 +49,8 @@ def test_missing_or_unready_version_does_not_call_indexer():
 
 def test_builder_matches_message_snapshot_identity():
     from knowpath_backend.learning.state import LearningState
-    from knowpath_backend.learning.vector_retrieval import point_id
-    module = importlib.import_module("knowpath_backend.learning.vector_indexing")
+    from knowpath_backend.learning.rag.retrieval import point_id
+    module = importlib.import_module('knowpath_backend.learning.rag.indexing')
     repo, service, result = prepared()
     state = LearningState(repo)
     space = state.create_space({"name": "Study", "material_ids": [result.material.id]})
@@ -63,7 +63,7 @@ def test_builder_matches_message_snapshot_identity():
 
 
 def test_cli_reports_sanitized_failure_and_closes_resources(monkeypatch, capsys):
-    module = importlib.import_module("knowpath_backend.learning.vector_indexing")
+    module = importlib.import_module('knowpath_backend.learning.rag.indexing')
     closed = []
     class Engine:
         def dispose(self):

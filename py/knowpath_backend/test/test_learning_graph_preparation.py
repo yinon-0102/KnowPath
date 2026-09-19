@@ -6,7 +6,7 @@ import pytest
 from qdrant_client import QdrantClient
 
 from knowpath_backend.learning.state import LearningState
-from knowpath_backend.learning.vector_retrieval import QdrantVectorBackend, VectorRetriever
+from knowpath_backend.learning.rag.retrieval import QdrantVectorBackend, VectorRetriever
 
 
 class Embedder:

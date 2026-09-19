@@ -11,7 +11,7 @@ from uuid import UUID
 import httpx
 from qdrant_client import QdrantClient, models
 
-from .config import LearningSettings
+from knowpath_backend.learning.config import LearningSettings
 
 
 class RetrievalError(Exception):
@@ -243,7 +243,7 @@ def configured_retriever(settings=None):
         return KeywordRetriever()
     if mode != "qdrant":
         raise ValueError("LEARNING_RETRIEVAL_BACKEND must be keyword or qdrant")
-    from .model_adapters import ModelError
+    from knowpath_backend.learning.providers.models import ModelError
     try:
         return configured_vector_retriever(settings)
     except ModelError:
@@ -254,7 +254,7 @@ def configured_retriever(settings=None):
 
 def configured_vector_retriever(settings=None):
     settings = settings or LearningSettings.from_env()
-    from .model_adapters import embedding_model
+    from knowpath_backend.learning.providers.models import embedding_model
     embedder = embedding_model(settings)
     client = QdrantClient(url=os.getenv("QDRANT_URL", "http://127.0.0.1:6333"),
                           api_key=os.getenv("QDRANT_API_KEY") or None, timeout=30, check_compatibility=False)

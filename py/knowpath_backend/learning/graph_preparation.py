@@ -10,7 +10,7 @@ from .errors import DomainNotFound
 from neo4j import GraphDatabase, Query
 
 from .graph_reconciliation import digest
-from .vector_retrieval import configured_vector_retriever
+from knowpath_backend.learning.rag.retrieval import configured_vector_retriever
 
 
 class GraphPreparer:

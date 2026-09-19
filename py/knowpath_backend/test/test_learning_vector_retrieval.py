@@ -11,7 +11,7 @@ from knowpath_backend.learning.config import LearningSettings
 
 
 def api():
-    return importlib.import_module("knowpath_backend.learning.vector_retrieval")
+    return importlib.import_module('knowpath_backend.learning.rag.retrieval')
 
 
 def vector(axis=0):

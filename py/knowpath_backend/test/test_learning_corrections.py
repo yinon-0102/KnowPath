@@ -303,7 +303,7 @@ def test_correction_publishes_with_real_graph_and_vector_stores(correction_works
     from neo4j import GraphDatabase
     from qdrant_client import QdrantClient
     from knowpath_backend.learning.graph_preparation import GraphPreparer, Neo4jGraphBackend
-    from knowpath_backend.learning.vector_retrieval import VectorRetriever, QdrantVectorBackend
+    from knowpath_backend.learning.rag.retrieval import VectorRetriever, QdrantVectorBackend
     from knowpath_backend.test.test_learning_graph_preparation import Embedder
     ctx = correction_workspace
     factory, upload, label, space, payload = ctx

@@ -4,6 +4,11 @@ import importlib
 import importlib.util
 from importlib.metadata import distribution
 from pathlib import Path
+import os
+import subprocess
+import sys
+
+import pytest
 
 from alembic.config import Config
 from alembic.script import ScriptDirectory
@@ -58,3 +63,19 @@ def test_database_initialization_uses_migrations_and_empty_database_sql():
     assert (backend / "alembic.ini").is_file()
     assert (backend / "init_mysql.sql").is_file()
     assert (backend / "scripts" / "init_db.py").is_file()
+
+
+@pytest.mark.parametrize("entrypoint", [
+    "knowpath_backend.learning.graph_worker_cli",
+    "knowpath_backend.learning.model_worker_cli",
+    "knowpath_backend.learning.vector_indexing",
+])
+def test_public_worker_and_index_commands_support_module_startup(entrypoint, tmp_path):
+    backend = Path(__file__).resolve().parents[2]
+    environment = dict(os.environ, PYTHONPATH=str(backend), PYTHON_DOTENV_DISABLED="1")
+    result = subprocess.run(
+        [sys.executable, "-m", entrypoint, "--help"], cwd=tmp_path,
+        env=environment, text=True, capture_output=True, timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "usage:" in result.stdout

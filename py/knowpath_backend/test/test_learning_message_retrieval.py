@@ -1,7 +1,7 @@
 """Retrieval runs after preparation and preserves message publication guards."""
 import copy
 import pytest
-from knowpath_backend.learning.vector_retrieval import RetrievalError
+from knowpath_backend.learning.rag.retrieval import RetrievalError
 from knowpath_backend.test.test_learning_state_persistence import workspace
 from knowpath_backend.test.test_learning_messages import service
 
@@ -93,7 +93,7 @@ def test_scope_change_during_retrieval_stops_before_answer_generation(workspace)
 
 def test_message_real_vector_retrieval_uses_pinned_candidates(workspace):
     from qdrant_client import QdrantClient
-    from knowpath_backend.learning.vector_retrieval import VectorRetriever, QdrantVectorBackend
+    from knowpath_backend.learning.rag.retrieval import VectorRetriever, QdrantVectorBackend
     from knowpath_backend.test.test_learning_vector_retrieval import Embedder
     factory, space_id, _, _ = workspace
     state, generator = service(factory)

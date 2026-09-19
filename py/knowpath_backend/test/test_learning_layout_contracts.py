@@ -12,7 +12,7 @@ from knowpath_backend.learning.api import create_app
 from knowpath_backend.learning.api.contract import ContractRoute
 from knowpath_backend.learning.config import LearningSettings
 from knowpath_backend.learning.db import Base
-from knowpath_backend.learning.vector_retrieval import KeywordRetriever
+from knowpath_backend.learning.rag.retrieval import KeywordRetriever
 
 
 FIXTURES = Path(__file__).parent / "fixtures"

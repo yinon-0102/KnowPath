@@ -235,7 +235,7 @@ class DashScopeQuestionGenerator:
                                     "source_text": source_text, "source_refs": topic["source_refs"]})
         request = {"kind": payload.get("kind", "diagnostic"), "question_count": count,
                    "question_types": types, "difficulty_counts": quotas, "topics": supplied_topics}
-        from .model_adapters import chat_model, ModelError
+        from knowpath_backend.learning.providers.models import chat_model, ModelError
         try:
             parsed = chat_model(self.settings, client=self._client).generate_json([
                 {"role": "system", "content": _SYSTEM_PROMPT},

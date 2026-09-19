@@ -9,7 +9,7 @@ from knowpath_backend.learning.model_tasks import ModelTaskWorker, timestamp
 from knowpath_backend.test.test_learning_material_deletion import workspace, seed
 from knowpath_backend.test.test_learning_model_tasks import enqueue
 from knowpath_backend.test.test_learning_state_persistence import FixedQuestions, FixedAnswer
-from knowpath_backend.learning.vector_retrieval import KeywordRetriever
+from knowpath_backend.learning.rag.retrieval import KeywordRetriever
 
 
 @pytest.mark.parametrize('kind', ['assessment', 'message'])

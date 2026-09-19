@@ -26,7 +26,7 @@ class DashScopeAnswerGenerator:
         self.client = client
 
     def generate(self, snapshot):
-        from .model_adapters import chat_model, ModelError
+        from knowpath_backend.learning.providers.models import chat_model, ModelError
         from .conversation_context import prompt_data, prompt_tokens
         if prompt_tokens(snapshot) > self.settings.context_budget_tokens:
             raise MessageGenerationError("CONTEXT_BUDGET_EXCEEDED")
