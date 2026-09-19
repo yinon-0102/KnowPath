@@ -128,7 +128,7 @@ def test_delete_during_retrieval_does_not_recreate_messages_or_call_answer_model
 
 
 def test_api_closes_its_owned_retriever_on_shutdown(monkeypatch):
-    import knowpath_backend.learning.api as module
+    import knowpath_backend.learning.api.application as module
     from fastapi.testclient import TestClient
     closed = []
     retriever = Selection()

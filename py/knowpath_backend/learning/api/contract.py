@@ -1,4 +1,5 @@
 """Strict HTTP validation and safe, correlated error responses."""
+
 from contextvars import ContextVar
 from uuid import uuid4
 

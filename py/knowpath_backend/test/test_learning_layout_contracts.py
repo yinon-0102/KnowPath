@@ -9,6 +9,7 @@ from sqlalchemy.dialects import mysql
 from sqlalchemy.schema import CreateIndex, CreateTable
 
 from knowpath_backend.learning.api import create_app
+from knowpath_backend.learning.api.contract import ContractRoute
 from knowpath_backend.learning.config import LearningSettings
 from knowpath_backend.learning.db import Base
 from knowpath_backend.learning.vector_retrieval import KeywordRetriever
@@ -44,8 +45,17 @@ def test_full_openapi_matches_pre_refactor_contract():
     app = isolated_app()
 
     assert app.openapi() == expected
-    routes = [route for route in app.routes if isinstance(route, APIRoute)]
+    def api_routes(routes):
+        for route in routes:
+            if isinstance(route, APIRoute):
+                yield route
+            elif (included := getattr(route, "original_router", None)) is not None:
+                # FastAPI 0.141+ retains included routers instead of flattening.
+                yield from api_routes(included.routes)
+
+    routes = list(api_routes(app.routes))
     assert len(routes) == 49
+    assert all(isinstance(route, ContractRoute) for route in routes)
     assert len({(route.path, method) for route in routes for method in route.methods}) == 49
 
 
