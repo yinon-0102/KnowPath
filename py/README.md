@@ -1,4 +1,4 @@
-# KnowPath Python Backend
+# KnowPath Python 后端
 
 KnowPath 的 Web 后端，提供 REST API、SSE 事件流和后台任务。前端位置为项目根目录的
 `frontend/`，目前预留；本目录包含 Python 服务、完整 Agent 基座、测试和数据库迁移。
@@ -24,7 +24,7 @@ if (-not (Test-Path .env)) { Copy-Item .env.example .env }
 
 配置 `DASHSCOPE_API_KEY`、MySQL 的 `DATABASE_URL`、Neo4j 连接及密码、Qdrant 地址。
 持久运行使用 `LEARNING_PERSISTENCE=sql`、`LEARNING_RETRIEVAL_BACKEND=qdrant`。
-默认对话模型为 `qwen-plus`，Embedding 为 DashScope `text-embedding-v3`、1024 维。
+默认对话模型为 `qwen-plus`，嵌入模型为 DashScope `text-embedding-v3`、1024 维。
 Web 模型选择使用 `LEARNING_CHAT_*`、`LEARNING_EMBEDDING_*`；通用 Agent 基座仍使用
 独立的 `LLM_*` 配置，可通过 `core.runtime.load_config()` 读取，默认不会持久化配置。
 完整字段见 [.env.example](.env.example)。不要将密钥提交到 Git。
@@ -42,14 +42,14 @@ uv run alembic current
 Alembic 读取 `alembic.ini` 同目录的 `.env`，已有进程环境变量优先。现有库升级前应备份；
 SQL 模式启动不会自动建表。正常安装和升级统一使用 Alembic。
 [init_mysql.sql](init_mysql.sql) 仅是空 MySQL 库的备用初始化快照，不能重复导入现有库；
-详情见 [migrations/README.md](migrations/README.md)。
+详情见 [数据库迁移说明](migrations/README.md)。
 
 原有 `knowpath-learning-db` / `learning.db_cli` / `scripts/init_db.py` 和
 `learning.vector_indexing` 已保留为维护工具。直接按 ORM 建表不会登记 Alembic 版本，
-旧向量脚本固定 `graph_version=1`，因此正常安装升级与资料发布仍使用上面的迁移和 worker 流程。
+旧向量脚本固定 `graph_version=1`，因此正常安装升级与资料发布仍使用上面的迁移和后台任务流程。
 
-Neo4j 节点和 Qdrant 向量由 graph worker 随资料处理写入，无需手动创建业务节点。
-数据库名、collection 前缀和 Docker 卷沿用已有配置，包名调整不迁移数据。
+Neo4j 节点和 Qdrant 向量由图谱后台进程随资料处理写入，无需手动创建业务节点。
+数据库名、向量集合前缀和 Docker 卷沿用已有配置，包名调整不迁移数据。
 
 ## 启动
 
@@ -63,13 +63,13 @@ uv run python -m knowpath_backend.learning.model_worker_cli
 
 | 进程 | 职责 |
 | --- | --- |
-| API | HTTP 请求、鉴权、业务状态、Run 查询和 SSE |
-| graph worker | 资料解析、Neo4j/Qdrant 快照准备、纠正与删除清理 |
-| model worker | 持久化的出题与对话任务、重试和取消检查 |
+| API 服务 | HTTP 请求、鉴权、业务状态、运行记录（Run）查询和 SSE 事件流 |
+| 图谱后台进程 | 资料解析、Neo4j/Qdrant 快照准备、纠正与删除清理 |
+| 模型后台进程 | 持久化的出题与对话任务、重试和取消检查 |
 
 两个 `*_cli.py` 是后台进程的启动入口，需要保留。已删除交互式终端界面和 `knowpath` 聊天命令，
 Agent 基座完整保留；CLI 中可复用的装配和会话授权逻辑已移到 `core.runtime` 与 `core.permissions`。
-空闲 worker 没有业务输出属于正常情况；持续出现 `STORAGE_UNAVAILABLE` 表示存储连接或
+空闲后台进程没有业务输出属于正常情况；持续出现 `STORAGE_UNAVAILABLE` 表示存储连接或
 数据库结构仍有问题，应检查配置、Docker 状态和迁移版本。
 
 PyCharm 可直接选择项目根目录 `.run/` 中的 **KnowPath Backend** 组合配置。
@@ -157,34 +157,32 @@ knowpath_backend/
 基座中的 Shell/文件工具仍然存在，但当前 Web API 不注册或开放这些工具。
 当前 Web 对话已接入基座的上下文预算、摘要与检索组件，持久化以学习业务 SQL 消息为准；
 通用 Agent 的自动核心记忆晋升、Shell/文件工具不会通过 Web 对话开放。
-项目源于 Keel，保留其 [MIT LICENSE 和版权声明](LICENSE)。
+项目源于 Keel，保留其 [MIT 许可证和版权声明](LICENSE)。
 
-## Web Conversation Memory
+## Web 对话记忆
 
-Completed messages provide durable memory within each learning space and its
-current scope/bindings. Recent turns, bounded extractive summaries and relevant
-cross-conversation excerpts feed the existing context engine. Restarts rebuild
-recall from SQL; failed/pending messages do not enter memory. Historical excerpts
-remain untrusted context and do not directly modify learner grades or profiles.
+已完成的消息为各学习空间提供持久记忆，记忆范围限定于当前学习范围和资料绑定。
+最近几轮对话、长度受限的抽取式摘要，以及相关的跨会话片段会进入现有上下文引擎。
+服务重启后从 SQL 数据库重建记忆召回；失败或尚未完成的消息不会进入记忆。
+历史片段始终作为不可信上下文处理，不会直接修改学习者的成绩或档案。
 
-`LEARNING_CONTEXT_BUDGET_TOKENS` defaults to 16000 (allowed: 1024-65536). This
-limits estimated total prompt input, including sources, history and system text.
-An oversized mandatory question fails with `CONTEXT_BUDGET_EXCEEDED`. The estimate
-is not the provider's exact tokenizer count. Recall currently rebuilds a TF-IDF
-index per request; very large conversation archives will need an indexed store.
+`LEARNING_CONTEXT_BUDGET_TOKENS` 默认为 16000，允许范围为 1024–65536。
+它限制整个提示输入的估算词元数量，包括资料来源、历史消息和系统文本。
+如果必须保留的用户问题本身超过预算，请求将以 `CONTEXT_BUDGET_EXCEEDED` 失败。
+这里使用的是估算值，并非模型服务商分词器的精确计数。目前每次请求都会重建
+用于记忆召回的 TF-IDF 索引；对话记录规模很大时，需要改用带持久索引的存储。
 
-## Isolated Live Acceptance
+## 隔离环境中的真实验收
 
-With Docker running and DashScope keys configured, run from `py/`:
+启动 Docker 并配置好 DashScope 密钥后，在 `py/` 目录执行：
 
 ```powershell
 uv run python scripts/accept_learning_backend.py --live
 ```
 
-This makes a bounded number of real model calls and creates disposable MySQL,
-Neo4j and Qdrant containers on random loopback ports. It reads only model settings
-from `.env`; the daily databases are not used. The script migrates a fresh schema,
-tests a synthetic learning workflow and removes only its own labeled containers.
-The sanitized JSON report defaults to `%TEMP%/knowpath-live-acceptance.json`.
-Use `--report PATH` to choose another report location. HTTP routes are exercised
-through FastAPI TestClient; this does not validate a reverse proxy or browser UI.
+此命令会进行有限次数的真实模型调用，并创建临时 MySQL、Neo4j 和 Qdrant 容器，
+通过本机回环地址上的随机端口访问。它只从 `.env` 读取模型相关配置，不使用日常数据库。
+脚本会在全新数据库上应用迁移，用测试资料验证完整学习流程，最后仅删除自身创建并标记的容器。
+脱敏后的 JSON 报告默认写入 `%TEMP%/knowpath-live-acceptance.json`。
+可通过 `--report PATH` 指定其他报告位置。HTTP 路由通过 FastAPI 的 `TestClient`
+进行验证，不涵盖反向代理或浏览器界面。

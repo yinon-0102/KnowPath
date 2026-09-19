@@ -1,50 +1,47 @@
 # KnowPath
 
-KnowPath is a learning application whose project root contains the Python
-backend, frontend workspace, documentation, and local infrastructure.
+KnowPath 是一个学习应用，项目根目录统一管理 Python 后端、前端工作区、
+项目文档和本地基础服务。
 
-## Project Layout
+## 项目目录
 
 ```text
 KnowPath/
-├── frontend/       # Frontend application (reserved)
-├── py/             # Python backend and its uv environment
-├── docs/           # Architecture and API contracts
-└── infra/          # Docker Compose services
+├── frontend/       # 前端应用（预留）
+├── py/             # Python 后端及其 uv 虚拟环境
+├── docs/           # 架构与接口文档
+└── infra/          # Docker Compose 基础服务
 ```
 
-## Python Backend
+## Python 后端
 
-The backend project and its virtual environment are both under `py/`. The Python
-package is `knowpath_backend`, distributed as `knowpath-backend`. It provides a
-Web API and two background workers, alongside the reusable Agent foundation
-(context, layered memory, tools, planning and verification). Only the interactive
-terminal UI and its `knowpath` chat command have been removed.
+后端项目及其虚拟环境均位于 `py/`。Python 包名为 `knowpath_backend`，
+发行名为 `knowpath-backend`。后端提供 Web API 和两个后台任务进程，并保留
+可复用的 Agent 基座，包括上下文、分层记忆、工具、规划和验证能力。
+已移除的仅是交互式终端界面及其 `knowpath` 聊天命令。
 
-HTTP handlers are grouped under `py/knowpath_backend/learning/api/routers/`.
-Learning services are grouped by domain, with retrieval in `rag/`, model
-adapters in `providers/`, repositories in `persistence/`, and background
-execution in `workers/`. The existing startup commands below remain valid.
-See the [backend directory guide](py/README.md#代码边界与来源) for the full layout.
+HTTP 请求处理函数位于 `py/knowpath_backend/learning/api/routers/`。
+学习业务按领域分组：检索位于 `rag/`，模型适配位于 `providers/`，
+仓储位于 `persistence/`，后台执行位于 `workers/`。下方原有启动命令仍然有效。
+完整目录说明见 [后端目录指南](py/README.md#代码边界与来源)。
 
 ```powershell
 cd C:\Users\27202\Desktop\KnowPath\py
 uv sync --locked
 ```
 
-For the complete persistent learning backend, copy `py/.env.example` to
-`py/.env` if it does not already exist, set `LEARNING_PERSISTENCE=sql`, and
-configure the database connection and DashScope key. The template defaults to
-`LEARNING_PERSISTENCE=sql` and `LEARNING_RETRIEVAL_BACKEND=qdrant`;
-`keyword` is an optional retrieval fallback. Keep existing local settings.
-After starting Docker, apply migrations from `py/`. Alembic reads the `.env`
-beside `alembic.ini`; process environment variables take precedence:
+要运行完整的持久化学习后端，请仅在 `py/.env` 不存在时将 `py/.env.example`
+复制为该文件，设置 `LEARNING_PERSISTENCE=sql`，并配置数据库连接和 DashScope 密钥。
+模板默认使用 `LEARNING_PERSISTENCE=sql` 和 `LEARNING_RETRIEVAL_BACKEND=qdrant`；
+也可选择 `keyword` 作为备用检索方式。请保留已有本地配置。
+启动 Docker 后，在 `py/` 目录执行数据库迁移。Alembic 读取与 `alembic.ini`
+同目录的 `.env`，进程环境变量优先：
 
 ```powershell
 uv run alembic upgrade head
 ```
 
-Run these three processes in separate terminals, all from `py/`:
+在三个终端中分别启动以下进程，工作目录均为 `py/`：
 
 ```powershell
 uv run python -m uvicorn knowpath_backend.learning.main:app --host 127.0.0.1 --port 8000
@@ -52,19 +49,17 @@ uv run python -m knowpath_backend.learning.graph_worker_cli
 uv run python -m knowpath_backend.learning.model_worker_cli
 ```
 
-The graph worker handles parsing, Neo4j/Qdrant preparation, corrections and
-external material cleanup. The model worker handles durable assessment/message
-generation and bounded retries. Uploaded knowledge must be reviewed and published
-before a new learning space can bind it.
+图谱后台进程负责资料解析、Neo4j/Qdrant 数据准备、纠正以及外部存储中的资料清理。
+模型后台进程负责持久化的测评出题、对话生成任务及有限次数的重试。
+上传的知识必须经过审核和发布，才能绑定到新的学习空间。
 
-The API loads `py/.env`. Set `LEARNING_LOCAL_TOKEN` or let the API create
-`py/.learning-token.local`; clients send the token in `X-Local-Token`. The token
-file is ignored by Git. Browser origins must match `LEARNING_ALLOWED_ORIGINS`.
-Unauthenticated `/api/v1/health` exposes only basic status; authenticated health
-reports dependency availability without returning connection strings or keys.
-The default embedding model is DashScope `text-embedding-v3`, 1024 dimensions.
+API 会加载 `py/.env`。可设置 `LEARNING_LOCAL_TOKEN`，或由 API 自动创建
+`py/.learning-token.local`；客户端通过 `X-Local-Token` 请求头发送令牌。
+令牌文件已被 Git 忽略。浏览器请求来源必须匹配 `LEARNING_ALLOWED_ORIGINS`。
+未认证的 `/api/v1/health` 请求仅返回基本状态；认证后会报告依赖服务的可用性，
+但不会返回连接字符串或密钥。默认嵌入模型为 DashScope `text-embedding-v3`，维度为 1024。
 
-PowerShell learning-service regression command (no wildcard script expansion):
+在 PowerShell 中执行以下回归测试命令，无需使用通配符展开脚本路径：
 
 ```powershell
 $env:PYTHON_DOTENV_DISABLED = "1"
@@ -72,54 +67,47 @@ uv run python -m pytest .\knowpath_backend\test -q
 Remove-Item Env:PYTHON_DOTENV_DISABLED
 ```
 
-The test directory covers the Web services and retained Agent foundation. Tests requiring
-explicitly configured external databases skip when their `LEARNING_TEST_*`
-variables are absent; only point these variables at disposable test stores.
-Contract tests use deterministic model adapters;
-they do not certify a paid provider's live availability or answer quality.
+测试目录覆盖 Web 服务及保留的 Agent 基座。需要显式配置外部数据库的测试，
+会在缺少相应 `LEARNING_TEST_*` 变量时跳过；这些变量只能指向可清理的临时测试存储。
+契约测试使用结果确定的模型适配器，不代表真实付费模型服务的可用性或回答质量已经通过验证。
 
-## PyCharm Startup (Windows)
+## 在 PyCharm 中启动（Windows）
 
-Open the whole `KnowPath/` directory in PyCharm. Shared run configurations are
-stored in `.run/`; select **KnowPath Backend** to start the API, graph worker and
-model worker together. Each can also be started or debugged separately. The
-configurations use `py/.venv/Scripts/python.exe`, `py/` as their working directory,
-and SQL persistence. Run `uv sync --locked` from `py/` first when setting up a
-new checkout. On another operating system, change the interpreter path in each
-configuration to that system's virtual environment executable.
+在 PyCharm 中打开整个 `KnowPath/` 目录。共享运行配置位于 `.run/`，
+选择 **KnowPath Backend** 可同时启动 API、图谱后台进程和模型后台进程，
+也可以分别启动或调试各个进程。配置使用 `py/.venv/Scripts/python.exe` 作为解释器，
+以 `py/` 为工作目录，并启用 SQL 持久化。首次配置新检出的项目时，
+请先在 `py/` 执行 `uv sync --locked`。使用其他操作系统时，
+需要将各运行配置中的解释器路径改为对应系统的虚拟环境可执行文件。
 
-Start the Docker services below and apply `uv run alembic upgrade head` before
-running the backend. Configure database connections and model credentials in
-`py/.env`; all three processes load it automatically. No credentials belong in
-the shared run configurations. This compound configuration starts the three
-backend processes concurrently; it does not start Docker, apply migrations or
-launch a frontend. `frontend/` is currently reserved. When stopping the backend,
-stop all three processes in PyCharm's Run/Services window.
+运行后端前，请先启动下方的 Docker 服务，并执行 `uv run alembic upgrade head`。
+数据库连接和模型凭证配置在 `py/.env` 中，三个进程都会自动加载。
+不要将凭证写入共享运行配置。组合配置仅并行启动三个后端进程，
+不会启动 Docker、执行数据库迁移或启动前端。`frontend/` 目前为预留目录。
+停止后端时，请在 PyCharm 的运行或服务窗口中停止全部三个进程。
 
-The API listens on `http://127.0.0.1:8000`; its basic health endpoint is
-`http://127.0.0.1:8000/api/v1/health`.
+API 监听地址为 `http://127.0.0.1:8000`，基本健康检查地址为
+`http://127.0.0.1:8000/api/v1/health`。
 
-## Local Services
+## 本地基础服务
 
-From the project root:
+在项目根目录执行：
 
 ```powershell
 docker compose -f .\infra\docker-compose.yml up -d
 ```
 
-The Compose file provides MySQL, Neo4j, and Qdrant. If a host port is already
-occupied, change only the host side of the mapping and update the backend
-connection setting accordingly.
+Compose 配置提供 MySQL、Neo4j 和 Qdrant 服务。如果宿主机端口已被占用，
+只需修改端口映射中的宿主机端口，并同步更新后端连接配置。
 
-## Documentation
+## 项目文档
 
-- [Architecture](docs/ARCHITECTURE.md)
-- [API contract](docs/API.md)
-- [Backend README](py/README.md)
-- [Infrastructure README](infra/README.md)
+- [架构文档](docs/ARCHITECTURE.md)
+- [接口文档](docs/API.md)
+- [后端说明](py/README.md)
+- [基础服务说明](infra/README.md)
 
-The complete pre-cleanup source, including the removed terminal UI, is preserved
-locally on `codex/archive-agent-before-web-cleanup-20260919` at commit
-`0e9ca632155b34ec0e9ddb194b5a1b92791aa6e3`. The Agent foundation is restored in
-the working tree; current Web requests still use the learning-domain pipeline.
-Original attribution remains in [LICENSE](py/LICENSE).
+清理前的完整源码（包括已移除的终端界面）保存在本地分支
+`codex/archive-agent-before-web-cleanup-20260919`，对应提交为
+`0e9ca632155b34ec0e9ddb194b5a1b92791aa6e3`。Agent 基座已恢复到工作区，
+当前 Web 请求仍通过学习业务流程处理。原项目署名和许可保留在 [许可证文件](py/LICENSE) 中。
