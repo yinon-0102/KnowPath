@@ -1,0 +1,147 @@
+{
+  "assessments": {
+    "indexes": [
+      "CREATE INDEX ix_assessments_space_id ON assessments (space_id)"
+    ],
+    "table": "\nCREATE TABLE assessments (\n\tcontext JSON NOT NULL, \n\tsnapshot JSON NOT NULL, \n\trun_id VARCHAR(36), \n\tfinalize_run_id VARCHAR(36), \n\tsubmission_id VARCHAR(36), \n\tid VARCHAR(36) NOT NULL, \n\tspace_id VARCHAR(36) NOT NULL, \n\tkind VARCHAR(32) NOT NULL, \n\tstatus VARCHAR(32) NOT NULL, \n\ttopic_ids JSON NOT NULL, \n\tquestions JSON NOT NULL, \n\tresult JSON, \n\tcreated_at DATETIME NOT NULL, \n\tPRIMARY KEY (id), \n\tFOREIGN KEY(space_id) REFERENCES learning_spaces (id)\n)\n\n"
+  },
+  "attempts": {
+    "indexes": [
+      "CREATE INDEX ix_attempts_assessment_id ON attempts (assessment_id)"
+    ],
+    "table": "\nCREATE TABLE attempts (\n\telapsed_seconds INTEGER, \n\tid VARCHAR(36) NOT NULL, \n\tassessment_id VARCHAR(36) NOT NULL, \n\tquestion_id VARCHAR(128) NOT NULL, \n\tanswer TEXT NOT NULL, \n\tanswer_revision INTEGER NOT NULL, \n\tassisted BOOL NOT NULL, \n\tcreated_at DATETIME NOT NULL, \n\tPRIMARY KEY (id), \n\tCONSTRAINT uq_attempt_revision UNIQUE (assessment_id, question_id, answer_revision), \n\tFOREIGN KEY(assessment_id) REFERENCES assessments (id)\n)\n\n"
+  },
+  "evidence": {
+    "indexes": [
+      "CREATE INDEX ix_evidence_space_id ON evidence (space_id)",
+      "CREATE INDEX ix_evidence_topic_id ON evidence (topic_id)"
+    ],
+    "table": "\nCREATE TABLE evidence (\n\tcontext JSON NOT NULL, \n\tid VARCHAR(36) NOT NULL, \n\tspace_id VARCHAR(36) NOT NULL, \n\ttopic_id VARCHAR(128) NOT NULL, \n\tassessment_id VARCHAR(36), \n\tattempt_id VARCHAR(36), \n\tkind VARCHAR(64) NOT NULL, \n\tresult VARCHAR(32) NOT NULL, \n\tscore FLOAT, \n\terror_tags JSON NOT NULL, \n\tsource_refs JSON NOT NULL, \n\tcreated_at DATETIME NOT NULL, \n\tPRIMARY KEY (id), \n\tFOREIGN KEY(space_id) REFERENCES learning_spaces (id), \n\tFOREIGN KEY(assessment_id) REFERENCES assessments (id)\n)\n\n"
+  },
+  "graph_revisions": {
+    "indexes": [
+      "CREATE INDEX ix_graph_revisions_material_id ON graph_revisions (material_id)"
+    ],
+    "table": "\nCREATE TABLE graph_revisions (\n\tid VARCHAR(36) NOT NULL, \n\tmaterial_id VARCHAR(36) NOT NULL, \n\tmaterial_version_id VARCHAR(36) NOT NULL, \n\tsequence INTEGER NOT NULL, \n\tbase_graph_version INTEGER NOT NULL, \n\tgraph_version INTEGER, \n\tstatus VARCHAR(32) NOT NULL, \n\trun_id VARCHAR(36) NOT NULL, \n\tsnapshot JSON NOT NULL, \n\tsnapshot_hash VARCHAR(64) NOT NULL, \n\tdiff JSON NOT NULL, \n\tpreparation JSON, \n\tpublication JSON, \n\tcreated_at DATETIME NOT NULL, \n\tPRIMARY KEY (id), \n\tCONSTRAINT uq_graph_revision_sequence UNIQUE (material_id, sequence), \n\tCONSTRAINT uq_graph_published_version UNIQUE (material_id, graph_version), \n\tFOREIGN KEY(material_id) REFERENCES materials (id), \n\tFOREIGN KEY(material_version_id) REFERENCES material_versions (id)\n)\n\n"
+  },
+  "idempotency_keys": {
+    "indexes": [],
+    "table": "\nCREATE TABLE idempotency_keys (\n\t`key` VARCHAR(255) NOT NULL, \n\trequest_fingerprint VARCHAR(64) NOT NULL, \n\tresource_type VARCHAR(64) NOT NULL, \n\tresource_id VARCHAR(128) NOT NULL, \n\tversion_id VARCHAR(36), \n\trun_id VARCHAR(36), \n\tresponse JSON, \n\tcreated_at DATETIME NOT NULL, \n\tPRIMARY KEY (`key`)\n)\n\n"
+  },
+  "knowledge_corrections": {
+    "indexes": [
+      "CREATE INDEX ix_knowledge_corrections_space_id ON knowledge_corrections (space_id)"
+    ],
+    "table": "\nCREATE TABLE knowledge_corrections (\n\tcontext JSON NOT NULL, \n\tid VARCHAR(36) NOT NULL, \n\tspace_id VARCHAR(36) NOT NULL, \n\tkind VARCHAR(32) NOT NULL, \n\ttarget_id VARCHAR(128) NOT NULL, \n\taction VARCHAR(32) NOT NULL, \n\tproposed_value JSON, \n\treason TEXT NOT NULL, \n\tstatus VARCHAR(32) NOT NULL, \n\tcreated_at DATETIME NOT NULL, \n\tPRIMARY KEY (id), \n\tFOREIGN KEY(space_id) REFERENCES learning_spaces (id)\n)\n\n"
+  },
+  "knowledge_relations": {
+    "indexes": [
+      "CREATE INDEX ix_knowledge_relations_from_topic_id ON knowledge_relations (from_topic_id)",
+      "CREATE INDEX ix_knowledge_relations_to_topic_id ON knowledge_relations (to_topic_id)"
+    ],
+    "table": "\nCREATE TABLE knowledge_relations (\n\tid VARCHAR(128) NOT NULL, \n\trevision_id VARCHAR(128) NOT NULL, \n\tfrom_topic_id VARCHAR(128) NOT NULL, \n\tto_topic_id VARCHAR(128) NOT NULL, \n\trelation_type VARCHAR(64) NOT NULL, \n\tstatus VARCHAR(32) NOT NULL, \n\tsource_refs JSON NOT NULL, \n\tconfidence FLOAT NOT NULL, \n\tvalid_from DATETIME, \n\tvalid_to DATETIME, \n\trecorded_at DATETIME NOT NULL, \n\tPRIMARY KEY (id)\n)\n\n"
+  },
+  "learner_states": {
+    "indexes": [
+      "CREATE INDEX ix_learner_states_space_id ON learner_states (space_id)",
+      "CREATE INDEX ix_learner_states_topic_id ON learner_states (topic_id)"
+    ],
+    "table": "\nCREATE TABLE learner_states (\n\tcontext JSON NOT NULL, \n\tid VARCHAR(36) NOT NULL, \n\tspace_id VARCHAR(36) NOT NULL, \n\ttopic_id VARCHAR(128) NOT NULL, \n\tmastery_score FLOAT, \n\tscore_validity VARCHAR(32) NOT NULL, \n\tstatus VARCHAR(32) NOT NULL, \n\tevidence_ids JSON NOT NULL, \n\terror_tags JSON NOT NULL, \n\tstate_version INTEGER NOT NULL, \n\tpolicy_version VARCHAR(64) NOT NULL, \n\tlast_assessed_at DATETIME, \n\tnext_review_at DATETIME, \n\tPRIMARY KEY (id), \n\tCONSTRAINT uq_learner_space_topic UNIQUE (space_id, topic_id), \n\tFOREIGN KEY(space_id) REFERENCES learning_spaces (id)\n)\n\n"
+  },
+  "learning_conversations": {
+    "indexes": [
+      "CREATE INDEX ix_learning_conversations_space_id ON learning_conversations (space_id)"
+    ],
+    "table": "\nCREATE TABLE learning_conversations (\n\tid VARCHAR(36) NOT NULL, \n\tspace_id VARCHAR(36) NOT NULL, \n\tlearning_session_id VARCHAR(36), \n\tcreated_at DATETIME NOT NULL, \n\tPRIMARY KEY (id), \n\tFOREIGN KEY(space_id) REFERENCES learning_spaces (id), \n\tFOREIGN KEY(learning_session_id) REFERENCES learning_sessions (id)\n)\n\n"
+  },
+  "learning_exports": {
+    "indexes": [
+      "CREATE INDEX ix_learning_exports_expires_at ON learning_exports (expires_at)",
+      "CREATE INDEX ix_learning_exports_space_id ON learning_exports (space_id)"
+    ],
+    "table": "\nCREATE TABLE learning_exports (\n\tid VARCHAR(36) NOT NULL, \n\tspace_id VARCHAR(36) NOT NULL, \n\trun_id VARCHAR(36) NOT NULL, \n\tstatus VARCHAR(32) NOT NULL, \n\tpayload JSON NOT NULL, \n\tcreated_at DATETIME NOT NULL, \n\texpires_at DATETIME NOT NULL, \n\tPRIMARY KEY (id), \n\tFOREIGN KEY(space_id) REFERENCES learning_spaces (id), \n\tFOREIGN KEY(run_id) REFERENCES runs (id)\n)\n\n"
+  },
+  "learning_messages": {
+    "indexes": [
+      "CREATE INDEX ix_learning_messages_conversation_id ON learning_messages (conversation_id)",
+      "CREATE INDEX ix_learning_messages_space_id ON learning_messages (space_id)"
+    ],
+    "table": "\nCREATE TABLE learning_messages (\n\tid VARCHAR(36) NOT NULL, \n\tspace_id VARCHAR(36) NOT NULL, \n\tconversation_id VARCHAR(36) NOT NULL, \n\trun_id VARCHAR(36) NOT NULL, \n\tstatus VARCHAR(32) NOT NULL, \n\tmessage TEXT NOT NULL, \n\tsequence INTEGER NOT NULL, \n\tsnapshot JSON NOT NULL, \n\tresponse JSON, \n\tcreated_at DATETIME NOT NULL, \n\tPRIMARY KEY (id), \n\tCONSTRAINT uq_message_sequence UNIQUE (conversation_id, sequence), \n\tFOREIGN KEY(space_id) REFERENCES learning_spaces (id), \n\tFOREIGN KEY(conversation_id) REFERENCES learning_conversations (id)\n)\n\n"
+  },
+  "learning_sessions": {
+    "indexes": [
+      "CREATE INDEX ix_learning_sessions_space_id ON learning_sessions (space_id)"
+    ],
+    "table": "\nCREATE TABLE learning_sessions (\n\tcontext JSON NOT NULL, \n\tactive_space_id VARCHAR(36), \n\tid VARCHAR(36) NOT NULL, \n\tspace_id VARCHAR(36) NOT NULL, \n\tplan_id VARCHAR(36) NOT NULL, \n\ttask_id VARCHAR(36) NOT NULL, \n\tstatus VARCHAR(32) NOT NULL, \n\tstarted_at DATETIME NOT NULL, \n\tfinished_at DATETIME, \n\tPRIMARY KEY (id), \n\tCONSTRAINT uq_learning_sessions_active_space_id UNIQUE (active_space_id), \n\tFOREIGN KEY(space_id) REFERENCES learning_spaces (id), \n\tFOREIGN KEY(plan_id) REFERENCES study_plans (id), \n\tFOREIGN KEY(task_id) REFERENCES study_tasks (id)\n)\n\n"
+  },
+  "learning_spaces": {
+    "indexes": [],
+    "table": "\nCREATE TABLE learning_spaces (\n\tid VARCHAR(36) NOT NULL, \n\tname VARCHAR(100) NOT NULL, \n\tstatus VARCHAR(32) NOT NULL, \n\tgoal TEXT, \n\ttarget_date VARCHAR(32), \n\tweekly_minutes INTEGER, \n\tbindings JSON NOT NULL, \n\ttopic_ids JSON NOT NULL, \n\texcluded_topic_ids JSON NOT NULL, \n\tspace_version INTEGER NOT NULL, \n\tscope_version INTEGER NOT NULL, \n\tprofile JSON NOT NULL, \n\tprofile_version INTEGER NOT NULL, \n\tstate_version INTEGER NOT NULL, \n\tcreated_at DATETIME NOT NULL, \n\tupdated_at DATETIME NOT NULL, \n\tPRIMARY KEY (id)\n)\n\n"
+  },
+  "material_raw_files": {
+    "indexes": [],
+    "table": "\nCREATE TABLE material_raw_files (\n\tversion_id VARCHAR(36) NOT NULL, \n\tcontent LONGBLOB NOT NULL, \n\tPRIMARY KEY (version_id), \n\tFOREIGN KEY(version_id) REFERENCES material_versions (id) ON DELETE CASCADE\n)\n\n"
+  },
+  "material_versions": {
+    "indexes": [
+      "CREATE INDEX ix_material_versions_content_hash ON material_versions (content_hash)",
+      "CREATE INDEX ix_material_versions_material_id ON material_versions (material_id)"
+    ],
+    "table": "\nCREATE TABLE material_versions (\n\tid VARCHAR(36) NOT NULL, \n\tmaterial_id VARCHAR(36) NOT NULL, \n\tfilename VARCHAR(255) NOT NULL, \n\tmedia_type VARCHAR(128) NOT NULL, \n\tcontent_hash VARCHAR(64) NOT NULL, \n\tsize_bytes INTEGER NOT NULL, \n\tstatus VARCHAR(32) NOT NULL, \n\tgraph_version INTEGER NOT NULL, \n\tcreated_at DATETIME NOT NULL, \n\tPRIMARY KEY (id), \n\tFOREIGN KEY(material_id) REFERENCES materials (id)\n)\n\n"
+  },
+  "materials": {
+    "indexes": [],
+    "table": "\nCREATE TABLE materials (\n\tid VARCHAR(36) NOT NULL, \n\tname VARCHAR(255) NOT NULL, \n\ttype VARCHAR(32) NOT NULL, \n\tstatus VARCHAR(32) NOT NULL, \n\tversion INTEGER NOT NULL DEFAULT '1', \n\tcurrent_version_id VARCHAR(36), \n\tsize_bytes INTEGER NOT NULL, \n\tcreated_at DATETIME NOT NULL, \n\tupdated_at DATETIME NOT NULL, \n\tPRIMARY KEY (id)\n)\n\n"
+  },
+  "outbox_events": {
+    "indexes": [],
+    "table": "\nCREATE TABLE outbox_events (\n\tid VARCHAR(36) NOT NULL, \n\taggregate_type VARCHAR(64) NOT NULL, \n\taggregate_id VARCHAR(128) NOT NULL, \n\tevent_type VARCHAR(64) NOT NULL, \n\tpayload JSON NOT NULL, \n\tstatus VARCHAR(32) NOT NULL, \n\tlease_token VARCHAR(36), \n\tlease_until DATETIME, \n\tavailable_at DATETIME, \n\tattempts INTEGER NOT NULL DEFAULT '0', \n\tcreated_at DATETIME NOT NULL, \n\tPRIMARY KEY (id)\n)\n\n"
+  },
+  "run_events": {
+    "indexes": [
+      "CREATE INDEX ix_run_events_created_at ON run_events (created_at)"
+    ],
+    "table": "\nCREATE TABLE run_events (\n\trun_id VARCHAR(36) NOT NULL, \n\tsequence INTEGER NOT NULL, \n\tevent VARCHAR(64) NOT NULL, \n\tdata JSON, \n\tcreated_at DATETIME NOT NULL, \n\tPRIMARY KEY (run_id, sequence), \n\tFOREIGN KEY(run_id) REFERENCES runs (id) ON DELETE CASCADE\n)\n\n"
+  },
+  "runs": {
+    "indexes": [],
+    "table": "\nCREATE TABLE runs (\n\tid VARCHAR(36) NOT NULL, \n\tkind VARCHAR(64) NOT NULL, \n\tstatus VARCHAR(32) NOT NULL, \n\tprogress INTEGER NOT NULL, \n\tresult_ref JSON, \n\terror JSON, \n\tcreated_at DATETIME NOT NULL, \n\tfinished_at DATETIME, \n\tPRIMARY KEY (id)\n)\n\n"
+  },
+  "session_events": {
+    "indexes": [
+      "CREATE INDEX ix_session_events_session_id ON session_events (session_id)"
+    ],
+    "table": "\nCREATE TABLE session_events (\n\tid VARCHAR(36) NOT NULL, \n\tsession_id VARCHAR(36) NOT NULL, \n\tclient_event_id VARCHAR(128), \n\ttype VARCHAR(64) NOT NULL, \n\tpayload JSON NOT NULL, \n\treceived_at DATETIME NOT NULL, \n\tPRIMARY KEY (id), \n\tFOREIGN KEY(session_id) REFERENCES learning_sessions (id), \n\tUNIQUE (client_event_id)\n)\n\n"
+  },
+  "source_chunks": {
+    "indexes": [
+      "CREATE INDEX ix_source_chunks_content_hash ON source_chunks (content_hash)",
+      "CREATE INDEX ix_source_chunks_material_version_id ON source_chunks (material_version_id)"
+    ],
+    "table": "\nCREATE TABLE source_chunks (\n\tid VARCHAR(36) NOT NULL, \n\tmaterial_version_id VARCHAR(36) NOT NULL, \n\ttext TEXT NOT NULL, \n\tsection_path JSON NOT NULL, \n\tpage INTEGER, \n\tline_start INTEGER, \n\tline_end INTEGER, \n\tcontent_hash VARCHAR(64) NOT NULL, \n\tPRIMARY KEY (id), \n\tFOREIGN KEY(material_version_id) REFERENCES material_versions (id)\n)\n\n"
+  },
+  "state_resets": {
+    "indexes": [
+      "CREATE INDEX ix_state_resets_space_id ON state_resets (space_id)"
+    ],
+    "table": "\nCREATE TABLE state_resets (\n\tid VARCHAR(36) NOT NULL, \n\tspace_id VARCHAR(36) NOT NULL, \n\ttopic_ids JSON NOT NULL, \n\tstate_version INTEGER NOT NULL, \n\treason TEXT NOT NULL, \n\tcreated_at DATETIME NOT NULL, \n\tPRIMARY KEY (id), \n\tFOREIGN KEY(space_id) REFERENCES learning_spaces (id)\n)\n\n"
+  },
+  "study_plans": {
+    "indexes": [
+      "CREATE INDEX ix_study_plans_space_id ON study_plans (space_id)"
+    ],
+    "table": "\nCREATE TABLE study_plans (\n\tid VARCHAR(36) NOT NULL, \n\tspace_id VARCHAR(36) NOT NULL, \n\tversion INTEGER NOT NULL, \n\tstatus VARCHAR(32) NOT NULL, \n\tscope_version INTEGER NOT NULL, \n\trun_id VARCHAR(36), \n\tconfig JSON NOT NULL, \n\tcreated_at DATETIME NOT NULL, \n\tPRIMARY KEY (id), \n\tFOREIGN KEY(space_id) REFERENCES learning_spaces (id)\n)\n\n"
+  },
+  "study_tasks": {
+    "indexes": [
+      "CREATE INDEX ix_study_tasks_plan_id ON study_tasks (plan_id)"
+    ],
+    "table": "\nCREATE TABLE study_tasks (\n\tcontext JSON NOT NULL, \n\tid VARCHAR(36) NOT NULL, \n\tplan_id VARCHAR(36) NOT NULL, \n\ttopic_ids JSON NOT NULL, \n\tkind VARCHAR(64) NOT NULL, \n\tstatus VARCHAR(32) NOT NULL, \n\testimated_minutes INTEGER NOT NULL, \n\treason TEXT NOT NULL, \n\tnote TEXT, \n\tdefer_until DATETIME, \n\tPRIMARY KEY (id), \n\tFOREIGN KEY(plan_id) REFERENCES study_plans (id)\n)\n\n"
+  },
+  "topics": {
+    "indexes": [
+      "CREATE INDEX ix_topics_material_version_id ON topics (material_version_id)"
+    ],
+    "table": "\nCREATE TABLE topics (\n\tid VARCHAR(128) NOT NULL, \n\tmaterial_version_id VARCHAR(36) NOT NULL, \n\trevision_id VARCHAR(128) NOT NULL, \n\tname VARCHAR(255) NOT NULL, \n\tdescription TEXT, \n\tlevel INTEGER NOT NULL, \n\tstatus VARCHAR(32) NOT NULL, \n\tconfidence FLOAT NOT NULL, \n\tsource_chunk_ids JSON NOT NULL, \n\tvalid_from DATETIME, \n\tvalid_to DATETIME, \n\trecorded_at DATETIME NOT NULL, \n\tPRIMARY KEY (id), \n\tFOREIGN KEY(material_version_id) REFERENCES material_versions (id)\n)\n\n"
+  }
+}
