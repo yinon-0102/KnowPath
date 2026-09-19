@@ -5,7 +5,7 @@ from sqlalchemy import create_engine
 
 from knowpath_backend.learning.api import create_app
 from knowpath_backend.learning.persistence.db import init_db
-from knowpath_backend.learning.materials import MaterialService, InMemoryMaterialRepository
+from knowpath_backend.learning.materials.service import MaterialService, InMemoryMaterialRepository
 from knowpath_backend.learning.persistence.material_repository import SqlAlchemyMaterialRepository
 
 

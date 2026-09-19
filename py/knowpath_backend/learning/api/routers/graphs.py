@@ -9,7 +9,7 @@ from fastapi import Header, Query
 from fastapi.responses import JSONResponse
 
 from ...errors import DomainConflict, DomainNotFound
-from ...graph_schemas import IngestMaterial, ReconcileGraph, PublishGraph
+from knowpath_backend.learning.knowledge.schemas import IngestMaterial, ReconcileGraph, PublishGraph
 from ..contract import ContractRoute
 from ..dependencies import LearningStateDep
 from ..errors import _domain_error

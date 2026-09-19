@@ -2,7 +2,7 @@ from sqlalchemy import create_engine, inspect
 from sqlalchemy.pool import StaticPool
 
 from knowpath_backend.learning.persistence.db import Base, DatabaseSettings, init_db
-from knowpath_backend.learning.materials import MaterialService
+from knowpath_backend.learning.materials.service import MaterialService
 from knowpath_backend.learning.persistence.material_repository import SqlAlchemyMaterialRepository
 
 

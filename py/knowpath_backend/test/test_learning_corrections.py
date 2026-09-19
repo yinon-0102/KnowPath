@@ -245,7 +245,7 @@ def test_relation_replace_and_reject_rebuild_prerequisites_and_reject_cycles(cor
     snapshot['nodes'].append(second)
     snapshot['relations'] = [{'id': 'relation_test', 'from_id': first['id'], 'to_id': second['id'],
         'type': 'prerequisite_of', 'status': 'active', 'source_refs': copy.deepcopy(first['source_refs'])}]
-    from knowpath_backend.learning.graph_reconciliation import digest
+    from knowpath_backend.learning.knowledge.reconciliation import digest
     revision['publication']['snapshot_hash'] = digest(snapshot)
     with repo.transaction():
         repo.put_record('graph_revisions', revision)
@@ -283,7 +283,7 @@ def test_cancellation_updates_correction_audit(correction_workspace):
 
 def test_legacy_correction_without_candidate_fails_explicitly(correction_workspace):
     from uuid import uuid4
-    from knowpath_backend.learning.spaces import now
+    from knowpath_backend.learning.spaces.service import now
     factory, upload, label, space, payload = correction_workspace
     state = factory()
     identifier = str(uuid4())
@@ -302,7 +302,7 @@ def test_correction_publishes_with_real_graph_and_vector_stores(correction_works
         pytest.skip('requires explicit Neo4j and Qdrant test endpoints')
     from neo4j import GraphDatabase
     from qdrant_client import QdrantClient
-    from knowpath_backend.learning.graph_preparation import GraphPreparer, Neo4jGraphBackend
+    from knowpath_backend.learning.knowledge.preparation import GraphPreparer, Neo4jGraphBackend
     from knowpath_backend.learning.rag.retrieval import VectorRetriever, QdrantVectorBackend
     from knowpath_backend.test.test_learning_graph_preparation import Embedder
     ctx = correction_workspace
@@ -334,7 +334,7 @@ def test_correction_publishes_with_real_graph_and_vector_stores(correction_works
 
 
 def test_only_active_source_backed_relations_become_learning_prerequisites():
-    from knowpath_backend.learning.corrections import validate_relations
+    from knowpath_backend.learning.knowledge.corrections import validate_relations
     snapshot = {'nodes': [{'id': 'a'}, {'id': 'b'}, {'id': 'c'}], 'relations': [
         {'id': 'pending', 'from_id': 'a', 'to_id': 'b', 'type': 'prerequisite_of', 'status': 'pending', 'source_refs': [{'chunk_id': 'source'}]},
         {'id': 'old', 'from_id': 'b', 'to_id': 'c', 'type': 'prerequisite_of', 'status': 'superseded', 'source_refs': [{'chunk_id': 'source'}]},
@@ -366,7 +366,7 @@ def test_same_version_reconcile_preserves_reviewed_correction(correction_workspa
 
 
 def test_changed_reviewed_node_metadata_requires_explicit_resolution():
-    from knowpath_backend.learning.graph_reconciliation import compare_snapshots
+    from knowpath_backend.learning.knowledge.reconciliation import compare_snapshots
     node = {'id': 'a', 'name': 'Correct name', 'description': 'Correct explanation', 'status': 'rejected', 'content_hash': 'source-hash'}
     base = {'nodes': [node], 'relations': [], 'sources': []}
     candidate = copy.deepcopy(base)

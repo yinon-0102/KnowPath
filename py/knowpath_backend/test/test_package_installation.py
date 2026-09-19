@@ -20,6 +20,8 @@ def test_backend_package_and_service_modules_are_importable():
         "knowpath_backend.learning.api",
         "knowpath_backend.learning.graph_worker_cli",
         "knowpath_backend.learning.model_worker_cli",
+        "knowpath_backend.learning.workers.graph_cli",
+        "knowpath_backend.learning.workers.model_cli",
     ):
         assert importlib.import_module(name).__name__ == name
 

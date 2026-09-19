@@ -1,7 +1,7 @@
 """Conversation preferences remain pending until an explicit profile command."""
 from knowpath_backend.test.test_learning_state_persistence import workspace
 from knowpath_backend.test.test_learning_messages import service
-from knowpath_backend.learning.profile_candidates import candidates_for
+from knowpath_backend.learning.spaces.profile_candidates import candidates_for
 
 
 def test_candidate_survives_restart_without_overwriting_explicit_preference(workspace):

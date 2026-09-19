@@ -7,14 +7,14 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from ..config import LearningSettings
-from ..ingestion import MaterialIngestionService
-from ..materials import InMemoryMaterialRepository, MaterialService
-from ..message_generation import DashScopeAnswerGenerator
-from ..question_generation import DashScopeQuestionGenerator
+from knowpath_backend.learning.materials.ingestion import MaterialIngestionService
+from knowpath_backend.learning.materials.service import InMemoryMaterialRepository, MaterialService
+from knowpath_backend.learning.conversations.generation import DashScopeAnswerGenerator
+from knowpath_backend.learning.assessments.generation import DashScopeQuestionGenerator
 from knowpath_backend.learning.persistence.material_repository import SqlAlchemyMaterialRepository
 from knowpath_backend.learning.persistence.run_repository import SqlAlchemyRunRepository
-from ..runs import RunService
-from ..source_access import SourceAccessService
+from knowpath_backend.learning.workers.runs import RunService
+from knowpath_backend.learning.materials.source_access import SourceAccessService
 from ..state import LearningState
 from knowpath_backend.learning.rag.retrieval import configured_retriever
 from .contract import ContractRoute

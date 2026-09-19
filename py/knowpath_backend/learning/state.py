@@ -5,22 +5,22 @@ from __future__ import annotations
 import copy
 from typing import Any
 
-from .materials import InMemoryMaterialRepository, MaterialRepository, MaterialService
+from knowpath_backend.learning.materials.service import InMemoryMaterialRepository, MaterialRepository, MaterialService
 from .errors import DomainConflict, DomainNotFound
-from .runs import RunService
-from .spaces import SpaceService, topics_for_version
+from knowpath_backend.learning.workers.runs import RunService
+from knowpath_backend.learning.spaces.service import SpaceService, topics_for_version
 from knowpath_backend.learning.persistence.space_repository import InMemorySpaceRepository, SqlAlchemySpaceRepository
 from knowpath_backend.learning.persistence.learning_repository import InMemoryLearningRepository, SqlAlchemyLearningRepository
-from .assessments import AssessmentService
+from knowpath_backend.learning.assessments.service import AssessmentService
 from knowpath_backend.learning.persistence.run_repository import SqlAlchemyRunRepository
-from .planner import PlanSessionService
-from .exports import ExportService
-from .space_deletion import SpaceDeletionService
-from .messages import MessageService
-from .graph_reconciliation import GraphReconciliationService
-from .corrections import CorrectionService
-from .knowledge_updates import KnowledgeUpdateService
-from .graph_queries import GraphQueryService
+from knowpath_backend.learning.plans.service import PlanSessionService
+from knowpath_backend.learning.spaces.exports import ExportService
+from knowpath_backend.learning.spaces.deletion import SpaceDeletionService
+from knowpath_backend.learning.conversations.service import MessageService
+from knowpath_backend.learning.knowledge.reconciliation import GraphReconciliationService
+from knowpath_backend.learning.knowledge.corrections import CorrectionService
+from knowpath_backend.learning.knowledge.updates import KnowledgeUpdateService
+from knowpath_backend.learning.knowledge.queries import GraphQueryService
 from knowpath_backend.learning.persistence.graph_repository import InMemoryGraphRepository, SqlAlchemyGraphRepository
 
 
@@ -43,7 +43,7 @@ class LearningState:
         learning_repository = SqlAlchemyLearningRepository(uow) if uow else InMemoryLearningRepository(self.material_repository, self.run_service)
         graph_repository = SqlAlchemyGraphRepository(uow) if uow else InMemoryGraphRepository(self.material_repository, self.run_service)
         self.graph_service = GraphReconciliationService(graph_repository, self.material_repository, self.run_service)
-        from .material_deletion import MaterialDeletionService
+        from knowpath_backend.learning.materials.deletion import MaterialDeletionService
         self.material_deletion_service = MaterialDeletionService(graph_repository, space_service, self.graph_service, self.run_service)
         self.graph_queries = GraphQueryService(self.graph_service)
         self.space_service.graphs = self.graph_service
@@ -211,5 +211,5 @@ class LearningState:
         return result
 
     def changes_for(self, space_id: str) -> list[dict[str, Any]]:
-        from .timeline import changes_for
+        from knowpath_backend.learning.spaces.timeline import changes_for
         return changes_for(self, space_id)

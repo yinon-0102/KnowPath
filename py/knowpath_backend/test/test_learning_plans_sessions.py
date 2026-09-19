@@ -4,7 +4,7 @@ import pytest
 from sqlalchemy import create_engine
 
 from knowpath_backend.learning.persistence.db import init_db
-from knowpath_backend.learning.materials import InMemoryMaterialRepository
+from knowpath_backend.learning.materials.service import InMemoryMaterialRepository
 from knowpath_backend.learning.persistence.material_repository import SqlAlchemyMaterialRepository
 from knowpath_backend.learning.state import LearningState
 from knowpath_backend.learning.errors import DomainConflict
@@ -201,7 +201,7 @@ def test_http_datetime_event_idempotency_and_conflict_details():
 
 
 def test_planning_uses_actual_minutes_and_deadline(monkeypatch):
-    import knowpath_backend.learning.planner as planner
+    import knowpath_backend.learning.plans.service as planner
     monkeypatch.setattr(planner, "now", lambda: "2026-09-18T10:00:00+00:00")
     repo = InMemoryMaterialRepository()
     state, space_id, topics = seed(repo)
@@ -229,7 +229,7 @@ def test_plan_becomes_stale_after_profile_change(backend):
 
 
 def test_due_review_and_weak_topics_get_specific_tasks(monkeypatch):
-    import knowpath_backend.learning.planner as planner
+    import knowpath_backend.learning.plans.service as planner
     monkeypatch.setattr(planner, "now", lambda: "2026-09-18T10:00:00+00:00")
     repo = InMemoryMaterialRepository()
     state, space_id, topics = seed(repo)

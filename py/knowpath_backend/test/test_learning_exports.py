@@ -8,8 +8,8 @@ import pytest
 from sqlalchemy import create_engine, select, func
 from knowpath_backend.learning.persistence.db import init_db, RunRow
 from knowpath_backend.learning.errors import DomainConflict, DomainNotFound
-from knowpath_backend.learning.exports import ExportService
-from knowpath_backend.learning.materials import InMemoryMaterialRepository
+from knowpath_backend.learning.spaces.exports import ExportService
+from knowpath_backend.learning.materials.service import InMemoryMaterialRepository
 from knowpath_backend.learning.persistence.material_repository import SqlAlchemyMaterialRepository
 from knowpath_backend.learning.state import LearningState
 

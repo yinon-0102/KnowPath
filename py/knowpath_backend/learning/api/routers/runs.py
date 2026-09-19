@@ -10,8 +10,8 @@ from fastapi import Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from ...errors import DomainConflict, DomainNotFound
-from ...planner_schemas import EmptyObject
-from ...runs import stream_run_events
+from knowpath_backend.learning.plans.schemas import EmptyObject
+from knowpath_backend.learning.workers.runs import stream_run_events
 from ..contract import ContractRoute
 from ..dependencies import LearningStateDep
 from ..errors import _domain_error, _error_response

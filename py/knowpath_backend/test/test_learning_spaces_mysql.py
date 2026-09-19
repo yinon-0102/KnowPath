@@ -11,7 +11,7 @@ from sqlalchemy import create_engine, delete, select
 from knowpath_backend.learning.api import create_app
 from knowpath_backend.learning.persistence.db import (GraphRevisionRow, IdempotencyRow, LearningSpaceRow,
     MaterialRow, MaterialVersionRow, OutboxEventRow, RunRow, SourceChunkRow)
-from knowpath_backend.learning.materials import MaterialService
+from knowpath_backend.learning.materials.service import MaterialService
 from knowpath_backend.learning.persistence.material_repository import SqlAlchemyMaterialRepository
 
 

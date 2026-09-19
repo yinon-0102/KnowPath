@@ -6,8 +6,8 @@ safe when integration tests share a database with other jobs.
 """
 from fastapi.testclient import TestClient
 
-from knowpath_backend.learning.graph_worker import GraphWorker
-from knowpath_backend.learning.material_ingest_worker import MaterialParseWorker
+from knowpath_backend.learning.workers.graph import GraphWorker
+from knowpath_backend.learning.workers.material_ingest import MaterialParseWorker
 from knowpath_backend.test.test_learning_graph_worker import PreparedBackend
 
 

@@ -3,8 +3,8 @@ from datetime import datetime, timedelta, timezone
 import pytest
 from knowpath_backend.test.test_learning_material_deletion import workspace, seed
 from knowpath_backend.test.test_learning_state_persistence import FixedQuestions, FixedAnswer
-from knowpath_backend.learning.question_generation import QuestionGenerationError
-from knowpath_backend.learning.message_generation import MessageGenerationError
+from knowpath_backend.learning.assessments.generation import QuestionGenerationError
+from knowpath_backend.learning.conversations.generation import MessageGenerationError
 from knowpath_backend.learning.rag.retrieval import KeywordRetriever
 
 PAYLOAD = {'kind': 'diagnostic', 'question_count': 5, 'question_types': ['single_choice'],
@@ -21,7 +21,7 @@ def enqueue(state, space_id, kind, key='generation'):
 
 
 def worker(state, timestamp, **kwargs):
-    from knowpath_backend.learning.model_tasks import ModelTaskWorker
+    from knowpath_backend.learning.workers.model_tasks import ModelTaskWorker
     state.message_service.retriever = KeywordRetriever()
     return ModelTaskWorker(state.assessment_service, state.message_service, clock=lambda: timestamp, **kwargs)
 

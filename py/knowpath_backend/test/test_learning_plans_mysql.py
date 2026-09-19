@@ -122,7 +122,7 @@ def test_finish_duration_survives_mysql_fractional_second_rounding(plans_workspa
     with state.plan_sessions._tx():
         row = state.plan_sessions._find_session_sql(started["id"], lock=True)
         row.started_at = datetime(2026, 9, 18, 12, 0, 0)
-    monkeypatch.setattr("knowpath_backend.learning.planner.now", lambda: "2026-09-18T12:00:00.900000+00:00")
+    monkeypatch.setattr('knowpath_backend.learning.plans.service.now', lambda: "2026-09-18T12:00:00.900000+00:00")
     first = state.finish_session(started["id"])
     assert first["elapsed_seconds"] == 0
     assert factory().finish_session(started["id"]) == first

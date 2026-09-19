@@ -2,7 +2,7 @@ from knowpath_backend.test.material_upload_helpers import ParsedUploadClient
 import pytest
 
 from knowpath_backend.learning.api import create_app
-from knowpath_backend.learning.question_generation import QuestionGenerationError
+from knowpath_backend.learning.assessments.generation import QuestionGenerationError
 from knowpath_backend.test.test_learning_state_persistence import FixedQuestions
 
 
@@ -39,7 +39,7 @@ def test_failed_model_preserves_failed_run_and_replay(assessment_api):
     assessment = client.get(f"/api/v1/assessments/{response.json()['assessment_id']}").json()
     assert assessment["status"] == "generating"
     from datetime import datetime, timedelta, timezone
-    from knowpath_backend.learning.model_tasks import ModelTaskWorker
+    from knowpath_backend.learning.workers.model_tasks import ModelTaskWorker
     state = client.app.state.learning_state
     event = state.assessment_service.repository.records("outbox", event_type="assessment.generate", aggregate_id=response.json()["assessment_id"])[0]
     for seconds in (10, 30):

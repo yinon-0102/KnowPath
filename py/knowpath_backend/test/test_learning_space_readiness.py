@@ -1,6 +1,6 @@
 from fastapi.testclient import TestClient
 from knowpath_backend.learning.api import create_app
-from knowpath_backend.learning.materials import MaterialService, InMemoryMaterialRepository
+from knowpath_backend.learning.materials.service import MaterialService, InMemoryMaterialRepository
 
 
 def test_http_space_requires_published_snapshot_even_when_parsed():

@@ -6,9 +6,9 @@ from unittest.mock import Mock
 import pytest
 from sqlalchemy import create_engine
 
-from knowpath_backend.learning import materials
+from knowpath_backend.learning.materials import service as materials
 from knowpath_backend.learning.persistence.db import Base
-from knowpath_backend.learning.materials import (
+from knowpath_backend.learning.materials.service import (
     IdempotencyConflict, InMemoryMaterialRepository, MaterialParser,
     MaterialParseError, MaterialService, UnsupportedMaterial,
 )

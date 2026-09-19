@@ -12,7 +12,7 @@ from dotenv import load_dotenv
 
 from knowpath_backend.learning.persistence.db import create_db_engine
 from knowpath_backend.learning.persistence.material_repository import SqlAlchemyMaterialRepository
-from knowpath_backend.learning.spaces import topics_for_version
+from knowpath_backend.learning.spaces.service import topics_for_version
 from knowpath_backend.learning.rag.retrieval import RetrievalError, configured_vector_retriever
 
 

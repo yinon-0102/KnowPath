@@ -9,10 +9,10 @@ from fastapi import APIRouter
 from fastapi import Header, Query
 from fastapi.responses import JSONResponse
 
-from ...assessment_schemas import ResetState
-from ...correction_schemas import CreateCorrection, ConfirmCorrection
+from knowpath_backend.learning.assessments.schemas import ResetState
+from knowpath_backend.learning.knowledge.correction_schemas import CreateCorrection, ConfirmCorrection
 from ...errors import DomainConflict, DomainNotFound
-from ...knowledge_updates import ApplyKnowledgeUpdates
+from knowpath_backend.learning.knowledge.updates import ApplyKnowledgeUpdates
 from ...pagination import page_records
 from ..contract import ContractRoute
 from ..dependencies import LearningStateDep

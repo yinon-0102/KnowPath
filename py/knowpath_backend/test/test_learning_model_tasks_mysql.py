@@ -3,8 +3,8 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 import pytest
 from knowpath_backend.test.test_learning_state_persistence import workspace, FixedQuestions
-from knowpath_backend.learning.model_tasks import ModelTaskWorker
-from knowpath_backend.learning.question_generation import QuestionGenerationError
+from knowpath_backend.learning.workers.model_tasks import ModelTaskWorker
+from knowpath_backend.learning.assessments.generation import QuestionGenerationError
 from knowpath_backend.learning.rag.retrieval import KeywordRetriever
 
 

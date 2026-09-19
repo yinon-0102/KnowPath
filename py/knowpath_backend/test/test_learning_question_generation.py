@@ -5,7 +5,7 @@ from uuid import UUID
 import httpx
 import pytest
 from knowpath_backend.learning.config import LearningSettings
-from knowpath_backend.learning.question_generation import DashScopeQuestionGenerator, QuestionGenerationError, validate_questions
+from knowpath_backend.learning.assessments.generation import DashScopeQuestionGenerator, QuestionGenerationError, validate_questions
 
 @pytest.fixture
 def topics():

@@ -5,7 +5,7 @@ from time import monotonic
 
 import pytest
 
-from knowpath_backend.learning.model_tasks import ModelTaskWorker, timestamp
+from knowpath_backend.learning.workers.model_tasks import ModelTaskWorker, timestamp
 from knowpath_backend.test.test_learning_material_deletion import workspace, seed
 from knowpath_backend.test.test_learning_model_tasks import enqueue
 from knowpath_backend.test.test_learning_state_persistence import FixedQuestions, FixedAnswer
@@ -14,7 +14,7 @@ from knowpath_backend.learning.rag.retrieval import KeywordRetriever
 
 @pytest.mark.parametrize('kind', ['assessment', 'message'])
 def test_heartbeat_keeps_slow_generation_owned_beyond_original_lease(workspace, kind, monkeypatch):
-    from knowpath_backend.learning.model_tasks import ModelLease
+    from knowpath_backend.learning.workers.model_tasks import ModelLease
     state = workspace()
     _, _, space = seed(state)
     response, event = enqueue(state, space['id'], kind)
@@ -50,7 +50,7 @@ def test_heartbeat_keeps_slow_generation_owned_beyond_original_lease(workspace, 
 
 @pytest.mark.parametrize('change', ['expired', 'token', 'cancelled', 'deleted'])
 def test_heartbeat_never_revives_expired_or_lost_ownership(workspace, change):
-    from knowpath_backend.learning.model_tasks import ModelLease
+    from knowpath_backend.learning.workers.model_tasks import ModelLease
     from knowpath_backend.learning.errors import DomainNotFound
     from knowpath_backend.learning.persistence.learning_repository import TABLES
     from sqlalchemy import delete
@@ -116,7 +116,7 @@ def test_total_execution_limit_discards_late_success_and_preserves_safe_error(wo
 
 
 def test_renewal_only_locks_event_and_stops_at_total_budget(workspace, monkeypatch):
-    from knowpath_backend.learning.model_tasks import ModelLease
+    from knowpath_backend.learning.workers.model_tasks import ModelLease
     state = workspace()
     _, _, space = seed(state)
     _, event = enqueue(state, space['id'], 'assessment')
@@ -160,7 +160,7 @@ def test_renewal_only_locks_event_and_stops_at_total_budget(workspace, monkeypat
 
 
 def test_heartbeat_shutdown_is_bounded_and_a_blocked_tick_cannot_renew_after_stop(workspace, monkeypatch):
-    from knowpath_backend.learning.model_tasks import ModelLease
+    from knowpath_backend.learning.workers.model_tasks import ModelLease
     state = workspace()
     _, _, space = seed(state)
     _, event = enqueue(state, space['id'], 'assessment')
@@ -202,7 +202,7 @@ def test_invalid_execution_budget_is_rejected(workspace, value):
 
 
 def test_run_cancellation_stops_renewal_without_locking_run_in_event_transaction(workspace):
-    from knowpath_backend.learning.model_tasks import ModelLease
+    from knowpath_backend.learning.workers.model_tasks import ModelLease
     state = workspace()
     _, _, space = seed(state)
     response, event = enqueue(state, space['id'], 'assessment')
@@ -218,7 +218,7 @@ def test_run_cancellation_stops_renewal_without_locking_run_in_event_transaction
 
 @pytest.mark.parametrize('kind', ['assessment', 'message'])
 def test_heartbeat_observed_cancellation_settles_when_provider_returns(workspace, kind, monkeypatch):
-    from knowpath_backend.learning.model_tasks import ModelLease
+    from knowpath_backend.learning.workers.model_tasks import ModelLease
     state = workspace()
     _, _, space = seed(state)
     response, event = enqueue(state, space['id'], kind)
@@ -246,7 +246,7 @@ def test_heartbeat_observed_cancellation_settles_when_provider_returns(workspace
 
 @pytest.mark.parametrize('value', ['0', '3601', 'nan'])
 def test_cli_rejects_unbounded_execution_limit_before_opening_database(monkeypatch, value):
-    from knowpath_backend.learning import model_worker_cli as cli
+    from knowpath_backend.learning.workers import model_cli as cli
     monkeypatch.setattr(cli, 'create_db_engine', lambda: pytest.fail('invalid limits must not open a database'))
     with pytest.raises(SystemExit) as error:
         cli.main(['--once', '--max-execution-seconds', value])

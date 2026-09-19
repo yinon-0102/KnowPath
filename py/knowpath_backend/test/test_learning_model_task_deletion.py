@@ -8,7 +8,7 @@ from sqlalchemy import delete
 
 from knowpath_backend.learning.errors import DomainNotFound
 from knowpath_backend.learning.persistence.learning_repository import TABLES
-from knowpath_backend.learning.material_deletion import references
+from knowpath_backend.learning.materials.deletion import references
 from knowpath_backend.test.test_learning_material_deletion import workspace, seed, service
 from knowpath_backend.test.test_learning_model_tasks import enqueue, worker
 from knowpath_backend.test.test_learning_state_persistence import FixedQuestions, FixedAnswer
@@ -158,7 +158,7 @@ def test_delete_failure_rolls_back_model_job_cancellation(workspace, kind, owner
 
 @pytest.mark.parametrize('fails', [False, True])
 def test_model_worker_cli_closes_retriever_and_engine(monkeypatch, fails):
-    from knowpath_backend.learning import model_worker_cli as cli
+    from knowpath_backend.learning.workers import model_cli as cli
     calls = []
     engine = SimpleNamespace(dispose=lambda: calls.append('engine'))
     retriever = SimpleNamespace(close=lambda: calls.append('retriever'))

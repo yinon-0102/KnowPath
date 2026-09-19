@@ -10,7 +10,7 @@ from sqlalchemy import create_engine, delete, select
 from knowpath_backend.learning.api import create_app
 from knowpath_backend.learning.persistence.db import Base, IdempotencyRow, MaterialRow, MaterialVersionRow, SourceChunkRow, RunRow, OutboxEventRow
 from knowpath_backend.learning.errors import DomainConflict, DomainNotFound
-from knowpath_backend.learning.materials import InMemoryMaterialRepository, MaterialService
+from knowpath_backend.learning.materials.service import InMemoryMaterialRepository, MaterialService
 from knowpath_backend.learning.persistence.material_repository import SqlAlchemyMaterialRepository
 from knowpath_backend.learning.state import LearningState
 
@@ -203,7 +203,7 @@ def test_material_deletion_cancels_graph_work_and_tombstones_replay(graph_worksp
 
 def test_deleted_run_does_not_prevent_material_cleanup(graph_workspace):
     from knowpath_backend.learning.persistence.db import RunEventRow
-    from knowpath_backend.learning.material_deletion import MaterialDeletionWorker
+    from knowpath_backend.learning.materials.deletion import MaterialDeletionWorker
 
     factory, upload, _ = graph_workspace
     state = factory()
@@ -228,7 +228,7 @@ def test_deleted_run_does_not_prevent_material_cleanup(graph_workspace):
 
 
 def test_identical_versions_report_unchanged_nodes():
-    from knowpath_backend.learning.graph_reconciliation import compare_snapshots, extract_snapshot
+    from knowpath_backend.learning.knowledge.reconciliation import compare_snapshots, extract_snapshot
     state = LearningState()
     uploaded = state.material_service.create(filename="notes.md", content=b"# Topic\n\nAn assertion.", idempotency_key="unchanged")
     snapshot = extract_snapshot(uploaded.material.id, uploaded.version)
@@ -239,7 +239,7 @@ def test_identical_versions_report_unchanged_nodes():
 
 def test_snapshot_hash_and_conflicts_do_not_depend_on_database_row_order():
     from dataclasses import replace
-    from knowpath_backend.learning.graph_reconciliation import compare_snapshots, digest, extract_snapshot
+    from knowpath_backend.learning.knowledge.reconciliation import compare_snapshots, digest, extract_snapshot
     state = LearningState()
     uploaded = state.material_service.create(filename="ordered.md", content=b"# Functions\n\nFirst paragraph.\n\nSecond paragraph.\n\n# Parameters\n\nNamed values.", idempotency_key="ordered")
     before = extract_snapshot(uploaded.material.id, uploaded.version)

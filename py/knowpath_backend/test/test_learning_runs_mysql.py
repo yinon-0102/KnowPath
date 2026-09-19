@@ -14,7 +14,7 @@ from knowpath_backend.learning.api import create_app
 from knowpath_backend.learning.persistence.db import RunRow
 from knowpath_backend.learning.errors import DomainConflict
 from knowpath_backend.learning.persistence.run_repository import SqlAlchemyRunRepository
-from knowpath_backend.learning.runs import RunService
+from knowpath_backend.learning.workers.runs import RunService
 
 
 @pytest.mark.skipif(not os.getenv("LEARNING_TEST_MYSQL_URL"), reason="requires explicit MySQL test URL")

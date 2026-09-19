@@ -1,6 +1,6 @@
 from datetime import datetime, timedelta, timezone
 
-from knowpath_backend.learning.mastery import aggregate, MasteryPolicy
+from knowpath_backend.learning.assessments.mastery import aggregate, MasteryPolicy
 
 
 START = datetime(2026, 9, 1, tzinfo=timezone.utc)

@@ -3,7 +3,7 @@ import copy
 import pytest
 from fastapi.testclient import TestClient
 from knowpath_backend.learning.api import create_app
-from knowpath_backend.learning.assessments import revision
+from knowpath_backend.learning.assessments.service import revision
 from knowpath_backend.learning.errors import DomainConflict, DomainNotFound
 from knowpath_backend.test.test_learning_graph_reconciliation import graph_workspace, stage
 from knowpath_backend.test.test_learning_graph_worker import worker, event_id

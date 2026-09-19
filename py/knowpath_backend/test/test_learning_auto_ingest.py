@@ -6,7 +6,7 @@ from fastapi.testclient import TestClient
 
 from knowpath_backend.test.test_learning_ingestion import apps
 from knowpath_backend.test.test_learning_graph_worker import PreparedBackend
-from knowpath_backend.learning.graph_worker import GraphWorker
+from knowpath_backend.learning.workers.graph import GraphWorker
 
 
 def upload(client, *, key='auto-upload', content=b'# Notes\n\nUseful material.', auto=True):
@@ -15,7 +15,7 @@ def upload(client, *, key='auto-upload', content=b'# Notes\n\nUseful material.',
 
 
 def parse_worker(app, **kwargs):
-    from knowpath_backend.learning.material_ingest_worker import MaterialParseWorker
+    from knowpath_backend.learning.workers.material_ingest import MaterialParseWorker
     return MaterialParseWorker(app.state.learning_state.graph_service, **kwargs)
 
 
@@ -48,7 +48,7 @@ def test_default_upload_is_durable_queued_and_one_run_spans_both_stages(apps):
 
 
 def test_manual_upload_skips_parser_and_explicit_ingest_uses_saved_original(apps, monkeypatch):
-    from knowpath_backend.learning.materials import MaterialParser
+    from knowpath_backend.learning.materials.service import MaterialParser
     with monkeypatch.context() as patch:
         patch.setattr(MaterialParser, 'parse', lambda *a, **k: pytest.fail('upload must not parse'))
         with TestClient(apps()) as client:
@@ -100,7 +100,7 @@ def test_cancel_during_parse_does_not_commit_sources_or_enqueue_graph(apps):
     app = apps()
     with TestClient(app) as client:
         data = upload(client).json()
-    from knowpath_backend.learning.materials import MaterialParser
+    from knowpath_backend.learning.materials.service import MaterialParser
     state = app.state.learning_state
     class Cancelling(MaterialParser):
         def parse(self, *args, **kwargs):
@@ -148,7 +148,7 @@ def test_parse_transaction_failure_never_commits_chunks_without_graph_job(apps, 
 
 
 def test_old_upload_key_keeps_legacy_run_after_upgrade(apps):
-    from knowpath_backend.learning.materials import MaterialService
+    from knowpath_backend.learning.materials.service import MaterialService
     app = apps()
     state = app.state.learning_state
     original = MaterialService(state.material_repository).create(filename='notes.md', content=b'# Notes\n\nUseful material.', idempotency_key='auto-upload')
@@ -200,7 +200,7 @@ def test_old_version_failure_does_not_replace_current_or_unarchive_material(apps
 
 
 def test_deletion_during_parse_cannot_resurrect_original_or_sources(apps):
-    from knowpath_backend.learning.materials import MaterialParser
+    from knowpath_backend.learning.materials.service import MaterialParser
     app = apps()
     with TestClient(app) as client:
         data = upload(client).json()
@@ -234,7 +234,7 @@ def test_cancel_then_new_key_can_retry_before_old_lease_expires(apps):
 
 
 def test_transient_parse_failure_retries_only_after_backoff(apps):
-    from knowpath_backend.learning.materials import MaterialParser
+    from knowpath_backend.learning.materials.service import MaterialParser
     app = apps()
     with TestClient(app) as client:
         data = upload(client).json()
@@ -315,10 +315,10 @@ def test_oversized_upload_is_rejected_before_queuing(apps):
 
 def test_worker_cli_once_advances_one_durable_stage_per_invocation(tmp_path, monkeypatch):
     from sqlalchemy import create_engine
-    from knowpath_backend.learning import graph_worker_cli as cli
+    from knowpath_backend.learning.workers import graph_cli as cli
     from knowpath_backend.learning.api import create_app
     from knowpath_backend.learning.persistence.db import init_db
-    from knowpath_backend.learning.materials import MaterialService
+    from knowpath_backend.learning.materials.service import MaterialService
     from knowpath_backend.learning.persistence.material_repository import SqlAlchemyMaterialRepository
     engine = create_engine('sqlite+pysqlite:///' + (tmp_path / 'cli.db').as_posix())
     init_db(engine)

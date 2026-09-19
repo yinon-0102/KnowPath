@@ -6,7 +6,7 @@ from sqlalchemy import create_engine, update
 
 from knowpath_backend.learning.persistence.db import init_db, SessionRow, StudyTaskRow
 from knowpath_backend.learning.errors import DomainConflict
-from knowpath_backend.learning.materials import InMemoryMaterialRepository
+from knowpath_backend.learning.materials.service import InMemoryMaterialRepository
 from knowpath_backend.learning.persistence.material_repository import SqlAlchemyMaterialRepository
 from knowpath_backend.test.test_learning_plans_sessions import seed, backend
 
@@ -46,7 +46,7 @@ def test_deferred_prerequisite_rejects_impossible_replan(backend, monkeypatch):
 
 
 def test_due_mastered_topic_precedes_weak_topic(monkeypatch):
-    import knowpath_backend.learning.planner as planner
+    import knowpath_backend.learning.plans.service as planner
     monkeypatch.setattr(planner, "now", lambda: "2026-09-18T10:00:00+00:00")
     repo = InMemoryMaterialRepository()
     state, space_id, topics = seed(repo)

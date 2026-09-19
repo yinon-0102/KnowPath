@@ -8,7 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from knowpath_backend.learning.persistence.db import IdempotencyRow, MaterialRawRow, MaterialRow, MaterialVersionRow, SourceChunkRow
-from knowpath_backend.learning.materials import IdempotencyConflict, Material, MaterialNotFound, MaterialVersion, SourceChunk, parser_kind
+from knowpath_backend.learning.materials.service import IdempotencyConflict, Material, MaterialNotFound, MaterialVersion, SourceChunk, parser_kind
 from knowpath_backend.learning.persistence.unit_of_work import SqlAlchemyUnitOfWork
 
 

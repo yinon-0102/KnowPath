@@ -9,9 +9,9 @@ from starlette.exceptions import HTTPException
 
 from ..config import LearningSettings
 from ..errors import DomainConflict, DomainNotFound, EventHistoryExpired
-from ..message_generation import DashScopeAnswerGenerator
+from knowpath_backend.learning.conversations.generation import DashScopeAnswerGenerator
 from knowpath_backend.learning.providers.models import chat_model, ModelError
-from ..question_generation import DashScopeQuestionGenerator
+from knowpath_backend.learning.assessments.generation import DashScopeQuestionGenerator
 from .contract import error_response
 
 

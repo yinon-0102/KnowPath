@@ -2,7 +2,7 @@
 from copy import deepcopy
 
 import pytest
-from knowpath_backend.learning.graph_reconciliation import extract_snapshot
+from knowpath_backend.learning.knowledge.reconciliation import extract_snapshot
 from knowpath_backend.learning.state import LearningState
 
 
@@ -124,7 +124,7 @@ def test_publication_rejects_cycles_without_mutating_candidate_or_published_poin
 
 
 def test_relation_changes_identify_both_affected_topics():
-    from knowpath_backend.learning.graph_reconciliation import compare_snapshots
+    from knowpath_backend.learning.knowledge.reconciliation import compare_snapshots
     state, upload = workspace("# A\n\nBase.\n\n# B\n\nDependent.")
     old = extract_snapshot(upload.material.id, upload.version)
     new = deepcopy(old)
@@ -137,7 +137,7 @@ def test_scope_invalidates_persisted_plan_atomically(storage, tmp_path, monkeypa
     from sqlalchemy import create_engine
     from knowpath_backend.learning.persistence.db import init_db
     from knowpath_backend.learning.persistence.material_repository import SqlAlchemyMaterialRepository
-    from knowpath_backend.learning.spaces import now
+    from knowpath_backend.learning.spaces.service import now
     engine = create_engine(f"sqlite+pysqlite:///{tmp_path / 'scope.db'}") if storage == "sqlite" else None
     if engine:
         init_db(engine)
@@ -236,7 +236,7 @@ def test_keep_old_retains_relation_only_source_without_activating_new_claim(decl
 @pytest.mark.parametrize("failure", ["missing", "wrong_version"])
 def test_all_relation_kinds_reject_dangling_or_foreign_source_references(kind, failure):
     from knowpath_backend.learning.errors import DomainConflict
-    from knowpath_backend.learning.graph_relations import confirm_grounded_relations
+    from knowpath_backend.learning.knowledge.relations import confirm_grounded_relations
     state, upload = workspace("# A\n\nBase fact.\n\n# B\n\nDependent fact.")
     snapshot = extract_snapshot(upload.material.id, upload.version)
     relation = edge(snapshot, "A", "B")

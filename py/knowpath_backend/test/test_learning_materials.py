@@ -1,6 +1,6 @@
 import pytest
 
-from knowpath_backend.learning.materials import (
+from knowpath_backend.learning.materials.service import (
     IdempotencyConflict,
     InMemoryMaterialRepository,
     MaterialParser,

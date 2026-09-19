@@ -1,6 +1,6 @@
 """Learning-domain services for the KnowPath Web backend."""
 
-from .materials import (
+from knowpath_backend.learning.materials.service import (
     CreateMaterialResult,
     IdempotencyConflict,
     InMemoryMaterialRepository,

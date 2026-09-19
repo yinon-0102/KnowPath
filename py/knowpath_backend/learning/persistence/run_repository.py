@@ -10,7 +10,7 @@ from sqlalchemy import select
 
 from knowpath_backend.learning.persistence.db import RunEventRow, RunRow
 from knowpath_backend.learning.errors import DomainNotFound
-from knowpath_backend.learning.runs import ACTIVE_STATUSES, Run
+from knowpath_backend.learning.workers.runs import ACTIVE_STATUSES, Run
 from knowpath_backend.learning.persistence.unit_of_work import SqlAlchemyUnitOfWork
 
 

@@ -10,9 +10,9 @@ from fastapi import File, Form, Header, Query, UploadFile
 from fastapi.responses import JSONResponse
 
 from ...errors import DomainConflict, DomainNotFound
-from ...material_schemas import UpdateMaterial, DeleteMaterial
-from ...materials import IdempotencyConflict, MaterialError, MaterialNotFound, UnsupportedMaterial
-from ...materials import MaterialTooLarge
+from knowpath_backend.learning.materials.schemas import UpdateMaterial, DeleteMaterial
+from knowpath_backend.learning.materials.service import IdempotencyConflict, MaterialError, MaterialNotFound, UnsupportedMaterial
+from knowpath_backend.learning.materials.service import MaterialTooLarge
 from ...pagination import page_records
 from ..contract import ContractRoute
 from ..dependencies import IngestionServiceDep, LearningStateDep, MaterialServiceDep, SourceAccessDep

@@ -1,5 +1,5 @@
 from knowpath_backend.test.test_learning_state_persistence import FixedQuestions
-from knowpath_backend.learning.materials import InMemoryMaterialRepository, MaterialService
+from knowpath_backend.learning.materials.service import InMemoryMaterialRepository, MaterialService
 from knowpath_backend.learning.state import LearningState
 
 

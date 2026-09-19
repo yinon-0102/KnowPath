@@ -1,7 +1,7 @@
 """Explicit material index preparation never changes authoritative version pointers."""
 import importlib
 import pytest
-from knowpath_backend.learning.materials import MaterialService, InMemoryMaterialRepository
+from knowpath_backend.learning.materials.service import MaterialService, InMemoryMaterialRepository
 from knowpath_backend.learning.rag.retrieval import RetrievalError
 
 

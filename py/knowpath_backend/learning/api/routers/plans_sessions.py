@@ -9,7 +9,7 @@ from fastapi import Header
 from fastapi.responses import JSONResponse
 
 from ...errors import DomainConflict, DomainNotFound
-from ...planner_schemas import CreatePlan, UpdateTask, StartSession, SessionEvent, EmptyObject
+from knowpath_backend.learning.plans.schemas import CreatePlan, UpdateTask, StartSession, SessionEvent, EmptyObject
 from ..contract import ContractRoute
 from ..dependencies import LearningStateDep
 from ..errors import _domain_error, _error_response

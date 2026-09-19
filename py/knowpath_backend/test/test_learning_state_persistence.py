@@ -9,7 +9,7 @@ from sqlalchemy.pool import StaticPool
 
 from knowpath_backend.learning.persistence.db import StudyPlanRow, StudyTaskRow, SessionRow, SessionEventRow, init_db, OutboxEventRow, LearningMessageRow, ConversationRow, ExportRow, AttemptRow, EvidenceRow, AssessmentRow, LearnerStateRow, StateResetRow, LearningSpaceRow, IdempotencyRow, SourceChunkRow, MaterialVersionRow, MaterialRow, RunRow
 from knowpath_backend.learning.errors import DomainConflict
-from knowpath_backend.learning.materials import InMemoryMaterialRepository
+from knowpath_backend.learning.materials.service import InMemoryMaterialRepository
 from knowpath_backend.learning.persistence.material_repository import SqlAlchemyMaterialRepository
 from knowpath_backend.learning.state import LearningState
 
@@ -333,7 +333,7 @@ def test_due_review_preserves_score_and_historical_revision_is_stale(workspace, 
     answer(state, assessment, finalize=True)
     original = state.get_state(space_id)["items"][0]
     future = (datetime.fromisoformat(original["next_review_at"]) + timedelta(seconds=1)).isoformat()
-    monkeypatch.setattr("knowpath_backend.learning.assessments.now", lambda: future)
+    monkeypatch.setattr('knowpath_backend.learning.assessments.service.now', lambda: future)
     due = factory().get_state(space_id, status="needs_review")["items"][0]
     assert due["mastery_score"] == 1.0
     assert due["independent_evidence_count"] == 5
@@ -426,8 +426,8 @@ def test_first_family_score_survives_same_timestamp_later_submission(workspace, 
     factory, space_id, _, _ = workspace
     state = factory()
     descending = count(1000000, -1)
-    monkeypatch.setattr("knowpath_backend.learning.assessments.uid", lambda: str(UUID(int=next(descending))))
-    monkeypatch.setattr("knowpath_backend.learning.assessments.now", lambda: "2026-09-18T00:00:00+00:00")
+    monkeypatch.setattr('knowpath_backend.learning.assessments.service.uid', lambda: str(UUID(int=next(descending))))
+    monkeypatch.setattr('knowpath_backend.learning.assessments.service.now', lambda: "2026-09-18T00:00:00+00:00")
     first = create(state, space_id)
     state.record_attempt(first["id"], {"answers": [{"question_id": q["id"], "answer": "B", "expected_answer_revision": 0} for q in first["questions"]], "finalize": True}, idempotency_key="wrong-first")
     second = create(state, space_id, key="second")

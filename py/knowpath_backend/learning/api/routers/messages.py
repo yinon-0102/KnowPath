@@ -9,7 +9,7 @@ from fastapi import BackgroundTasks, Header
 from fastapi.responses import JSONResponse
 
 from ...errors import DomainConflict, DomainNotFound
-from ...message_schemas import SendMessage
+from knowpath_backend.learning.conversations.schemas import SendMessage
 from ..contract import ContractRoute
 from ..dependencies import LearningStateDep, SettingsDep
 from ..errors import _domain_error, validate_chat

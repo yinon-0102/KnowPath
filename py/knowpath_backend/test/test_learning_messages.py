@@ -104,7 +104,7 @@ def test_message_cancel_and_delete_ignore_late_output(workspace):
 
 def test_history_uses_submission_order_even_with_equal_database_timestamps(workspace, monkeypatch):
     from uuid import UUID
-    import knowpath_backend.learning.messages as module
+    import knowpath_backend.learning.conversations.service as module
     factory, space_id, _, _ = workspace
     state, generator = service(factory)
     ids = iter(str(UUID(int=n)) for n in (100, 90, 80, 70))

@@ -8,7 +8,7 @@ from fastapi import APIRouter
 from fastapi import BackgroundTasks, Header
 from fastapi.responses import JSONResponse
 
-from ...assessment_schemas import CreateAssessment, RecordAttempt, FinalizeAssessment, GradeReview
+from knowpath_backend.learning.assessments.schemas import CreateAssessment, RecordAttempt, FinalizeAssessment, GradeReview
 from ...errors import DomainConflict, DomainNotFound
 from ..contract import ContractRoute
 from ..dependencies import LearningStateDep, SettingsDep

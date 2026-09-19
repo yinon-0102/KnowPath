@@ -97,12 +97,12 @@ class Acceptance:
         from fastapi.testclient import TestClient
         from knowpath_backend.learning.api import create_app
         from knowpath_backend.learning.config import LearningSettings
-        from knowpath_backend.learning.materials import MaterialService
+        from knowpath_backend.learning.materials.service import MaterialService
         from knowpath_backend.learning.persistence.material_repository import SqlAlchemyMaterialRepository
-        from knowpath_backend.learning.graph_preparation import configured_graph_preparer
-        from knowpath_backend.learning.graph_worker import GraphWorker
-        from knowpath_backend.learning.material_ingest_worker import MaterialParseWorker
-        from knowpath_backend.learning.model_tasks import ModelTaskWorker
+        from knowpath_backend.learning.knowledge.preparation import configured_graph_preparer
+        from knowpath_backend.learning.workers.graph import GraphWorker
+        from knowpath_backend.learning.workers.material_ingest import MaterialParseWorker
+        from knowpath_backend.learning.workers.model_tasks import ModelTaskWorker
         from knowpath_backend.learning.startup import recover_legacy_runs
         from knowpath_backend.learning.health import report
 

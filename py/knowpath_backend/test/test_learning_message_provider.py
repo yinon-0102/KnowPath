@@ -4,7 +4,7 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 from knowpath_backend.learning.api import create_app
-from knowpath_backend.learning.message_generation import DashScopeAnswerGenerator, MessageGenerationError, validate_answer
+from knowpath_backend.learning.conversations.generation import DashScopeAnswerGenerator, MessageGenerationError, validate_answer
 from knowpath_backend.test.test_learning_messages import FixedAnswer
 
 

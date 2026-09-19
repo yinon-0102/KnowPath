@@ -5,9 +5,9 @@ from typing import Annotated
 from fastapi import Depends, Request
 
 from ..config import LearningSettings
-from ..ingestion import MaterialIngestionService
-from ..materials import MaterialService
-from ..source_access import SourceAccessService
+from knowpath_backend.learning.materials.ingestion import MaterialIngestionService
+from knowpath_backend.learning.materials.service import MaterialService
+from knowpath_backend.learning.materials.source_access import SourceAccessService
 from ..state import LearningState
 
 

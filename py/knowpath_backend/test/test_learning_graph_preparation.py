@@ -21,15 +21,15 @@ class GraphBackend:
 
 
 def test_prepare_writes_and_checks_vectors_and_both_conflict_sides():
-    from knowpath_backend.learning.graph_preparation import GraphPreparer
-    from knowpath_backend.learning.graph_worker import preparation_manifest
-    from knowpath_backend.learning.graph_reconciliation import digest
+    from knowpath_backend.learning.knowledge.preparation import GraphPreparer
+    from knowpath_backend.learning.workers.graph import preparation_manifest
+    from knowpath_backend.learning.knowledge.reconciliation import digest
     state = LearningState()
     old = state.material_service.create(filename="old.md", content=b"# Topic\n\nOld source.", idempotency_key="old")
     newer = state.material_service.create_version(material_id=old.material.id, filename="new.md", content=b"# Topic\n\nNew source.", idempotency_key="new")
     staged = state.graph_service.reconcile(old.material.id, {"version_id": newer.version.id, "expected_graph_version": 0}, "stage")
     revision = state.graph_service.repository.get_record("graph_revisions", staged["candidate_revision_id"])
-    from knowpath_backend.learning.spaces import topics_for_version
+    from knowpath_backend.learning.spaces.service import topics_for_version
     old_node = topics_for_version(old.material.id, old.version)[0]
     revision["diff"]["conflicts"] = [{"before": old_node}]
     manifest = preparation_manifest(revision)
@@ -59,9 +59,9 @@ def test_neo4j_preparation_is_idempotent_and_readback_verifies_sources():
     if not os.getenv("LEARNING_TEST_NEO4J_URI"):
         pytest.skip("requires explicit Neo4j test URI")
     from neo4j import GraphDatabase
-    from knowpath_backend.learning.graph_preparation import Neo4jGraphBackend
-    from knowpath_backend.learning.graph_worker import preparation_manifest
-    from knowpath_backend.learning.graph_reconciliation import digest
+    from knowpath_backend.learning.knowledge.preparation import Neo4jGraphBackend
+    from knowpath_backend.learning.workers.graph import preparation_manifest
+    from knowpath_backend.learning.knowledge.reconciliation import digest
     identifier = str(uuid4())
     snapshot = {"nodes": [{"id": "topic", "name": "Topic", "source_refs": [{"chunk_id": "chunk"}]}], "relations": []}
     manifest = preparation_manifest({"id": identifier, "snapshot": snapshot, "snapshot_hash": digest(snapshot), "base_graph_version": 0, "diff": {"conflicts": []}})
@@ -83,9 +83,9 @@ def test_neo4j_stores_versioned_relations_and_source_provenance():
     if not os.getenv("LEARNING_TEST_NEO4J_URI"):
         pytest.skip("requires explicit Neo4j test URI")
     from neo4j import GraphDatabase
-    from knowpath_backend.learning.graph_preparation import Neo4jGraphBackend
-    from knowpath_backend.learning.graph_worker import preparation_manifest
-    from knowpath_backend.learning.graph_reconciliation import digest
+    from knowpath_backend.learning.knowledge.preparation import Neo4jGraphBackend
+    from knowpath_backend.learning.workers.graph import preparation_manifest
+    from knowpath_backend.learning.knowledge.reconciliation import digest
     identifier = str(uuid4())
     nodes = [{"id": name, "name": name, "source_refs": [{"chunk_id":"chunk"}]} for name in ("first","second")]
     relations = [{"id": kind, "type":kind,"from_id":"first","to_id":"second","status":"pending",

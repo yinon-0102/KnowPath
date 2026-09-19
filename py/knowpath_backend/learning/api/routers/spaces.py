@@ -10,7 +10,7 @@ from fastapi.responses import JSONResponse
 
 from ...errors import DomainConflict, DomainNotFound
 from ...pagination import page_records
-from ...space_schemas import CreateSpace, UpdateSpace, SetScope, UpdateProfile, DeleteSpace
+from knowpath_backend.learning.spaces.schemas import CreateSpace, UpdateSpace, SetScope, UpdateProfile, DeleteSpace
 from ..contract import ContractRoute
 from ..dependencies import LearningStateDep
 from ..errors import _domain_error
@@ -64,7 +64,7 @@ def set_learning_scope(state: LearningStateDep, space_id: str, payload: SetScope
 def get_learning_profile(state: LearningStateDep, space_id: str) -> JSONResponse:
     try:
         space = state.get_space(space_id)
-        from ...profile_candidates import candidates_for
+        from knowpath_backend.learning.spaces.profile_candidates import candidates_for
         return JSONResponse(status_code=200, content={"profile": space["profile"], "profile_version": space["profile_version"],
             "candidates": candidates_for(state.assessment_service.repository, space_id)})
     except DomainNotFound as exc:

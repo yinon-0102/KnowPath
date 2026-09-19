@@ -15,7 +15,7 @@ class PreparedBackend:
 
 
 def worker(state, backend=None, **kwargs):
-    from knowpath_backend.learning.graph_worker import GraphWorker
+    from knowpath_backend.learning.workers.graph import GraphWorker
     return GraphWorker(state.graph_service, backend or PreparedBackend(), **kwargs)
 
 
@@ -224,7 +224,7 @@ def test_complete_pipeline_with_real_graph_and_vector_stores(graph_workspace):
         pytest.skip("requires explicit Neo4j and Qdrant test endpoints")
     from neo4j import GraphDatabase
     from qdrant_client import QdrantClient
-    from knowpath_backend.learning.graph_preparation import GraphPreparer, Neo4jGraphBackend
+    from knowpath_backend.learning.knowledge.preparation import GraphPreparer, Neo4jGraphBackend
     from knowpath_backend.learning.rag.retrieval import VectorRetriever, QdrantVectorBackend
     from knowpath_backend.test.test_learning_graph_preparation import Embedder
     factory, upload, label = graph_workspace

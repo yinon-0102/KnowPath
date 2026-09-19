@@ -4,7 +4,7 @@ import pytest
 from sqlalchemy import create_engine
 from knowpath_backend.learning.persistence.db import init_db
 from knowpath_backend.learning.errors import DomainConflict
-from knowpath_backend.learning.materials import InMemoryMaterialRepository
+from knowpath_backend.learning.materials.service import InMemoryMaterialRepository
 from knowpath_backend.learning.persistence.material_repository import SqlAlchemyMaterialRepository
 from knowpath_backend.learning.state import LearningState
 from knowpath_backend.test.test_learning_state_persistence import FixedQuestions, create
@@ -22,7 +22,7 @@ def workspace(request, tmp_path):
         engine.dispose()
 
 def service(state):
-    from knowpath_backend.learning.material_deletion import MaterialDeletionService
+    from knowpath_backend.learning.materials.deletion import MaterialDeletionService
     return MaterialDeletionService(state.graph_service.repository, state.space_service, state.graph_service, state.run_service)
 
 def seed(state):
@@ -81,7 +81,7 @@ def test_delete_rejects_stale_version_and_strict_confirmation(workspace):
     assert state.material_repository.get_material(first.id)
 
 def test_outbox_retry_survives_restart_and_does_not_succeed_on_external_failure(workspace):
-    from knowpath_backend.learning.material_deletion import MaterialDeletionWorker
+    from knowpath_backend.learning.materials.deletion import MaterialDeletionWorker
     state = workspace()
     first, _, _ = seed(state)
     response = delete(state, first.id)
@@ -121,7 +121,7 @@ def test_failure_rolls_back_material_and_owned_learning_rows(workspace, monkeypa
 def test_missing_run_does_not_block_external_cleanup_or_next_job(workspace, missing_when):
     from sqlalchemy import delete as sql_delete
     from knowpath_backend.learning.persistence.db import RunRow, RunEventRow
-    from knowpath_backend.learning.material_deletion import MaterialDeletionWorker
+    from knowpath_backend.learning.materials.deletion import MaterialDeletionWorker
 
     state = workspace()
     first, second, _ = seed(state)
@@ -179,8 +179,8 @@ def test_unrelated_questions_and_evidence_survive_cascade(workspace):
 def test_preparer_cannot_write_after_material_erasure():
     from qdrant_client import QdrantClient
     from knowpath_backend.learning.errors import DomainNotFound
-    from knowpath_backend.learning.graph_preparation import GraphPreparer
-    from knowpath_backend.learning.graph_worker import preparation_manifest
+    from knowpath_backend.learning.knowledge.preparation import GraphPreparer
+    from knowpath_backend.learning.workers.graph import preparation_manifest
     from knowpath_backend.learning.rag.retrieval import VectorRetriever, QdrantVectorBackend
     from knowpath_backend.test.test_learning_graph_preparation import Embedder, GraphBackend
     state = LearningState()
@@ -206,7 +206,7 @@ def test_preparer_cannot_write_after_material_erasure():
 def test_external_cleaner_erases_only_target_material_across_profiles():
     from types import SimpleNamespace
     from qdrant_client import QdrantClient, models
-    from knowpath_backend.learning.material_deletion import ExternalMaterialCleaner
+    from knowpath_backend.learning.materials.deletion import ExternalMaterialCleaner
     from knowpath_backend.learning.rag.retrieval import QdrantVectorBackend
     client = QdrantClient(':memory:')
     backend = QdrantVectorBackend(client, collection_prefix='fixture_erasure')
@@ -257,7 +257,7 @@ def test_late_question_generator_cannot_restore_erased_sources(workspace):
 
 def test_partial_preparation_destination_is_durable_for_later_erasure(workspace):
     from types import SimpleNamespace
-    from knowpath_backend.learning.graph_worker import GraphWorker
+    from knowpath_backend.learning.workers.graph import GraphWorker
     state = workspace()
     first, _, _ = seed(state)
     staged = state.graph_service.reconcile(first.id, {'version_id': first.current_version_id, 'expected_graph_version': 0}, 'stage')
@@ -275,7 +275,7 @@ def test_partial_preparation_destination_is_durable_for_later_erasure(workspace)
 
 
 def test_cancelled_run_still_finishes_irreversible_cleanup(workspace):
-    from knowpath_backend.learning.material_deletion import MaterialDeletionWorker
+    from knowpath_backend.learning.materials.deletion import MaterialDeletionWorker
     state = workspace()
     first, _, _ = seed(state)
     response = delete(state, first.id)
@@ -297,10 +297,10 @@ def test_neo4j_cleaner_is_idempotent_and_preserves_another_fixture_revision():
     from uuid import uuid4
     from neo4j import GraphDatabase
     from qdrant_client import QdrantClient
-    from knowpath_backend.learning.graph_preparation import Neo4jGraphBackend
-    from knowpath_backend.learning.graph_worker import preparation_manifest
-    from knowpath_backend.learning.graph_reconciliation import digest
-    from knowpath_backend.learning.material_deletion import ExternalMaterialCleaner
+    from knowpath_backend.learning.knowledge.preparation import Neo4jGraphBackend
+    from knowpath_backend.learning.workers.graph import preparation_manifest
+    from knowpath_backend.learning.knowledge.reconciliation import digest
+    from knowpath_backend.learning.materials.deletion import ExternalMaterialCleaner
     from knowpath_backend.learning.rag.retrieval import QdrantVectorBackend
     if not os.getenv('LEARNING_TEST_NEO4J_URI'):
         pytest.skip('requires explicit Neo4j test URI')
