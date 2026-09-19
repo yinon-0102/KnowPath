@@ -9,7 +9,7 @@ from alembic.autogenerate import compare_metadata
 from alembic.config import Config
 from alembic.migration import MigrationContext
 
-from knowpath_backend.learning.db import Base
+from knowpath_backend.learning.persistence.db import Base
 
 
 @pytest.mark.parametrize("environment_override", [False, True])

@@ -98,7 +98,7 @@ class Acceptance:
         from knowpath_backend.learning.api import create_app
         from knowpath_backend.learning.config import LearningSettings
         from knowpath_backend.learning.materials import MaterialService
-        from knowpath_backend.learning.repositories import SqlAlchemyMaterialRepository
+        from knowpath_backend.learning.persistence.material_repository import SqlAlchemyMaterialRepository
         from knowpath_backend.learning.graph_preparation import configured_graph_preparer
         from knowpath_backend.learning.graph_worker import GraphWorker
         from knowpath_backend.learning.material_ingest_worker import MaterialParseWorker

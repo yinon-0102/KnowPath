@@ -11,8 +11,8 @@ from ..ingestion import MaterialIngestionService
 from ..materials import InMemoryMaterialRepository, MaterialService
 from ..message_generation import DashScopeAnswerGenerator
 from ..question_generation import DashScopeQuestionGenerator
-from ..repositories import SqlAlchemyMaterialRepository
-from ..run_repository import SqlAlchemyRunRepository
+from knowpath_backend.learning.persistence.material_repository import SqlAlchemyMaterialRepository
+from knowpath_backend.learning.persistence.run_repository import SqlAlchemyRunRepository
 from ..runs import RunService
 from ..source_access import SourceAccessService
 from ..state import LearningState

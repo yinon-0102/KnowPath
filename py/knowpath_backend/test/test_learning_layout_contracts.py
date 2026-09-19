@@ -11,7 +11,7 @@ from sqlalchemy.schema import CreateIndex, CreateTable
 from knowpath_backend.learning.api import create_app
 from knowpath_backend.learning.api.contract import ContractRoute
 from knowpath_backend.learning.config import LearningSettings
-from knowpath_backend.learning.db import Base
+from knowpath_backend.learning.persistence.db import Base
 from knowpath_backend.learning.rag.retrieval import KeywordRetriever
 
 

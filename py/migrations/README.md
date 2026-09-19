@@ -1,6 +1,6 @@
 # Database migrations
 
-The schema is defined in `knowpath_backend.learning.db`. From `KnowPath/py/`,
+The schema is defined in `knowpath_backend.learning.persistence.db`. From `KnowPath/py/`,
 configure `DATABASE_URL` in `.env`, start MySQL, then run:
 
 ```powershell

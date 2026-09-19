@@ -6,7 +6,7 @@ from alembic import context
 from dotenv import load_dotenv
 from sqlalchemy import engine_from_config, pool
 
-from knowpath_backend.learning.db import Base
+from knowpath_backend.learning.persistence.db import Base
 
 config = context.config
 backend = Path(config.config_file_name).resolve().parent if config.config_file_name else Path(__file__).resolve().parents[1]

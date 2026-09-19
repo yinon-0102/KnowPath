@@ -8,10 +8,10 @@ from typing import Callable
 
 from sqlalchemy import select
 
-from .db import RunEventRow, RunRow
-from .errors import DomainNotFound
-from .runs import ACTIVE_STATUSES, Run
-from .unit_of_work import SqlAlchemyUnitOfWork
+from knowpath_backend.learning.persistence.db import RunEventRow, RunRow
+from knowpath_backend.learning.errors import DomainNotFound
+from knowpath_backend.learning.runs import ACTIVE_STATUSES, Run
+from knowpath_backend.learning.persistence.unit_of_work import SqlAlchemyUnitOfWork
 
 
 def _iso(value: datetime | None) -> str | None:

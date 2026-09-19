@@ -124,8 +124,8 @@ def test_api_restart_keeps_durable_ingestion_but_fails_ephemeral_work(graph_work
     # Importing the entrypoint must not recover jobs in a configured shared DB.
     monkeypatch.setenv('LEARNING_PERSISTENCE', 'memory')
     import knowpath_backend.learning.main as entrypoint
-    import knowpath_backend.learning.db as database
-    from knowpath_backend.learning.run_repository import SqlAlchemyRunRepository
+    import knowpath_backend.learning.persistence.db as database
+    from knowpath_backend.learning.persistence.run_repository import SqlAlchemyRunRepository
     # Exercise production startup, restricted to this fixture's two Runs.
     monkeypatch.setattr(SqlAlchemyRunRepository, 'active_ids',
                         lambda self: [staged['run_id'], ephemeral['id']])

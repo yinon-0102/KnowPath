@@ -7,7 +7,7 @@ import pytest
 from sqlalchemy import delete
 
 from knowpath_backend.learning.errors import DomainNotFound
-from knowpath_backend.learning.learning_repository import TABLES
+from knowpath_backend.learning.persistence.learning_repository import TABLES
 from knowpath_backend.learning.material_deletion import references
 from knowpath_backend.test.test_learning_material_deletion import workspace, seed, service
 from knowpath_backend.test.test_learning_model_tasks import enqueue, worker
@@ -122,7 +122,7 @@ def test_orphaned_model_event_is_settled_without_calling_provider(workspace, kin
                 state.material_repository.assessment_data[table].pop(event['aggregate_id'])
         else:
             if hasattr(repo, 'unit_of_work'):
-                from knowpath_backend.learning.db import RunRow, RunEventRow
+                from knowpath_backend.learning.persistence.db import RunRow, RunEventRow
                 with repo.unit_of_work.session() as session:
                     session.execute(delete(RunEventRow).where(RunEventRow.run_id == response['run_id']))
                     session.execute(delete(RunRow).where(RunRow.id == response['run_id']))

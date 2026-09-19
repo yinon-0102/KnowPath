@@ -8,9 +8,9 @@ from uuid import uuid4
 
 from sqlalchemy import delete, select
 from .assessments import revision
-from .db import ExportRow, IdempotencyRow
+from knowpath_backend.learning.persistence.db import ExportRow, IdempotencyRow
 from .errors import DomainConflict, DomainNotFound
-from .learning_repository import TABLES
+from knowpath_backend.learning.persistence.learning_repository import TABLES
 from .mastery import aggregate
 from .material_schemas import DeleteMaterial
 from .model_tasks import EVENTS as MODEL_EVENTS

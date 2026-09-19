@@ -1,6 +1,6 @@
 """CLI entry point for initializing the configured learning database."""
 
-from .db import create_db_engine, init_db
+from knowpath_backend.learning.persistence.db import create_db_engine, init_db
 
 
 def main() -> None:

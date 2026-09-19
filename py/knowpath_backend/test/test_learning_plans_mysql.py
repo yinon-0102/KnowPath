@@ -5,7 +5,7 @@ from threading import Event
 import pytest
 from sqlalchemy import delete, select
 
-from knowpath_backend.learning.db import StudyPlanRow, StudyTaskRow, SessionRow, SessionEventRow
+from knowpath_backend.learning.persistence.db import StudyPlanRow, StudyTaskRow, SessionRow, SessionEventRow
 from knowpath_backend.learning.errors import DomainConflict
 from knowpath_backend.test.test_learning_state_persistence import workspace, create, answer
 

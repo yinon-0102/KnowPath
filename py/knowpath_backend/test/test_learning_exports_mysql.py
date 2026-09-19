@@ -5,7 +5,7 @@ from threading import Event
 import pytest
 from sqlalchemy import delete
 
-from knowpath_backend.learning.db import ExportRow, IdempotencyRow
+from knowpath_backend.learning.persistence.db import ExportRow, IdempotencyRow
 from knowpath_backend.test.test_learning_plans_mysql import plans_workspace
 from knowpath_backend.test.test_learning_state_persistence import workspace
 

@@ -10,7 +10,7 @@ from zipfile import ZIP_DEFLATED, ZipFile
 
 from sqlalchemy import delete
 
-from .db import ExportRow
+from knowpath_backend.learning.persistence.db import ExportRow
 from .errors import DomainConflict, DomainNotFound
 from .spaces import SpaceService
 

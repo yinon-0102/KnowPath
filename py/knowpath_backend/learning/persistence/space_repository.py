@@ -6,8 +6,8 @@ from datetime import datetime, timezone
 
 from sqlalchemy import select
 
-from .db import IdempotencyRow, LearningSpaceRow
-from .errors import DomainConflict, DomainNotFound
+from knowpath_backend.learning.persistence.db import IdempotencyRow, LearningSpaceRow
+from knowpath_backend.learning.errors import DomainConflict, DomainNotFound
 
 
 FIELDS = ("id", "name", "status", "goal", "target_date", "weekly_minutes", "bindings",

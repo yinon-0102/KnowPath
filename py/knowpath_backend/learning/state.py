@@ -9,10 +9,10 @@ from .materials import InMemoryMaterialRepository, MaterialRepository, MaterialS
 from .errors import DomainConflict, DomainNotFound
 from .runs import RunService
 from .spaces import SpaceService, topics_for_version
-from .space_repository import InMemorySpaceRepository, SqlAlchemySpaceRepository
-from .learning_repository import InMemoryLearningRepository, SqlAlchemyLearningRepository
+from knowpath_backend.learning.persistence.space_repository import InMemorySpaceRepository, SqlAlchemySpaceRepository
+from knowpath_backend.learning.persistence.learning_repository import InMemoryLearningRepository, SqlAlchemyLearningRepository
 from .assessments import AssessmentService
-from .run_repository import SqlAlchemyRunRepository
+from knowpath_backend.learning.persistence.run_repository import SqlAlchemyRunRepository
 from .planner import PlanSessionService
 from .exports import ExportService
 from .space_deletion import SpaceDeletionService
@@ -21,7 +21,7 @@ from .graph_reconciliation import GraphReconciliationService
 from .corrections import CorrectionService
 from .knowledge_updates import KnowledgeUpdateService
 from .graph_queries import GraphQueryService
-from .graph_repository import InMemoryGraphRepository, SqlAlchemyGraphRepository
+from knowpath_backend.learning.persistence.graph_repository import InMemoryGraphRepository, SqlAlchemyGraphRepository
 
 
 

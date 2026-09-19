@@ -6,12 +6,12 @@ import time
 
 from dotenv import load_dotenv
 
-from .db import create_db_engine
+from knowpath_backend.learning.persistence.db import create_db_engine
 from .graph_preparation import configured_graph_preparer
 from .graph_worker import GraphWorker
 from .material_ingest_worker import MaterialParseWorker
 from .material_deletion import MaterialDeletionService, MaterialDeletionWorker, ExternalMaterialCleaner
-from .repositories import SqlAlchemyMaterialRepository
+from knowpath_backend.learning.persistence.material_repository import SqlAlchemyMaterialRepository
 from .state import LearningState
 
 

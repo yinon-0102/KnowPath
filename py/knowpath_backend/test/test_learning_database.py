@@ -1,9 +1,9 @@
 from sqlalchemy import create_engine, inspect
 from sqlalchemy.pool import StaticPool
 
-from knowpath_backend.learning.db import Base, DatabaseSettings, init_db
+from knowpath_backend.learning.persistence.db import Base, DatabaseSettings, init_db
 from knowpath_backend.learning.materials import MaterialService
-from knowpath_backend.learning.repositories import SqlAlchemyMaterialRepository
+from knowpath_backend.learning.persistence.material_repository import SqlAlchemyMaterialRepository
 
 
 def test_database_schema_creates_core_learning_tables():

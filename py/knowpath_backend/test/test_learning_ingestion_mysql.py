@@ -10,10 +10,10 @@ from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, delete, select
 
 from knowpath_backend.learning.api import create_app
-from knowpath_backend.learning.db import (GraphRevisionRow, IdempotencyRow, MaterialRow,
+from knowpath_backend.learning.persistence.db import (GraphRevisionRow, IdempotencyRow, MaterialRow,
     MaterialVersionRow, OutboxEventRow, RunRow, SourceChunkRow)
 from knowpath_backend.learning.materials import MaterialService
-from knowpath_backend.learning.repositories import SqlAlchemyMaterialRepository
+from knowpath_backend.learning.persistence.material_repository import SqlAlchemyMaterialRepository
 from knowpath_backend.test.material_upload_helpers import complete_upload
 
 

@@ -366,7 +366,7 @@ Qdrant 通过独立的 `QdrantVectorBackend` 接入，不依赖保留在通用 M
 
 Qdrant collection 保存资料片段向量，以及 material_id/chunk_id/material_version_id/graph_version/topic_id/content_hash/embedding_model/embedding_profile 等 payload 过滤字段；空间范围由服务解析为允许的版本与主题，正文及权威来源从 MySQL 读取。题目答案键不进入通用向量索引。Embedding 模型与向量库是不同组件，首版固定使用 DashScope `text-embedding-v3`、1024 维和 Cosine 距离；更换模型必须重建 Qdrant collection，不能混用向量空间。当前 collection 名包含模型配置哈希，以区分向量空间；备份与恢复策略仍需按部署场景验证。
 
-以下为领域设计中的逻辑集合，实际表名和 JSON 聚合边界以 `learning/db.py` 与 Alembic 迁移为准。MySQL 逻辑集合：`materials/material_versions/chunks`、`graph_snapshots/graph_change_events`、`learning_spaces/space_material_bindings/profiles/scopes`、`assessments/questions/submissions/grades/evidence`、`learner_states/plans/plan_tasks/sessions`、`runs/run_events/change_events/idempotency_keys/outbox_events`。Neo4j 实现 MaterialVersion、TopicRevision、SourceChunkRef 等节点及其关系，设置业务 ID 唯一约束，查询必须限定资料/图谱版本。题目答案键和内部评分标准不进入公共 DTO 或通用对话索引。
+以下为领域设计中的逻辑集合，实际表名和 JSON 聚合边界以 `learning/persistence/db.py` 与 Alembic 迁移为准。MySQL 逻辑集合：`materials/material_versions/chunks`、`graph_snapshots/graph_change_events`、`learning_spaces/space_material_bindings/profiles/scopes`、`assessments/questions/submissions/grades/evidence`、`learner_states/plans/plan_tasks/sessions`、`runs/run_events/change_events/idempotency_keys/outbox_events`。Neo4j 实现 MaterialVersion、TopicRevision、SourceChunkRef 等节点及其关系，设置业务 ID 唯一约束，查询必须限定资料/图谱版本。题目答案键和内部评分标准不进入公共 DTO 或通用对话索引。
 
 跨存储采用 MySQL outbox 事件和幂等 worker：先登记待处理版本与事件，再写 Neo4j 和向量库，以稳定对象 ID 去重；全部准备完成才发布 MySQL 版本指针。读请求固定到已发布版本；失败保留旧版并重试，禁止半成品进入出题。MySQL 保存可重放的图谱变更事件以便恢复。删除先写不可读标记，再清除图谱、向量和文件，全部成功后标记清除完成。无跨库分布式事务，不把失败后的部分清除报告为成功。
 

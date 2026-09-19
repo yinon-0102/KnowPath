@@ -5,10 +5,10 @@ from datetime import datetime, timedelta, timezone
 import pytest
 from sqlalchemy import create_engine
 
-from knowpath_backend.learning.db import init_db
+from knowpath_backend.learning.persistence.db import init_db
 from knowpath_backend.learning.errors import DomainConflict, EventHistoryExpired
 from knowpath_backend.learning.runs import InMemoryRunRepository, RunService, stream_run_events
-from knowpath_backend.learning.run_repository import SqlAlchemyRunRepository
+from knowpath_backend.learning.persistence.run_repository import SqlAlchemyRunRepository
 
 
 @pytest.fixture(params=["memory", "sql"])

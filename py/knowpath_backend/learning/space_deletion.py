@@ -1,11 +1,11 @@
 """Confirmed, atomic removal of a space's owned learning records."""
 from sqlalchemy import delete, select, or_
 
-from .db import (ExportRow, KnowledgeCorrectionRow, OutboxEventRow, IdempotencyRow,
+from knowpath_backend.learning.persistence.db import (ExportRow, KnowledgeCorrectionRow, OutboxEventRow, IdempotencyRow,
                  RunRow, RunEventRow)
 from .errors import DomainConflict
 from .model_tasks import EVENTS as MODEL_EVENTS
-from .learning_repository import TABLES
+from knowpath_backend.learning.persistence.learning_repository import TABLES
 from .space_schemas import DeleteSpace
 from .spaces import SpaceService
 

@@ -8,9 +8,9 @@ from uuid import uuid4
 
 from sqlalchemy import select, exists
 
-from .db import AssessmentRow, AttemptRow, EvidenceRow, LearnerStateRow, StateResetRow, IdempotencyRow, StudyPlanRow, StudyTaskRow, SessionRow, SessionEventRow, ConversationRow, LearningMessageRow, GraphRevisionRow, OutboxEventRow, KnowledgeCorrectionRow
-from .errors import DomainConflict, DomainNotFound
-from .space_repository import InMemorySpaceRepository, SqlAlchemySpaceRepository
+from knowpath_backend.learning.persistence.db import AssessmentRow, AttemptRow, EvidenceRow, LearnerStateRow, StateResetRow, IdempotencyRow, StudyPlanRow, StudyTaskRow, SessionRow, SessionEventRow, ConversationRow, LearningMessageRow, GraphRevisionRow, OutboxEventRow, KnowledgeCorrectionRow
+from knowpath_backend.learning.errors import DomainConflict, DomainNotFound
+from knowpath_backend.learning.persistence.space_repository import InMemorySpaceRepository, SqlAlchemySpaceRepository
 
 
 TABLES = {"assessments": AssessmentRow, "attempts": AttemptRow, "evidence": EvidenceRow,

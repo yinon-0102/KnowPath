@@ -3,9 +3,9 @@ from datetime import datetime, timezone, timedelta
 import pytest
 from sqlalchemy import create_engine
 
-from knowpath_backend.learning.db import init_db
+from knowpath_backend.learning.persistence.db import init_db
 from knowpath_backend.learning.materials import InMemoryMaterialRepository
-from knowpath_backend.learning.repositories import SqlAlchemyMaterialRepository
+from knowpath_backend.learning.persistence.material_repository import SqlAlchemyMaterialRepository
 from knowpath_backend.learning.state import LearningState
 from knowpath_backend.learning.errors import DomainConflict
 

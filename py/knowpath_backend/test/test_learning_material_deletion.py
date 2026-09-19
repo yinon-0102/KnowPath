@@ -2,10 +2,10 @@
 from datetime import datetime, timedelta, timezone
 import pytest
 from sqlalchemy import create_engine
-from knowpath_backend.learning.db import init_db
+from knowpath_backend.learning.persistence.db import init_db
 from knowpath_backend.learning.errors import DomainConflict
 from knowpath_backend.learning.materials import InMemoryMaterialRepository
-from knowpath_backend.learning.repositories import SqlAlchemyMaterialRepository
+from knowpath_backend.learning.persistence.material_repository import SqlAlchemyMaterialRepository
 from knowpath_backend.learning.state import LearningState
 from knowpath_backend.test.test_learning_state_persistence import FixedQuestions, create
 
@@ -120,7 +120,7 @@ def test_failure_rolls_back_material_and_owned_learning_rows(workspace, monkeypa
 @pytest.mark.parametrize('missing_when', ['before_claim', 'during_cleanup'])
 def test_missing_run_does_not_block_external_cleanup_or_next_job(workspace, missing_when):
     from sqlalchemy import delete as sql_delete
-    from knowpath_backend.learning.db import RunRow, RunEventRow
+    from knowpath_backend.learning.persistence.db import RunRow, RunEventRow
     from knowpath_backend.learning.material_deletion import MaterialDeletionWorker
 
     state = workspace()

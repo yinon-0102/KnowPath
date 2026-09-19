@@ -317,9 +317,9 @@ def test_worker_cli_once_advances_one_durable_stage_per_invocation(tmp_path, mon
     from sqlalchemy import create_engine
     from knowpath_backend.learning import graph_worker_cli as cli
     from knowpath_backend.learning.api import create_app
-    from knowpath_backend.learning.db import init_db
+    from knowpath_backend.learning.persistence.db import init_db
     from knowpath_backend.learning.materials import MaterialService
-    from knowpath_backend.learning.repositories import SqlAlchemyMaterialRepository
+    from knowpath_backend.learning.persistence.material_repository import SqlAlchemyMaterialRepository
     engine = create_engine('sqlite+pysqlite:///' + (tmp_path / 'cli.db').as_posix())
     init_db(engine)
     app = create_app(MaterialService(SqlAlchemyMaterialRepository(engine)))

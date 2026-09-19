@@ -2,9 +2,9 @@
 import copy
 from datetime import datetime, timezone
 from sqlalchemy import delete, select
-from .db import GraphRevisionRow, IdempotencyRow, OutboxEventRow, MaterialVersionRow
-from .errors import DomainConflict
-from .learning_repository import InMemoryLearningRepository, SqlAlchemyLearningRepository
+from knowpath_backend.learning.persistence.db import GraphRevisionRow, IdempotencyRow, OutboxEventRow, MaterialVersionRow
+from knowpath_backend.learning.errors import DomainConflict
+from knowpath_backend.learning.persistence.learning_repository import InMemoryLearningRepository, SqlAlchemyLearningRepository
 
 
 class InMemoryGraphRepository(InMemoryLearningRepository):

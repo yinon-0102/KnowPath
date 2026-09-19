@@ -52,7 +52,7 @@ def test_heartbeat_keeps_slow_generation_owned_beyond_original_lease(workspace, 
 def test_heartbeat_never_revives_expired_or_lost_ownership(workspace, change):
     from knowpath_backend.learning.model_tasks import ModelLease
     from knowpath_backend.learning.errors import DomainNotFound
-    from knowpath_backend.learning.learning_repository import TABLES
+    from knowpath_backend.learning.persistence.learning_repository import TABLES
     from sqlalchemy import delete
     state = workspace()
     _, _, space = seed(state)

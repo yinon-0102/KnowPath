@@ -4,10 +4,10 @@ from datetime import datetime
 import pytest
 from sqlalchemy import create_engine, update
 
-from knowpath_backend.learning.db import init_db, SessionRow, StudyTaskRow
+from knowpath_backend.learning.persistence.db import init_db, SessionRow, StudyTaskRow
 from knowpath_backend.learning.errors import DomainConflict
 from knowpath_backend.learning.materials import InMemoryMaterialRepository
-from knowpath_backend.learning.repositories import SqlAlchemyMaterialRepository
+from knowpath_backend.learning.persistence.material_repository import SqlAlchemyMaterialRepository
 from knowpath_backend.test.test_learning_plans_sessions import seed, backend
 
 

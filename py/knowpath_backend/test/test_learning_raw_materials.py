@@ -7,12 +7,12 @@ import pytest
 from sqlalchemy import create_engine
 
 from knowpath_backend.learning import materials
-from knowpath_backend.learning.db import Base
+from knowpath_backend.learning.persistence.db import Base
 from knowpath_backend.learning.materials import (
     IdempotencyConflict, InMemoryMaterialRepository, MaterialParser,
     MaterialParseError, MaterialService, UnsupportedMaterial,
 )
-from knowpath_backend.learning.repositories import SqlAlchemyMaterialRepository
+from knowpath_backend.learning.persistence.material_repository import SqlAlchemyMaterialRepository
 
 
 @pytest.fixture(params=['memory', 'sqlite'])
@@ -92,7 +92,7 @@ def test_legacy_replays_backfill_missing_raw(repository, replay_key):
     if isinstance(repository, InMemoryMaterialRepository):
         repository.raw_files.clear()
     else:
-        from knowpath_backend.learning.db import MaterialRawRow
+        from knowpath_backend.learning.persistence.db import MaterialRawRow
         with repository.unit_of_work.session() as session:
             session.query(MaterialRawRow).delete()
     replay = service.create(filename='notes.txt', content=b'original text', idempotency_key=replay_key)
@@ -164,7 +164,7 @@ def test_raw_schema_uses_mysql_longblob_and_cascades_version_delete(tmp_path):
     from sqlalchemy import delete, event
     from sqlalchemy.dialects import mysql
     from sqlalchemy.schema import CreateTable
-    from knowpath_backend.learning.db import MaterialRawRow, MaterialVersionRow
+    from knowpath_backend.learning.persistence.db import MaterialRawRow, MaterialVersionRow
 
     assert "LONGBLOB" in str(CreateTable(MaterialRawRow.__table__).compile(dialect=mysql.dialect()))
     engine = create_engine(f'sqlite:///{tmp_path / "cascade.db"}')

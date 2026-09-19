@@ -6,9 +6,9 @@ import time
 
 from dotenv import load_dotenv
 
-from .db import create_db_engine
+from knowpath_backend.learning.persistence.db import create_db_engine
 from .model_tasks import ModelTaskWorker
-from .repositories import SqlAlchemyMaterialRepository
+from knowpath_backend.learning.persistence.material_repository import SqlAlchemyMaterialRepository
 from .state import LearningState
 
 

@@ -6,11 +6,11 @@ from zipfile import ZipFile
 
 import pytest
 from sqlalchemy import create_engine, select, func
-from knowpath_backend.learning.db import init_db, RunRow
+from knowpath_backend.learning.persistence.db import init_db, RunRow
 from knowpath_backend.learning.errors import DomainConflict, DomainNotFound
 from knowpath_backend.learning.exports import ExportService
 from knowpath_backend.learning.materials import InMemoryMaterialRepository
-from knowpath_backend.learning.repositories import SqlAlchemyMaterialRepository
+from knowpath_backend.learning.persistence.material_repository import SqlAlchemyMaterialRepository
 from knowpath_backend.learning.state import LearningState
 
 
@@ -99,7 +99,7 @@ def test_export_is_atomic_with_run_and_idempotency(workspace, monkeypatch):
     if engine is None:
         assert state.material_repository.export_data == {}
     else:
-        from knowpath_backend.learning.db import ExportRow
+        from knowpath_backend.learning.persistence.db import ExportRow
         with engine.connect() as conn:
             assert conn.scalar(select(func.count()).select_from(ExportRow)) == 0
     monkeypatch.setattr(exports.repository, "remember", original)

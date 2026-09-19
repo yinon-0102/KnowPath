@@ -9,7 +9,7 @@ from uuid import uuid4
 
 from sqlalchemy import select
 
-from .db import StudyPlanRow, StudyTaskRow, SessionRow, SessionEventRow
+from knowpath_backend.learning.persistence.db import StudyPlanRow, StudyTaskRow, SessionRow, SessionEventRow
 from .errors import DomainConflict, DomainNotFound
 from .planner_policy import PlannerPolicy, build_tasks, conflict
 

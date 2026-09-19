@@ -8,10 +8,10 @@ from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, delete, select
 
 from knowpath_backend.learning.api import create_app
-from knowpath_backend.learning.db import Base, IdempotencyRow, MaterialRow, MaterialVersionRow, SourceChunkRow, RunRow, OutboxEventRow
+from knowpath_backend.learning.persistence.db import Base, IdempotencyRow, MaterialRow, MaterialVersionRow, SourceChunkRow, RunRow, OutboxEventRow
 from knowpath_backend.learning.errors import DomainConflict, DomainNotFound
 from knowpath_backend.learning.materials import InMemoryMaterialRepository, MaterialService
-from knowpath_backend.learning.repositories import SqlAlchemyMaterialRepository
+from knowpath_backend.learning.persistence.material_repository import SqlAlchemyMaterialRepository
 from knowpath_backend.learning.state import LearningState
 
 
@@ -44,7 +44,7 @@ def graph_workspace(request, tmp_path):
         yield factory, upload, label
     finally:
         if engine and request.param == "mysql":
-            from knowpath_backend.learning.db import GraphRevisionRow
+            from knowpath_backend.learning.persistence.db import GraphRevisionRow
             with engine.begin() as connection:
                 revisions = connection.execute(select(GraphRevisionRow.id, GraphRevisionRow.run_id).where(GraphRevisionRow.material_id == upload.material.id)).all()
                 versions = connection.scalars(select(MaterialVersionRow.id).where(MaterialVersionRow.material_id == upload.material.id)).all()
@@ -202,7 +202,7 @@ def test_material_deletion_cancels_graph_work_and_tombstones_replay(graph_worksp
 
 
 def test_deleted_run_does_not_prevent_material_cleanup(graph_workspace):
-    from knowpath_backend.learning.db import RunEventRow
+    from knowpath_backend.learning.persistence.db import RunEventRow
     from knowpath_backend.learning.material_deletion import MaterialDeletionWorker
 
     factory, upload, _ = graph_workspace

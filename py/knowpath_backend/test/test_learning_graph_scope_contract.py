@@ -135,8 +135,8 @@ def test_relation_changes_identify_both_affected_topics():
 @pytest.mark.parametrize("storage", ["memory", "sqlite"])
 def test_scope_invalidates_persisted_plan_atomically(storage, tmp_path, monkeypatch):
     from sqlalchemy import create_engine
-    from knowpath_backend.learning.db import init_db
-    from knowpath_backend.learning.repositories import SqlAlchemyMaterialRepository
+    from knowpath_backend.learning.persistence.db import init_db
+    from knowpath_backend.learning.persistence.material_repository import SqlAlchemyMaterialRepository
     from knowpath_backend.learning.spaces import now
     engine = create_engine(f"sqlite+pysqlite:///{tmp_path / 'scope.db'}") if storage == "sqlite" else None
     if engine:

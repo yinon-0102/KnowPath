@@ -7,10 +7,10 @@ import pytest
 from sqlalchemy import create_engine, select, delete
 from sqlalchemy.pool import StaticPool
 
-from knowpath_backend.learning.db import StudyPlanRow, StudyTaskRow, SessionRow, SessionEventRow, init_db, OutboxEventRow, LearningMessageRow, ConversationRow, ExportRow, AttemptRow, EvidenceRow, AssessmentRow, LearnerStateRow, StateResetRow, LearningSpaceRow, IdempotencyRow, SourceChunkRow, MaterialVersionRow, MaterialRow, RunRow
+from knowpath_backend.learning.persistence.db import StudyPlanRow, StudyTaskRow, SessionRow, SessionEventRow, init_db, OutboxEventRow, LearningMessageRow, ConversationRow, ExportRow, AttemptRow, EvidenceRow, AssessmentRow, LearnerStateRow, StateResetRow, LearningSpaceRow, IdempotencyRow, SourceChunkRow, MaterialVersionRow, MaterialRow, RunRow
 from knowpath_backend.learning.errors import DomainConflict
 from knowpath_backend.learning.materials import InMemoryMaterialRepository
-from knowpath_backend.learning.repositories import SqlAlchemyMaterialRepository
+from knowpath_backend.learning.persistence.material_repository import SqlAlchemyMaterialRepository
 from knowpath_backend.learning.state import LearningState
 
 
