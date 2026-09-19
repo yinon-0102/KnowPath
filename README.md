@@ -21,6 +21,12 @@ Web API and two background workers, alongside the reusable Agent foundation
 (context, layered memory, tools, planning and verification). Only the interactive
 terminal UI and its `knowpath` chat command have been removed.
 
+HTTP handlers are grouped under `py/knowpath_backend/learning/api/routers/`.
+Learning services are grouped by domain, with retrieval in `rag/`, model
+adapters in `providers/`, repositories in `persistence/`, and background
+execution in `workers/`. The existing startup commands below remain valid.
+See the [backend directory guide](py/README.md#代码边界与来源) for the full layout.
+
 ```powershell
 cd C:\Users\27202\Desktop\KnowPath\py
 uv sync --locked

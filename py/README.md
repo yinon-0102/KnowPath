@@ -96,10 +96,50 @@ Remove-Item Env:PYTHON_DOTENV_DISABLED
 增量升级、回退和记录保留。模型契约测试使用测试适配器，不验证真实付费模型的效果或可用性。
 
 Windows 路径、SQLite 句柄和测试解释器问题已修复；没有符号链接创建权限时仅跳过对应测试。
-当前隔离回归为 1359 项通过、217 项跳过。具体结果见
-[集成记录](../docs/implementation/2026-09-19-backend-integration-plan.md)。
+目录整理后的隔离全量回归为 1367 项通过、217 项跳过；完整 OpenAPI 与数据库结构
+快照保持一致。真实模型与临时数据库验收也已通过，具体结果见
+[目录调整记录](../docs/implementation/2026-09-19-backend-layout.md)。
 
 ## 代码边界与来源
+
+学习后端按职责组织，HTTP 请求入口位于 `learning/api/routers/`：
+
+```text
+knowpath_backend/
+  learning/
+    main.py                  # ASGI 启动入口
+    config.py                # 环境配置与本地令牌
+    state.py                 # 服务装配与现有业务门面
+    api/
+      application.py         # create_app、生命周期、注册路由
+      dependencies.py        # 读取每个应用实例的服务
+      middleware.py          # 来源、令牌、幂等键与请求编号
+      errors.py              # HTTP 错误响应映射
+      routers/               # 按业务拆分的请求处理函数
+    materials/               # 上传、解析、来源访问、资料删除
+    spaces/                  # 学习空间、档案、时间线、导出
+    assessments/             # 诊断、出题、评分、复核、掌握度
+    plans/                   # 计划、任务与学习会话
+    conversations/           # 对话、答案生成与上下文记忆
+    knowledge/               # 图谱准备、发布、查询、纠正与更新
+    rag/                     # 检索和向量索引
+    providers/               # 模型协议、调用与能力适配
+    persistence/             # 唯一 ORM Base、仓储、共享工作单元
+    workers/                 # 后台任务执行、租约与进程实现
+  agents/ core/ context/ memory/ planning/ tools/ verify/ tdd/ workspace/
+  bench/
+  test/
+```
+
+查找一个接口时，从 `api/routers/` 的处理函数进入业务模块，再查看
+`persistence/` 中的存储实现。`state.py` 仍作为已有业务门面，跨领域协作没有
+在本次目录调整中重新设计。请求结构的 `schemas.py` 与所属业务放在一起。
+
+启动命令和 PyCharm 配置保持兼容：`learning.graph_worker_cli`、
+`learning.model_worker_cli`、`learning.vector_indexing` 是薄启动入口，
+具体实现分别在 `workers/` 与 `rag/`。`learning.db_cli` 仍是维护入口。
+`learning/indexes.py` 保留原有通用 Neo4j/Qdrant 适配器，与当前业务索引实现职责不同。
+历史实现记录中的旧文件路径反映当时目录；当前定位以本节为准。
 
 - `knowpath_backend/learning/`：学习业务、存储适配和三个服务入口。
 - `core/`、`agents/`：通用模型客户端、Agent 执行循环、回调及无界面装配。
