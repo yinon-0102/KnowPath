@@ -103,8 +103,12 @@ class MaterialDeletionService:
                 continue
             snapshot = message['snapshot']
             snapshot['sources'] = [s for s in snapshot['sources'] if not references(s, material_id)]
+            if 'retrieval_sources' in snapshot:
+                snapshot['retrieval_sources'] = [s for s in snapshot['retrieval_sources'] if not references(s, material_id)]
             snapshot['bindings'] = [b for b in snapshot['bindings'] if not references(b, material_id)]
             snapshot['history'] = []
+            snapshot.pop('memory', None)
+            snapshot.pop('context_report', None)
             if message['status'] in {'pending', 'generating'}:
                 self._cancel_generation(message)
                 message.update(status='cancelled', response=None)

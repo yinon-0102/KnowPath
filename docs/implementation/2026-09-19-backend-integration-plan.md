@@ -22,14 +22,21 @@ disabled in this stage; the two symlink privilege skips are explicit.
 
 - [x] Inspect the existing ContextEngine/Memory interfaces and Web transactions;
   document a concrete adapter design with namespace and persistence boundaries.
-- [ ] Add token budgeting/deduplication and bounded historical summaries to Web
+- [x] Add token budgeting/deduplication and bounded historical summaries to Web
   messages, preserving source citations and treating recalled text as data.
-- [ ] Add durable scoped recall through existing SQL records or explicit schema
+- [x] Add durable scoped recall through existing SQL records or explicit schema
   migration, with provenance, space/version isolation, restart reconstruction,
   retry idempotency and deletion/late-worker protection.
-- [ ] Verify focus scenarios and full regressions, document limitations, review
+- [x] Verify focus scenarios and full regressions, document limitations, review
   and commit this integration. Keep grading/profile authority in domain services;
   do not expose arbitrary Agent Shell or file tools through Web requests.
+
+Validation: 1359 passed, 217 skipped, one upstream deprecation warning. Review
+identified truncated-source vector retry identity and irrelevant leading recall
+excerpts; both have failing-before/passing-after regressions. Model prompts
+exclude the immutable retrieval-source backup and budget diagnostics. SQL restart,
+idempotency, scope isolation, failed turns, material/space erasure and untrusted
+roles are covered. Live external integrations remain for Stage 3.
 
 ## Stage 3: Real Workflow Acceptance
 

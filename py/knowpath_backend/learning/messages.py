@@ -10,6 +10,8 @@ from .runs import ACTIVE_STATUSES
 from .model_tasks import ModelTaskWorker, TRANSIENT_ERRORS, LeaseLost, enqueue
 from .spaces import SpaceService, now
 from .vector_retrieval import KeywordRetriever, RetrievalError, configured_retriever
+from .config import LearningSettings
+from .conversation_context import bound_snapshot, project_memory
 
 
 def uid():
@@ -17,11 +19,12 @@ def uid():
 
 
 class MessageService:
-    def __init__(self, repository, spaces, assessments, runs, generator=None, retriever=None):
+    def __init__(self, repository, spaces, assessments, runs, generator=None, retriever=None, context_settings=None):
         self.repository, self.spaces, self.assessments, self.runs = repository, spaces, assessments, runs
         self.generator = generator if generator is not None else DashScopeAnswerGenerator()
         self.commands = SpaceService(repository, spaces.materials)
         self.retriever = retriever if retriever is not None else configured_retriever()
+        self.context_settings = context_settings or getattr(self.generator, "settings", None) or LearningSettings.from_env()
 
     def send(self, space_id, payload, key=None, *, dispatch=None, durable=False):
         payload = SendMessage.model_validate(payload).model_dump()
@@ -38,16 +41,12 @@ class MessageService:
             for message in previous:
                 if message["status"] in {"pending", "generating"} and self.runs.get(message["run_id"])["status"] in ACTIVE_STATUSES:
                     raise DomainConflict("MESSAGE_IN_PROGRESS", "该会话已有生成中的消息")
-            history = []
-            for message in previous:
-                if (message["status"] == "completed" and message["snapshot"]["scope_version"] == space["scope_version"]
-                        and message["snapshot"]["bindings"] == space["bindings"]):
-                    history.extend([{"role": "user", "content": message["message"]},
-                                    {"role": "assistant", "content": message["response"]["text"]}])
+            context = project_memory(self.repository.records("messages", space_id=space_id),
+                                     space, conversation["id"], payload["message"])
             hint = self._hint(assessments, payload["message"])
             run = self.runs.create("message", status="queued" if durable else "running")
             identifier = uid()
-            snapshot = {"message": payload["message"], "sources": sources, "history": history[-10:],
+            snapshot = {"message": payload["message"], "sources": sources, **context,
                         "scope_version": space["scope_version"], "bindings": copy.deepcopy(space["bindings"]), "hint": hint}
             record = {"id": identifier, "space_id": space_id, "conversation_id": conversation["id"],
                       "run_id": run["id"], "status": "pending", "message": payload["message"],
@@ -154,17 +153,19 @@ class MessageService:
         try:
             # Active assessment hints remain deterministic and require no provider.
             retriever = KeywordRetriever() if snapshot["hint"] else self.retriever
+            retrieval_sources = snapshot.get("retrieval_sources", snapshot["sources"])
             try:
-                selected = retriever.select(snapshot["message"], copy.deepcopy(snapshot["sources"]), limit=8)
+                selected = retriever.select(snapshot["message"], copy.deepcopy(retrieval_sources), limit=8)
             except RetrievalError:
                 raise
             except Exception:
                 raise RetrievalError("VECTOR_UNAVAILABLE") from None
             if (not isinstance(selected, list) or not 1 <= len(selected) <= 8
-                    or any(row not in snapshot["sources"] for row in selected)
+                    or any(row not in retrieval_sources for row in selected)
                     or len({row["chunk_id"] for row in selected}) != len(selected)):
                 raise RetrievalError("RETRIEVAL_VALIDATION_FAILED")
-            snapshot = {**snapshot, "sources": copy.deepcopy(selected)}
+            snapshot = {**snapshot, "sources": copy.deepcopy(selected), "retrieval_sources": retrieval_sources}
+            snapshot = bound_snapshot(snapshot, budget=self.context_settings.context_budget_tokens)
             if not self._record_sources(identifier, snapshot, job=job):
                 return
             if snapshot["hint"]:
@@ -199,6 +200,7 @@ class MessageService:
                               "VECTOR_UNAVAILABLE": "向量检索服务暂时不可用", "VECTOR_INDEX_NOT_READY": "当前学习资料的向量索引尚未就绪",
                               "VECTOR_PROFILE_MISMATCH": "向量索引配置不匹配，需要重建索引",
                               "RETRIEVAL_VALIDATION_FAILED": "检索结果未通过来源校验"}
+                    public["CONTEXT_BUDGET_EXCEEDED"] = "当前问题与引用资料超过上下文预算，请缩短问题或调整预算"
                     if error not in public:
                         error = "MODEL_UNAVAILABLE"
                     failure = {"code": error, "message": public.get(error, "对话生成失败"),

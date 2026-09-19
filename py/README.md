@@ -117,3 +117,16 @@ Windows 上完整基座测试仍有归档原代码中即可复现的路径、SQL
 基座中的 Shell/文件工具仍然存在，但当前 Web API 不注册或开放这些工具。
 当前 Web 对话使用 `learning/` 的资料检索和历史快照，尚未接入基座的完整 Memory/Context 流程。
 项目源于 Keel，保留其 [MIT LICENSE 和版权声明](LICENSE)。
+# Web Conversation Memory
+
+Completed messages provide durable memory within each learning space and its
+current scope/bindings. Recent turns, bounded extractive summaries and relevant
+cross-conversation excerpts feed the existing context engine. Restarts rebuild
+recall from SQL; failed/pending messages do not enter memory. Historical excerpts
+remain untrusted context and do not directly modify learner grades or profiles.
+
+`LEARNING_CONTEXT_BUDGET_TOKENS` defaults to 16000 (allowed: 1024-65536). This
+limits estimated total prompt input, including sources, history and system text.
+An oversized mandatory question fails with `CONTEXT_BUDGET_EXCEEDED`. The estimate
+is not the provider's exact tokenizer count. Recall currently rebuilds a TF-IDF
+index per request; very large conversation archives will need an indexed store.

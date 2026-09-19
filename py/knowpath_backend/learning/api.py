@@ -70,6 +70,7 @@ def create_app(
     if run_service is None and isinstance(service.repository, InMemoryMaterialRepository):
         run_service = RunService(service.repository.run_repository)
     state = LearningState(material_repository=service.repository, run_service=run_service,
+                          context_settings=settings,
                           question_generator=question_generator if question_generator is not None else DashScopeQuestionGenerator(settings),
                           answer_generator=answer_generator if answer_generator is not None else DashScopeAnswerGenerator(settings),
                           source_retriever=source_retriever if source_retriever is not None else configured_retriever(settings))
