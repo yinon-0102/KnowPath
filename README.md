@@ -15,7 +15,7 @@ KnowPath/
 
 ## Python Backend
 
-The backend project and its virtual environment are both under `py/`:
+The backend project and its virtual environment are both under `py/`. The Python package is `knowpath_backend`, distributed as `knowpath-backend`; its console commands are `knowpath` and `knowpath-learning-db`:
 
 ```powershell
 cd C:\Users\27202\Desktop\KnowPath\py
@@ -37,9 +37,9 @@ uv run alembic upgrade head
 Run these three processes in separate terminals, all from `py/`:
 
 ```powershell
-uv run uvicorn my_agent_llms.learning.main:app --host 127.0.0.1 --port 8000
-uv run python -m my_agent_llms.learning.graph_worker_cli
-uv run python -m my_agent_llms.learning.model_worker_cli
+uv run uvicorn knowpath_backend.learning.main:app --host 127.0.0.1 --port 8000
+uv run python -m knowpath_backend.learning.graph_worker_cli
+uv run python -m knowpath_backend.learning.model_worker_cli
 ```
 
 The graph worker handles parsing, Neo4j/Qdrant preparation, corrections and
@@ -57,13 +57,34 @@ The default embedding model is DashScope `text-embedding-v3`, 1024 dimensions.
 PowerShell learning-service regression command (no wildcard script expansion):
 
 ```powershell
-$learningTests = Get-ChildItem .\my_agent_llms\test\test_learning_*.py | ForEach-Object { $_.FullName }
+$learningTests = Get-ChildItem .\knowpath_backend\test\test_learning_*.py | ForEach-Object { $_.FullName }
 uv run python -m pytest @learningTests -q
 ```
 
 Tests requiring explicitly configured external databases skip when their test
 connection variables are absent. Contract tests use deterministic model adapters;
 they do not certify a paid provider's live availability or answer quality.
+
+## PyCharm Startup (Windows)
+
+Open the whole `KnowPath/` directory in PyCharm. Shared run configurations are
+stored in `.run/`; select **KnowPath Backend** to start the API, graph worker and
+model worker together. Each can also be started or debugged separately. The
+configurations use `py/.venv/Scripts/python.exe`, `py/` as their working directory,
+and SQL persistence. Run `uv sync --locked` from `py/` first when setting up a
+new checkout. On another operating system, change the interpreter path in each
+configuration to that system's virtual environment executable.
+
+Start the Docker services below and apply `uv run alembic upgrade head` before
+running the backend. Configure database connections and model credentials in
+`py/.env`; all three processes load it automatically. No credentials belong in
+the shared run configurations. This compound configuration starts the three
+backend processes concurrently; it does not start Docker, apply migrations or
+launch a frontend. `frontend/` is currently reserved. When stopping the backend,
+stop all three processes in PyCharm's Run/Services window.
+
+The API listens on `http://127.0.0.1:8000`; its basic health endpoint is
+`http://127.0.0.1:8000/api/v1/health`.
 
 ## Local Services
 

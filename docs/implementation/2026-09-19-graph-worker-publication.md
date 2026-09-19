@@ -23,7 +23,7 @@ Existing spaces remain pinned. New spaces choose the latest published revision a
 From py/:
 
     uv run alembic upgrade head
-    uv run python -m my_agent_llms.learning.graph_worker_cli
+    uv run python -m knowpath_backend.learning.graph_worker_cli
 
 Use --once for one eligible claim. The printed job_claimed flag means a task was attempted; inspect its Run to distinguish success, retry, cancellation and terminal failure. Configure database, Neo4j, Qdrant and DashScope credentials in local environment or ignored py/.env. The worker does not auto-load example credentials. Run the API with SQL persistence to share durable jobs; an in-memory API cannot share jobs with this separate SQL worker.
 

@@ -4,7 +4,7 @@ import os
 from alembic import context
 from sqlalchemy import engine_from_config, pool
 
-from my_agent_llms.learning.db import Base
+from knowpath_backend.learning.db import Base
 
 config = context.config
 if config.config_file_name:

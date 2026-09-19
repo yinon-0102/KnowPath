@@ -21,7 +21,7 @@ $env:DATABASE_URL = "mysql+pymysql://keel:keel@127.0.0.1:3306/keel_learning"
 uv run alembic upgrade head
 uv run alembic current
 $env:LEARNING_PERSISTENCE = "sql"
-uv run uvicorn my_agent_llms.learning.main:app --workers 1
+uv run uvicorn knowpath_backend.learning.main:app --workers 1
 ```
 
 `0001_learning_schema` 建立业务基线表；`0002_run_events` 增加 Run 事件表及时间索引。迁移历史使用固定 DDL，不随当前 ORM 自动变化。SQL 启动要求迁移已应用，不再自动建表。

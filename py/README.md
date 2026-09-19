@@ -1,4 +1,6 @@
-# Keel
+# KnowPath Backend
+
+Python 包名为 `knowpath_backend`，安装分发名为 `knowpath-backend`。以下 Agent 能力说明保留了基础项目 Keel 的背景；学习后端启动方式见本文的 Learning backend 和完整启动章节。
 
 > 一个不会偏航的 AI 伙伴。
 
@@ -120,14 +122,14 @@ Keel ▸ 🔧 calculator ← 15 * 8 + 32
 brew install uv                                   # 或: curl -LsSf https://astral.sh/uv/install.sh | sh
 
 # 2. 拉代码
-git clone https://github.com/HHHH-LK/keel.git && cd keel
+git clone https://github.com/yinon-0102/KnowPath.git && cd KnowPath/py
 
 # 3. 装依赖 + 配置
 uv sync
 cp .env.example .env                              # 然后编辑 .env 填 key/model/base_url
 
 # 4. 启动
-uv run keel
+uv run knowpath
 ```
 </details>
 
@@ -140,14 +142,14 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 source $HOME/.local/bin/env                       # 让当前终端认到 uv(或重开终端)
 
 # 2. 拉代码
-git clone https://github.com/HHHH-LK/keel.git && cd keel
+git clone https://github.com/yinon-0102/KnowPath.git && cd KnowPath/py
 
 # 3. 装依赖 + 配置
 uv sync
 cp .env.example .env                              # 然后编辑 .env 填 key/model/base_url
 
 # 4. 启动
-uv run keel
+uv run knowpath
 ```
 </details>
 
@@ -159,15 +161,15 @@ uv run keel
 powershell -c "irm https://astral.sh/uv/install.ps1 | iex"
 
 # 2. 拉代码
-git clone https://github.com/HHHH-LK/keel.git
-cd keel
+git clone https://github.com/yinon-0102/KnowPath.git
+cd KnowPath/py
 
 # 3. 装依赖 + 配置
 uv sync
 Copy-Item .env.example .env                       # 然后编辑 .env 填 key/model/base_url
 
 # 4. 启动
-uv run keel
+uv run knowpath
 ```
 </details>
 
@@ -192,7 +194,7 @@ All other settings can be configured interactively via `/config` once inside.
 ## What she's made of
 
 ```
-keel/                     # Python 包(她叫 Keel)
+knowpath_backend/         # KnowPath 后端 Python 包
 ├── core/        # Agent 基类、LLM 客户端、Message、Hook、Config
 ├── agents/      # 五种思考方式
 ├── context/     # 上下文编排器
@@ -238,16 +240,16 @@ What to expect now:
 
 Contributions are welcome! Here's how:
 
-1. **Open an [Issue](https://github.com/HHHH-LK/keel/issues)** — bug reports, feature requests, design discussions
+1. **Open an [Issue](https://github.com/yinon-0102/KnowPath/issues)** — bug reports, feature requests, design discussions
 2. **Submit a PR** — fork → branch → commit → pull request
 3. **Keep it clean** — the project uses `uv` for dev; run `uv sync` and make sure tests pass before opening
 
 ```bash
 # dev setup
-git clone https://github.com/your-fork/keel.git && cd keel
+git clone https://github.com/your-fork/KnowPath.git && cd KnowPath/py
 uv sync                      # install all deps
 cp .env.example .env         # configure
-uv run keel                  # try it
+uv run knowpath                  # try it
 ```
 
 See the design docs under `docs/superpowers/specs/` and `docs/superpowers/plans/` for architectural context. No strict code style guide yet — just use good judgment and consistent formatting.
@@ -258,7 +260,7 @@ See the design docs under `docs/superpowers/specs/` and `docs/superpowers/plans/
 
 ```powershell
 uv sync
-uv run uvicorn my_agent_llms.learning.main:app --host 127.0.0.1 --port 8000
+uv run uvicorn knowpath_backend.learning.main:app --host 127.0.0.1 --port 8000
 ```
 
 默认使用内存仓储。要保存资料、Run 状态与事件、学习空间元数据和画像，先启动项目 MySQL，再在 `py/` 执行：
@@ -267,7 +269,7 @@ uv run uvicorn my_agent_llms.learning.main:app --host 127.0.0.1 --port 8000
 $env:DATABASE_URL = "mysql+pymysql://keel:keel@127.0.0.1:3306/keel_learning"
 uv run alembic upgrade head
 $env:LEARNING_PERSISTENCE = "sql"
-uv run uvicorn my_agent_llms.learning.main:app --host 127.0.0.1 --port 8000 --workers 1
+uv run uvicorn knowpath_backend.learning.main:app --host 127.0.0.1 --port 8000 --workers 1
 ```
 
 SQL 模式要求先完成迁移；启动时不再用 `create_all()` 隐式建表。`.env.example` 只是配置示例，以上命令显式设置环境变量。Docker 配置见 `../infra/docker-compose.yml`。
@@ -299,7 +301,7 @@ docker compose -f .\infra\docker-compose.yml up -d qdrant
 在 `py/` 中为需要使用的每个绑定资料版本执行（将占位值替换为 API 返回的 material_version_id）：
 
 ```powershell
-uv run python -m my_agent_llms.learning.vector_indexing --version-id "<material_version_id>"
+uv run python -m knowpath_backend.learning.vector_indexing --version-id "<material_version_id>"
 ```
 
 命令从 SQL 读取指定版本，要求资料已解析为 ready，使用 `DASHSCOPE_API_KEY` 调用真实 Embedding 服务并写入 Qdrant，因此会产生模型调用。它不会切换空间绑定或发布图谱；当前适配现有的 graph_version=1 主题投影。片段使用与对话一致的前 6000 字，批次最多 10 个；正文和题目答案键不写入向量 payload。重复运行按确定性 ID 覆盖同一组点。Qdrant collection 名由 `QDRANT_COLLECTION` 前缀加模型、维度和索引格式的摘要构成，不覆盖旧模型集合；首版客户端只接受 DashScope text-embedding-v3 / 1024，其他配置会启动失败。
@@ -311,7 +313,7 @@ uv run python -m my_agent_llms.learning.vector_indexing --version-id "<material_
 运行学习模块回归测试（PowerShell 先展开测试文件）：
 
 ```powershell
-$learningTests = Get-ChildItem .\my_agent_llms\test\test_learning_*.py -File | ForEach-Object { $_.FullName }
+$learningTests = Get-ChildItem .\knowpath_backend\test\test_learning_*.py -File | ForEach-Object { $_.FullName }
 uv run python -m pytest @learningTests -q
 ```
 
@@ -327,7 +329,7 @@ This project is open-sourced under the MIT License — see [LICENSE](LICENSE).
 
 ## Feedback
 
-Questions or ideas? Feel free to open an [Issue](https://github.com/HHHH-LK/keel/issues) or PR.
+Questions or ideas? Feel free to open an [Issue](https://github.com/yinon-0102/KnowPath/issues) or PR.
 
 ---
 
@@ -344,7 +346,7 @@ Questions or ideas? Feel free to open an [Issue](https://github.com/HHHH-LK/keel
 
 ```powershell
 uv run alembic upgrade head
-uv run python -m my_agent_llms.learning.graph_worker_cli
+uv run python -m knowpath_backend.learning.graph_worker_cli
 ```
 
 API 必须设置 LEARNING_PERSISTENCE=sql 才能与 worker 共用任务。可加 --once 处理至多一个可执行任务；job_claimed 只表示已领取，最终状态请查询对应 Run。真实 embedding 会使用 DashScope text-embedding-v3（1024 维）。当前标题/片段提取不推断语义关系，上传后的自动图谱编排和外部物理清理仍待实现。详情见 ../docs/implementation/2026-09-19-graph-worker-publication.md。
@@ -387,9 +389,9 @@ POST /api/v1/materials/{material_id}/ingest 要求 Idempotency-Key，JSON 仅包
 后端和虚拟环境均位于 `py/`。`.env` 使用 `LEARNING_PERSISTENCE=sql`，数据库、Neo4j、Qdrant 连接与现有本地环境一致；不要覆盖已有配置。先执行 `uv run alembic upgrade head`，再在三个终端分别启动：
 
 ```powershell
-uv run uvicorn my_agent_llms.learning.main:app --host 127.0.0.1 --port 8000
-uv run python -m my_agent_llms.learning.graph_worker_cli
-uv run python -m my_agent_llms.learning.model_worker_cli
+uv run uvicorn knowpath_backend.learning.main:app --host 127.0.0.1 --port 8000
+uv run python -m knowpath_backend.learning.graph_worker_cli
+uv run python -m knowpath_backend.learning.model_worker_cli
 ```
 
 API 与 worker 自动加载后端 `.env`。生产入口使用 `LEARNING_LOCAL_TOKEN`；为空时生成并持久保存 `py/.learning-token.local`，前端读取配置后通过 `X-Local-Token` 传入，SSE 同样使用请求头。不要提交或在日志中打印令牌。`LEARNING_ALLOWED_ORIGINS` 配置允许访问的浏览器 Origin。未认证 health 只有基本状态；带令牌才能查询真实 MySQL/Neo4j/Qdrant 探测和模型配置状态。健康探测不执行付费模型请求。

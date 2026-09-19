@@ -94,22 +94,22 @@ Keel Learning 面向普通用户的自有学习资料。用户导入 PDF、Markd
 
 保留或改造以下部分：
 
-- `my_agent_llms/core/agent.py`：Agent 生命周期、系统提示词和统一收尾；
-- `my_agent_llms/core/llm.py`：多厂商 LLM 客户端；
-- `my_agent_llms/core/message.py`、`core/hooks.py`：消息和钩子；
-- `my_agent_llms/agents/function_call_agent.py`：提取工具调用循环，保留与传输层无关的文本、工具、取消事件接口；删除终端展示耦合和 TDD/文件操作分支；
-- `my_agent_llms/tools/base.py`、`tools/registry.py`、`tools/chain.py`：业务工具协议和注册机制；
-- `my_agent_llms/memory/`：分层记忆、语义索引、冲突处理和来源追踪；
-- `my_agent_llms/context/engine.py`：相关性、去重和 token 预算编排；
-- `my_agent_llms/verify/`：借鉴验证、重试和停止控制；删除 `command_ok` 子进程执行分支，新增来源、题目与计划校验器；
-- `my_agent_llms/planning/`：计划状态的通用能力；
-- `my_agent_llms/bench/`：作为评测基础改造成学习任务离线评测工具；原代码任务用例不等于学习评测集。
+- `knowpath_backend/core/agent.py`：Agent 生命周期、系统提示词和统一收尾；
+- `knowpath_backend/core/llm.py`：多厂商 LLM 客户端；
+- `knowpath_backend/core/message.py`、`core/hooks.py`：消息和钩子；
+- `knowpath_backend/agents/function_call_agent.py`：提取工具调用循环，保留与传输层无关的文本、工具、取消事件接口；删除终端展示耦合和 TDD/文件操作分支；
+- `knowpath_backend/tools/base.py`、`tools/registry.py`、`tools/chain.py`：业务工具协议和注册机制；
+- `knowpath_backend/memory/`：分层记忆、语义索引、冲突处理和来源追踪；
+- `knowpath_backend/context/engine.py`：相关性、去重和 token 预算编排；
+- `knowpath_backend/verify/`：借鉴验证、重试和停止控制；删除 `command_ok` 子进程执行分支，新增来源、题目与计划校验器；
+- `knowpath_backend/planning/`：计划状态的通用能力；
+- `knowpath_backend/bench/`：作为评测基础改造成学习任务离线评测工具；原代码任务用例不等于学习评测集。
 
 基座核对版本为 `01322ef`。现有知识图谱主要服务事实冲突消解，并非课程依赖图；`TodoStore` 是进程内清单，不是持久化计划库；现有 Verify 的触发与副作用工具关联，不能直接覆盖学习问答。其 `semantic_support` 检查器尚未实现，`judge` 仅返回 PASS/FAIL，也不是带证据的教育评分器。以上能力均需显式适配，不标为开箱即用。源代码中的测试不能代替裁剪后的回归验证。
 
 ### 4.2 产品中移除的部分
 
-- `my_agent_llms/cli/`、`chat.py` 和终端审批、渲染、输入历史等逻辑；
+- `knowpath_backend/cli/`、`chat.py` 和终端审批、渲染、输入历史等逻辑；
 - `BashTool` 以及任何任意 Shell 执行能力；
 - 面向代码改动的 `WriteFile`、`EditFile`、通用目录浏览和通用代码搜索工具；
 - 依赖本地代码工作区的 `Workspace` 安全模型；资料导入改由受控的 `MaterialService` 处理。

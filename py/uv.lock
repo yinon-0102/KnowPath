@@ -580,7 +580,7 @@ wheels = [
 ]
 
 [[package]]
-name = "keel"
+name = "knowpath-backend"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
