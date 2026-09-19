@@ -14,7 +14,8 @@ services:
   neo4j:
     image: neo4j:5.26-community
     environment:
-      NEO4J_AUTH: neo4j/keel_learning
+      NEO4J_AUTH: neo4j/123456
+      NEO4J_dbms_security_auth__minimum__password__length: "6"
     ports:
       - "7474:7474"
       - "7687:7687"
