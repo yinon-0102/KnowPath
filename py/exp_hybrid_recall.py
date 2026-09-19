@@ -18,7 +18,7 @@ p<1 的随机情形对多个随机种子取平均。
 import random
 from datetime import datetime
 
-from my_agent_llms.memory.kg import (
+from knowpath_backend.memory.kg import (
     KGStore,
     KnowledgeGraphConflictDetector,
     Relation,

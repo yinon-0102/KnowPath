@@ -1,5 +1,5 @@
 [project]
-name = "keel"
+name = "knowpath-backend"
 version = "0.1.0"
 requires-python = ">=3.13"
 dependencies = [
@@ -13,16 +13,13 @@ dependencies = [
     "load-dotenv>=0.1.0",
     "openai>=2.32.0",
     "optional>=0.0.1",
-    "prompt-toolkit>=3.0.52",
     "pypdf>=5.0.0",
-    "pymysql>=1.1.0",
+    "pymysql[rsa]>=1.1.0",
     "qdrant-client>=1.14.0",
     "neo4j>=5.28.0",
     "pydantic>=2.13.2",
     "python-multipart>=0.0.20",
-    "pytest>=9.0.3",
     "python-dotenv>=1.2.2",
-    "rich>=15.0.0",
     "serpapi>=1.0.2",
     "tiktoken>=0.13.0",
     "sqlalchemy>=2.0.0",
@@ -30,12 +27,14 @@ dependencies = [
 ]
 
 [project.scripts]
-keel = "my_agent_llms.cli.app:main"
-keel-learning-db = "my_agent_llms.learning.db_cli:main"
+knowpath-learning-db = "knowpath_backend.learning.db_cli:main"
+
+[dependency-groups]
+dev = ["pytest>=9.0.3"]
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["my_agent_llms"]
+packages = ["knowpath_backend"]
