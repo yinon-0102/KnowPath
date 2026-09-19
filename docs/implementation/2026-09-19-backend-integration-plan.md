@@ -40,13 +40,20 @@ roles are covered. Live external integrations remain for Stage 3.
 
 ## Stage 3: Real Workflow Acceptance
 
-- [ ] Inspect available Docker/services and model configuration without exposing
+- [x] Inspect available Docker/services and model configuration without exposing
   credentials; provision separate disposable stores and synthetic test material.
-- [ ] Exercise upload, graph review/publication, space, diagnostic, plan, message,
+- [x] Exercise upload, graph review/publication, space, diagnostic, plan, message,
   retest, SSE and persistence/recovery using actual model adapters and stores.
-- [ ] Record results, clean only owned temporary resources, commit acceptance
+- [x] Record results, clean only owned temporary resources, commit acceptance
   artifacts, and report any external blocker precisely. Never run regression
   fixtures or unrestricted workers against the user's daily database.
+
+Validation: two live synthetic workflows passed using qwen-plus and
+text-embedding-v3 with dedicated Docker stores. The final run additionally read
+back all five retest evidence rows through fresh services. All three temporary
+containers were removed after each run. Two isolated tests cover failed-start
+cleanup and refusal to delete a container with an unrelated owner label. See
+`2026-09-19-backend-live-acceptance.md` for the verification boundary.
 
 Existing user authorization covers all three stages; routine implementation
 choices follow the current architecture. Live calls use synthetic material and

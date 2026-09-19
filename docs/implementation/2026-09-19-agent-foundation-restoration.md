@@ -2,6 +2,10 @@
 
 Date: 2026-09-19
 
+Follow-up: the Windows failures and Web context integration described as pending
+below were addressed by `2026-09-19-backend-integration-plan.md`. The validation
+counts in this restoration record are historical, before those follow-up fixes.
+
 ## Corrected Scope
 
 The user requested reversing the broad Web-only cleanup: retain the complete

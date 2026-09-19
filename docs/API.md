@@ -612,6 +612,8 @@ session_count=3—5，minutes_per_session=10—120，必须满足 profile 时间
 
 当前消息实现会持久化独立对话和来源快照，使用绑定资料版本及当前主题范围召回片段。同会话只允许一条消息生成中；相同幂等键重放原始响应，不再次调用模型。`tool.completed` 提供公开来源引用，`message.completed` 返回正文和引用。正文在模型响应完成并通过引用校验后分块发送；召回可配置为 `keyword`（默认）或 `qdrant`。Qdrant 模式使用 DashScope `text-embedding-v3`（1024 维、Cosine），只查询当前范围内固定资料版本、图版本与正文哈希匹配的片段，正文从数据库快照读取。向量索引在自动摄入的 graph.prepare 阶段准备，亦可通过显式维护命令重建；任一候选片段未索引时任务记录 `VECTOR_INDEX_NOT_READY` 并有限重试，不会静默退回关键词。Embedding 或向量服务不可用分别返回 `EMBEDDING_UNAVAILABLE` / `VECTOR_UNAVAILABLE`；`tool.completed` 在检索成功且再次确认上下文有效后写入。消息与测验生成通过持久化 outbox 执行；进程重启后继续原 Run，只有通过检索、模型输出和来源校验的结果才能发布。范围或绑定在生成期间变化时 Run 失败为 `STALE_LEARNING_CONTEXT`；关联学习会话结束时为 `SESSION_FINISHED`。
 
+对话上下文还包含同空间、同范围版本及同资料绑定下的历史记忆：最近五轮、较早对话的摘录摘要，以及相关跨会话片段。只读取已完成消息；摘要和召回均为非可信上下文，不直接更新画像或掌握度。服务端 `LEARNING_CONTEXT_BUDGET_TOKENS` 默认 16000，约束完整输入的估算 token 数；当前问题与必要资料仍超限时，异步 Run 以不可重试的 `CONTEXT_BUDGET_EXCEEDED` 失败。该预算不是供应商 tokenizer 的精确计数。
+
 ## 9. 证据和知识更新接口
 
 ### `GET /learning-spaces/{space_id}/evidence`
@@ -659,7 +661,7 @@ replace 必须带非空 proposed_value 字段补丁：node 支持 name、descrip
 | `/profile`、`/state` | `spaces`、`profile_candidates`、`state`、`mastery` 及 SQL 仓储 |
 | `/assessments` | `assessments`、`question_generation`、`assessment_grading`、`grade_reviews` |
 | `/plans` | `planner`、`planner_policy` 和持久化计划/会话记录 |
-| `/messages` | `messages`、`message_generation`、`vector_retrieval` 与模型适配器 |
+| `/messages` | `messages`、`conversation_context`、`message_generation`、`vector_retrieval` 与模型适配器 |
 | `/runs/{run_id}/events` | `runs`、`run_repository`、`api` 的持久事件和 SSE 传输 |
 | `/evidence`、`/changes` | 证据仓储、`timeline` 和版本快照 |
 

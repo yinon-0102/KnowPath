@@ -95,9 +95,9 @@ Remove-Item Env:PYTHON_DOTENV_DISABLED
 这些变量只能指向独立、可清理的测试库，不能指向日常资料库。迁移测试覆盖空库升级、
 增量升级、回退和记录保留。模型契约测试使用测试适配器，不验证真实付费模型的效果或可用性。
 
-Windows 上完整基座测试仍有归档原代码中即可复现的路径、SQLite 句柄、`python3` 命令和
-符号链接权限问题；本次恢复未隐藏这些失败。具体结果见
-[恢复记录](../docs/implementation/2026-09-19-agent-foundation-restoration.md)。
+Windows 路径、SQLite 句柄和测试解释器问题已修复；没有符号链接创建权限时仅跳过对应测试。
+当前隔离回归为 1359 项通过、217 项跳过。具体结果见
+[集成记录](../docs/implementation/2026-09-19-backend-integration-plan.md)。
 
 ## 代码边界与来源
 
@@ -115,9 +115,11 @@ Windows 上完整基座测试仍有归档原代码中即可复现的路径、SQL
 `codex/archive-agent-before-web-cleanup-20260919`，提交
 `0e9ca632155b34ec0e9ddb194b5a1b92791aa6e3`。
 基座中的 Shell/文件工具仍然存在，但当前 Web API 不注册或开放这些工具。
-当前 Web 对话使用 `learning/` 的资料检索和历史快照，尚未接入基座的完整 Memory/Context 流程。
+当前 Web 对话已接入基座的上下文预算、摘要与检索组件，持久化以学习业务 SQL 消息为准；
+通用 Agent 的自动核心记忆晋升、Shell/文件工具不会通过 Web 对话开放。
 项目源于 Keel，保留其 [MIT LICENSE 和版权声明](LICENSE)。
-# Web Conversation Memory
+
+## Web Conversation Memory
 
 Completed messages provide durable memory within each learning space and its
 current scope/bindings. Recent turns, bounded extractive summaries and relevant
@@ -130,3 +132,19 @@ limits estimated total prompt input, including sources, history and system text.
 An oversized mandatory question fails with `CONTEXT_BUDGET_EXCEEDED`. The estimate
 is not the provider's exact tokenizer count. Recall currently rebuilds a TF-IDF
 index per request; very large conversation archives will need an indexed store.
+
+## Isolated Live Acceptance
+
+With Docker running and DashScope keys configured, run from `py/`:
+
+```powershell
+uv run python scripts/accept_learning_backend.py --live
+```
+
+This makes a bounded number of real model calls and creates disposable MySQL,
+Neo4j and Qdrant containers on random loopback ports. It reads only model settings
+from `.env`; the daily databases are not used. The script migrates a fresh schema,
+tests a synthetic learning workflow and removes only its own labeled containers.
+The sanitized JSON report defaults to `%TEMP%/knowpath-live-acceptance.json`.
+Use `--report PATH` to choose another report location. HTTP routes are exercised
+through FastAPI TestClient; this does not validate a reverse proxy or browser UI.
