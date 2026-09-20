@@ -94,3 +94,55 @@ run-dev 冻结代码、配置、题集、来源和模型预算，交替执行40�
 真实模型自己的 supported/answered 不是人工正确率。人工复核前，配对质量胜负、采用结论保持未知。
 保留集须先完成标签/划分人工审核，冻结价格及四个延迟/费用门槛；程序拒绝缺少这些条件的运行。
 B2/B3 摘要导航和自动路由属于原计划中的条件性后续实验，不因 B1 已实现而自动开启。
+
+## 可靠性修复后的验证入口（2026-09-21）
+
+从 `py/` 执行以下三个独立门禁，每次使用新的报告目录：
+
+```powershell
+python scripts/run_acceptance.py --profile offline --report-dir .rag-evaluation/offline-UNIQUE
+python scripts/run_acceptance.py --profile store --report-dir .rag-evaluation/store-UNIQUE
+python scripts/run_acceptance.py --profile model --live --model-env C:/PATH/TO/model.env --report-dir .rag-evaluation/model-UNIQUE
+```
+
+offline 使用明确的测试替身；store 自动创建独立 MySQL、Neo4j、Qdrant，验证迁移、服务版本、
+事务和生命周期；model 同样使用临时存储，实际调用 embedding、rerank、生成及核验，
+普通 A/B1 均经过消息发布和 HTTP 引用回查。模型用例的消息仓储为 fixture 独立 SQLite，
+MySQL 事务与恢复另由 store 门禁验证。模型门禁只覆盖小样本链路，完整开发评测仍是单独步骤。
+
+三个入口均保存预期/执行用例集合及结果；缺少必跑用例、意外 skip/xfail、零执行、迁移失败或
+临时容器清理失败返回非零。39 个明确不适用的后端组合由矩阵排除；没有通过数冒充执行数。
+脚本不读取业务数据库地址作为测试地址，也不迁移业务库。报告中的原始 pytest 日志仅保留本地，
+分享时使用检查过的 gate/report 摘要，避免供应商或连接错误携带内部信息。
+
+V2 使用请求内短来源 ID，草稿最多12条结论/12个要点，并按 `RAG_MAX_DRAFT_BYTES` 限制规范化 JSON。
+代码将完整原文确定性划为带ID的片段，核验只选择 `evidence_id`，由代码恢复 Unicode 半开跨度。
+全部片段保留原始字符，不能去空白、改写或截掉条件；未知ID或归属错误拒绝。
+这避免要求模型计算字符偏移或逐字重抄PDF断行。最终对外引用身份保持 schema2。
+
+生成器只看到 `sN + source_text`，核验器看到 `sN + segments(eN,text)`，避免混用来源与段ID。
+strict schema按本轮来源、段、结论ID绑定枚举，规划与发送共享同一请求体；结论ID为c1…c12。
+数学输出采用纯文本或Unicode提示，证据原文不改写。这不能保证供应商不再提前结束JSON；
+即使finish_reason为stop，不完整JSON仍明确失败。版本标识纳入冻结配置。
+
+修复验证配置采用 `RAG_RESPONSE_FORMAT=json_schema`、输入上限24000、输出4000、
+模型上下文32768、草稿4000字节、总期限120秒；生成/核验成对准入的最低预留为10/25秒，
+分别由 `RAG_REVISION_GENERATION_SECONDS`、`RAG_REVISION_VERIFICATION_SECONDS` 设置。
+这些是实验配置与时间预留，不是供应商延迟保证，也未自动改写应用默认设置。
+
+现阶段计数仍为带模板余量的 UTF-8 字节保守上界，不能称为真实 token 数。
+trace 同时标注计数模式、计数器版本和供应商实际 usage；可选本地 tokenizer 必须以
+`RAG_TOKEN_PROFILE_MANIFEST` 和 `RAG_TOKEN_PROFILE_SHA256` 绑定审核后的部署与文件，
+不会自动下载或执行远端代码。参见 [计数来源](TOKEN-COUNTING-PROVENANCE.md)。
+
+第二轮前检查完整证据组、两次模型输入/输出、调用数、时间与已配置金额；金额成对预约，
+失败不退回。证据不足或需要澄清经首次核验确认后结束，不重复生成相同空答案。
+已无足够资源时明确返回预算错误；核验失败不得转成资料不足或发布未核验正文。
+请求 journal 与答案独立保留，失败仍记录已发生的物理调用、用量及阶段；未收到用量保持 unknown。
+`content_passed` 只表示 JSON 内容检查通过，`passed` 表示本地结构/引用契约通过，不代表人工语义正确。
+
+HTTP 边界使用固定上限32个工作线程，每个transport惰性占一个，队列有界。
+调用方按绝对阶段期限等待响应头和响应字节；取消及close不会同步等待底层慢关闭。
+原工作线程负责关闭迟到响应并释放配额，不能修改已封存journal。
+Python线程无法强杀永久阻塞的底层调用；这类调用会占用固定配额，使后续请求到期失败，
+不会无限创建线程。供应商远端完成、取消及最终计费仍不由本地截止机制保证。

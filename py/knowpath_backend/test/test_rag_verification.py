@@ -272,6 +272,9 @@ def test_real_adapters_fit_four_calls_without_old_draft_in_second_check(monkeypa
     source = [dict(chunk_id='c1',source_text='Evidence fact. '*350)]
     with httpx.Client(transport=httpx.MockTransport(handler)) as client:
         generator,checker = BudgetedJsonModel(settings,client=client),BudgetedJsonModel(settings,client=client)
+        # This historical four-call envelope fixture intentionally exercises
+        # the legacy protocol; V2 wire/schema behavior has separate coverage.
+        generator.protocol_version = checker.protocol_version = 1
         result=AnswerVerifier(generator,checker).answer('State the fact',source,deadline=time.monotonic()+10)
     assert result['status']=='answered' and len(bodies)==4
     assert all(_encoded_size(body)<=12000 for body in bodies)

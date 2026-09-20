@@ -5,11 +5,16 @@ import json
 import math
 import os
 import time
+from copy import deepcopy
+from hashlib import sha256
 
 import httpx
 
 from knowpath_backend.learning.config import LearningSettings
-from .verification import VerificationError
+from .verification import CLAIM_ID_POOL, VerificationError
+from .diagnostics import failure_kind as transport_failure_kind
+from .token_budget import calibrate_usage
+from .protocol_config import counting_profile, protocol_configuration
 
 
 def _remaining_timeout(deadline, maximum, error_type):
@@ -60,6 +65,69 @@ def _usage_fields(body):
     return result
 
 
+def _identity_bound_schema(messages, response_schema):
+    """Bind only known RAG identity fields in a request-local schema copy.
+
+    The capacity planner and physical send both call request_body, so identity
+    constraints cannot disappear from token counts or spending reservations.
+    An empty planning draft reserves the full bounded claim-ID pool; a real
+    draft, including claims=[], narrows it to exactly the generated identities.
+    """
+    schema = deepcopy(response_schema)
+    definitions = schema.get('$defs', {})
+    if not ({'WireClaim', 'WireCheck', 'WireRequirement', 'WireEvidenceSpan'} & definitions.keys()):
+        return schema
+    try:
+        payload = _strict_json(messages[-1]['content'])
+        evidence = payload['evidence']
+        chunk_ids = list(dict.fromkeys(row['chunk_id'] for row in evidence))
+        evidence_ids = list(dict.fromkeys(segment['evidence_id'] for row in evidence
+                                         for segment in row.get('segments', [])))
+        draft = payload.get('draft', {})
+        claim_ids = (list(dict.fromkeys(claim['claim_id'] for claim in draft['claims']))
+                     if 'claims' in draft else list(CLAIM_ID_POOL))
+        if any(type(identifier) is not str or not identifier for identifier in chunk_ids + evidence_ids + claim_ids):
+            raise ValueError('invalid identity collection')
+        if any(identifier not in CLAIM_ID_POOL for identifier in claim_ids):
+            raise ValueError('claim identity outside reserved pool')
+    except (ValueError, KeyError, IndexError, TypeError, AttributeError):
+        raise VerificationError('MODEL_INPUT_INVALID') from None
+
+    def scalar(field, values):
+        if values:
+            field['enum'] = list(values)
+        else:
+            field.pop('enum', None)
+
+    def array(field, values):
+        scalar(field['items'], values)
+        if not values:
+            field['maxItems'] = 0
+            if 'minItems' in field:
+                field['minItems'] = 0
+
+    if 'WireClaim' in definitions:
+        fields = definitions['WireClaim']['properties']
+        scalar(fields['claim_id'], CLAIM_ID_POOL)
+        array(fields['citation_ids'], chunk_ids)
+        array(fields['depends_on'], CLAIM_ID_POOL)
+    if 'WireCheck' in definitions:
+        fields = definitions['WireCheck']['properties']
+        scalar(fields['claim_id'], claim_ids)
+        array(fields['citation_ids'], chunk_ids)
+        if not claim_ids:
+            schema['properties']['checks']['maxItems'] = 0
+        if not evidence_ids:
+            fields['evidence_spans']['maxItems'] = 0
+    if 'WireRequirement' in definitions:
+        fields = definitions['WireRequirement']['properties']
+        array(fields['citation_ids'], chunk_ids)
+        array(fields['claim_ids'], claim_ids)
+    if 'WireEvidenceSpan' in definitions:
+        scalar(definitions['WireEvidenceSpan']['properties']['evidence_id'], evidence_ids)
+    return schema
+
+
 class BudgetedJsonModel:
     """Synchronous OpenAI-compatible JSON call with no retries or text repair.
 
@@ -69,33 +137,76 @@ class BudgetedJsonModel:
     """
 
     requires_required_points = True
+    protocol_version = 2
 
-    def __init__(self, settings=None, *, client=None, max_input_tokens=12000, max_output_tokens=2000):
+    def __init__(self, settings=None, *, client=None, max_input_tokens=12000, max_output_tokens=2000,
+                 journal=None, stage='generation'):
         if any(type(value) is not int or value <= 0 for value in (max_input_tokens, max_output_tokens)):
             raise ValueError("model token budgets must be positive integers")
         self.settings = settings or LearningSettings.from_env()
         self.client = client
         self.max_input_tokens, self.max_output_tokens = max_input_tokens, max_output_tokens
         self.last_usage = None
+        self.journal, self.stage = journal, stage
+        protocol = protocol_configuration(self.settings)
+        self.max_draft_bytes = protocol['max_draft_bytes']
+        self.response_format = protocol['response_format']
+        self.verification_reserve_seconds = protocol['revision_verification_seconds'] if journal else 0
+        self.counting_profile = counting_profile(self.settings)
 
-    def generate_json(self, messages, *, deadline):
+    def request_body(self, messages, response_schema=None):
+        body = {'model': self.settings.chat_model, 'messages': messages, 'max_tokens': self.max_output_tokens,
+                'response_format': {'type': 'json_object'}, 'stream': False}
+        if response_schema is not None and self.response_format == 'json_schema':
+            body['response_format'] = {'type':'json_schema', 'json_schema': {
+                'name':'rag_response', 'strict':True, 'schema':_identity_bound_schema(messages, response_schema)}}
+        if self.settings.chat_provider == 'dashscope' and self.settings.chat_model.lower().startswith('qwen'):
+            body['enable_thinking'] = False
+        return body
+
+    def generate_json(self, messages, *, deadline, response_schema=None):
+        previous_calls = self.journal.snapshot()['physical_calls'] if self.journal else 0
+        try:
+            result = self._generate_json(messages, deadline=deadline, response_schema=response_schema)
+        except VerificationError as error:
+            if self.journal:
+                kind = error.details.get('failure_kind', transport_failure_kind(error))
+                self.journal.fail_phase(kind)
+                if self.journal.snapshot()['physical_calls'] > previous_calls:
+                    self.journal.annotate_last(self.stage, metadata={**error.details, 'validation':'failed'},
+                        usage=self.last_usage, failure=kind)
+            raise
+        if self.journal:
+            self.journal.annotate_last(self.stage, metadata={'validation':'content_passed', 'finish_reason':'stop'}, usage=self.last_usage)
+        return result
+
+    def _generate_json(self, messages, *, deadline, response_schema=None):
         self.last_usage = None
+        if self.journal:
+            self.journal.set_stage(self.stage, {})
         started = time.monotonic()
+        _remaining_timeout(deadline, self.settings.chat_timeout_seconds, VerificationError)
+        if self.stage == 'generation':
+            deadline -= self.verification_reserve_seconds
+            if deadline <= time.monotonic():
+                raise VerificationError('RAG_STAGE_BUDGET_EXCEEDED', details={'stage':'generation'})
         timeout = _remaining_timeout(deadline, self.settings.chat_timeout_seconds, VerificationError)
         if (not isinstance(messages, list) or not messages or any(
                 not isinstance(m, dict) or not isinstance(m.get("role"), str)
                 or m["role"] not in {"system", "user", "assistant"}
                 or not isinstance(m.get("content"), str) for m in messages)):
             raise VerificationError("MODEL_INPUT_INVALID")
-        body = {"model": self.settings.chat_model, "messages": messages,
-                "max_tokens": self.max_output_tokens, "response_format": {"type": "json_object"},
-                "stream": False}
-        if self.settings.chat_provider == "dashscope" and self.settings.chat_model.lower().startswith("qwen"):
-            body["enable_thinking"] = False
+        body = self.request_body(messages, response_schema)
         try:
-            input_bound = _encoded_size(body)
+            counted = self.counting_profile.count_request(body)
+            input_bound = counted.value
         except (ValueError, TypeError, UnicodeError):
             raise VerificationError("MODEL_INPUT_INVALID") from None
+        if self.journal:
+            self.journal.set_stage(self.stage, {'input_bound':input_bound, 'input_limit':self.max_input_tokens,
+                'output_limit':self.max_output_tokens, 'context_limit':self.settings.context_budget_tokens,
+                'draft_limit_bytes':self.max_draft_bytes, 'count_kind':counted.kind, 'count_unit':counted.unit,
+                'count_profile_sha256':sha256(counted.profile_id.encode()).hexdigest()})
         if (input_bound > self.max_input_tokens
                 or input_bound + self.max_output_tokens > self.settings.context_budget_tokens):
             raise VerificationError("MODEL_TOKEN_BUDGET_EXCEEDED", details={
@@ -111,10 +222,12 @@ class BudgetedJsonModel:
             try:
                 timeout = _remaining_timeout(deadline, self.settings.chat_timeout_seconds, VerificationError)
                 response = client.post(self.settings.chat_base_url.rstrip("/") + "/chat/completions",
-                    json=body, headers={"Authorization": f"Bearer {key}"}, timeout=timeout, follow_redirects=False)
+                    json=body, headers={"Authorization": f"Bearer {key}"}, timeout=timeout, follow_redirects=False,
+                    extensions={'rag_stage_deadline': deadline})
                 response.raise_for_status()
-            except (httpx.HTTPError, httpx.InvalidURL, ValueError, OSError):
-                raise VerificationError("MODEL_UNAVAILABLE") from None
+            except (httpx.HTTPError, httpx.InvalidURL, ValueError, OSError) as error:
+                status = error.response.status_code if isinstance(error, httpx.HTTPStatusError) else None
+                raise VerificationError("MODEL_UNAVAILABLE", details={'failure_kind': transport_failure_kind(error, status)}) from None
             _remaining_timeout(deadline, self.settings.chat_timeout_seconds, VerificationError)
             details = {'input_bound':input_bound, 'input_limit':self.max_input_tokens,
                 'output_limit':self.max_output_tokens, 'context_limit':self.settings.context_budget_tokens}
@@ -126,6 +239,11 @@ class BudgetedJsonModel:
                 # Keep actual usage validation at its original decision point.
                 try:
                     details.update(_usage_fields(payload))
+                    self.last_usage = {'model': self.settings.chat_model, 'estimated_input_tokens': input_bound,
+                        'count_kind':counted.kind, 'count_unit':counted.unit, 'count_profile':counted.profile_id,
+                        'actual_prompt_tokens':_usage_fields(payload).get('prompt_tokens'),
+                        'reserved_output_tokens': self.max_output_tokens,
+                        'latency_seconds': time.monotonic() - started, **_usage_fields(payload)}
                 except (ValueError, TypeError, AttributeError):
                     pass
                 failure_kind = 'response_shape'
@@ -150,6 +268,7 @@ class BudgetedJsonModel:
                     raise ValueError("JSON object required")
                 failure_kind = 'usage_invalid'
                 usage = _usage_fields(payload)
+                calibration = calibrate_usage(counted, usage)
                 if usage.get("completion_tokens", usage.get("output_tokens", 0)) > self.max_output_tokens:
                     failure_kind = 'output_budget'
                     raise ValueError("output budget exceeded")
@@ -158,6 +277,9 @@ class BudgetedJsonModel:
                     'failure_kind':failure_kind}) from None
             _remaining_timeout(deadline, self.settings.chat_timeout_seconds, VerificationError)
             self.last_usage = {"model": self.settings.chat_model, "estimated_input_tokens": input_bound,
+                               'count_kind':counted.kind, 'count_unit':counted.unit, 'count_profile':counted.profile_id,
+                               'actual_prompt_tokens':usage.get('prompt_tokens', usage.get('input_tokens')),
+                               'input_bound_sufficient':calibration.within_upper_bound,
                                "reserved_output_tokens": self.max_output_tokens,
                                "latency_seconds": time.monotonic() - started, **usage}
             return result

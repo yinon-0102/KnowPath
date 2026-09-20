@@ -147,10 +147,20 @@ class RagPipeline:
         if len(ranked) != len(selected) or {r["chunk_id"] for r in ranked} != {r["chunk_id"] for r in selected}:
             raise VerificationError("RAG_RERANK_INVALID")
         # Reranker controls ordering only. Restore authoritative source rows.
-        context = assemble_context([by_id[r["chunk_id"]] for r in ranked], max_tokens=self.budget.context_tokens)
+        capacity_trace = None
+        ordered = [by_id[r['chunk_id']] for r in ranked]
+        if ordered and getattr(self.verifier, 'capacity', None) is not None:
+            context, capacity_trace = self.verifier.capacity.select_context(resolved_question, ordered,
+                max_evidence_tokens=self.budget.context_tokens)
+            if context:
+                self.verifier.capacity.admit_initial(resolved_question, context, deadline=deadline)
+        else:
+            context = assemble_context(ordered, max_tokens=self.budget.context_tokens)
         result = self.verifier.answer(resolved_question, context, deadline=deadline,
             max_generation_calls=self.budget.max_generation_calls,
             max_verification_calls=self.budget.max_verification_calls)
+        if capacity_trace is not None:
+            result['trace']['protocol_capacity'] = capacity_trace
         self._guard(scope, deadline, cancelled)
         citations = []
         by_context = {s['chunk_id']:s for s in context}

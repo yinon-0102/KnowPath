@@ -188,6 +188,8 @@ class MessageService:
         except VerificationError as exc:
             error = exc.code
             error_details = safe_error_details(exc.details)
+            from knowpath_backend.learning.rag.diagnostics import safe_journal_snapshot
+            snapshot['rag_failure_journal'] = safe_journal_snapshot(getattr(exc, 'call_journal', None))
         except (MessageGenerationError, RetrievalError) as exc:
             error = exc.code
         except Exception:
@@ -236,6 +238,8 @@ class MessageService:
                 if context_error:
                     error, error_details = context_error, {}
                 if error:
+                    if snapshot.get('rag_failure_journal'):
+                        current['snapshot']['rag_failure_journal'] = snapshot['rag_failure_journal']
                     public = {"UNSUPPORTED_MODEL": "当前模型不支持所需能力", "RATE_LIMITED": "模型请求过于频繁，请稍后重试",
                               "MODEL_UNAVAILABLE": "对话模型暂时不可用", "MESSAGE_VALIDATION_FAILED": "回答未通过来源校验",
                               "STALE_LEARNING_CONTEXT": "学习范围已变化，请重新发送消息", "SESSION_FINISHED": "学习会话已经结束",
@@ -248,6 +252,9 @@ class MessageService:
                     public.update({
                         "RAG_INDEX_NOT_READY": "当前学习范围的内容索引尚未发布",
                         "RAG_DEADLINE_EXCEEDED": "本次检索与回答超过时间预算",
+                        "RAG_STAGE_BUDGET_EXCEEDED": "剩余预算不足以完成回答及核验",
+                        "MODEL_OUTPUT_CAPACITY_EXCEEDED": "本次回答超过结构化输出容量",
+                        "ANSWER_VERIFICATION_FAILED": "回答修正后仍未通过核验，本次回答未发布",
                         "RAG_COST_BUDGET_EXCEEDED": "本次检索与回答超过费用预算",
                         "RAG_SPEND_CONFIG_INVALID": "检索与回答的费用预算配置无效",
                         "RAG_EXECUTION_INTERRUPTED": "上次回答执行已中断，为避免重复调用，本次任务未重放，请重新发送消息",

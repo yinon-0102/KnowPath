@@ -16,6 +16,35 @@ SAFE_DETAILS = {
 SECRET = "provider-secret-do-not-publish"
 
 
+@pytest.mark.parametrize('code', ['ANSWER_VERIFICATION_FAILED', 'MODEL_OUTPUT_CAPACITY_EXCEEDED',
+                                  'RAG_STAGE_BUDGET_EXCEEDED'])
+def test_failed_model_journal_persists_internally_without_answer_or_public_leak(build_workspace, code):
+    from knowpath_backend.learning.rag.diagnostics import RequestJournal
+    state, _, space, *_ = build_workspace
+    class Pipeline:
+        def answer(self, *args, **kwargs):
+            journal = RequestJournal()
+            call = journal.begin_call('generation')
+            journal.finish_call(call, status='succeeded', usage={'prompt_tokens':17})
+            error = VerificationError(code, details={'stage':'verification'})
+            error.call_journal = journal.seal('failed')
+            error.call_journal['provider_response'] = SECRET
+            raise error
+    state.message_service.rag_pipeline = Pipeline()
+    response = state.message_service.send(space['id'], {'message':'学校应该告知谁？'}, durable=True)
+    event = state.message_service.repository.records('outbox', event_type='message.generate')[0]
+    worker = ModelTaskWorker(messages=state.message_service)
+    assert worker.run_once(event['id'])
+    run = state.get_run(response['run_id'])
+    assert_failed_without_answer(run, code, {'stage':'verification'})
+    stored = state.message_service.repository.get_record('messages', event['aggregate_id'])
+    journal = stored['snapshot']['rag_failure_journal']
+    assert journal['calls'][0]['usage']['prompt_tokens'] == 17
+    assert SECRET not in json.dumps(journal)
+    assert 'call_journal' not in json.dumps(run) and 'prompt_tokens' not in json.dumps(run)
+    assert worker.run_once(event['id']) is False
+
+
 def assert_failed_without_answer(run, code, details):
     assert run["status"] == "failed"
     assert run["error"]["code"] == code

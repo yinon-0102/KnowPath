@@ -16,6 +16,7 @@ def runtime_configuration(settings):
     from knowpath_backend.learning.rag.reranking import DEFAULT_RERANK_ENDPOINT, DEFAULT_RERANK_MODEL
     from knowpath_backend.learning.rag.spending import spending_configuration
     from knowpath_backend.learning.rag.runtime import model_budget_configuration
+    from knowpath_backend.learning.rag.protocol_config import protocol_configuration
     models = {name: getattr(settings, name) for name in ("chat_provider", "chat_model", "chat_base_url",
         "embedding_provider", "embedding_model", "embedding_dimension", "embedding_base_url")}
     models.update(rerank_model=os.getenv("RAG_RERANK_MODEL") or DEFAULT_RERANK_MODEL,
@@ -24,7 +25,8 @@ def runtime_configuration(settings):
         chat_timeout_seconds=settings.chat_timeout_seconds, model_context_tokens=settings.context_budget_tokens,
         **model_budget_configuration(settings), rerank_input_tokens=90000,
         rerank_candidates=40, transport_retries=0, spending=spending_configuration())
-    return dict(models=models, budgets=budgets, prompts={"implementation": "frozen_python_sources"},
+    return dict(models=models, budgets=budgets, prompts={"implementation": "frozen_python_sources",
+                'protocol':protocol_configuration(settings)},
                 environment={"qdrant_url": os.getenv("QDRANT_URL", "http://127.0.0.1:6333"),
                              "collection_prefix": os.getenv("RAG_COLLECTION_PREFIX", "knowpath_rag_content")})
 

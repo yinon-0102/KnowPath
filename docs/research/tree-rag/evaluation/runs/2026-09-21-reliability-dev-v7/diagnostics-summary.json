@@ -1,0 +1,176 @@
+{
+  "scheduled_requests": 80,
+  "completed_requests": 80,
+  "missing_results": 0,
+  "human_review_status": "pending",
+  "human_task_success_rate": null,
+  "pricing_confirmed": false,
+  "heldout_executed": false,
+  "modes": {
+    "a": {
+      "requests": 40,
+      "service_successes": 29,
+      "service_failures": 11,
+      "answer_statuses": {
+        "answered": 22,
+        "partial": 6,
+        "insufficient": 1
+      },
+      "p50_latency_ms": 28275.357399950735,
+      "p95_latency_ms": 83305.97250000574
+    },
+    "b1": {
+      "requests": 40,
+      "service_successes": 31,
+      "service_failures": 9,
+      "answer_statuses": {
+        "answered": 22,
+        "partial": 8,
+        "insufficient": 1
+      },
+      "p50_latency_ms": 30356.522800051607,
+      "p95_latency_ms": 108019.73399997223
+    }
+  },
+  "errors": [
+    {
+      "code": "RAG_DEADLINE_EXCEEDED",
+      "stage": "verification",
+      "failure_kind": null,
+      "schema_rule": null,
+      "count": 2
+    },
+    {
+      "code": "VERIFICATION_UNAVAILABLE",
+      "stage": "verification",
+      "failure_kind": "response_schema",
+      "schema_rule": "citation_relationship",
+      "count": 5
+    },
+    {
+      "code": "EMBEDDING_UNAVAILABLE",
+      "stage": null,
+      "failure_kind": null,
+      "schema_rule": null,
+      "count": 1
+    },
+    {
+      "code": "GENERATION_INVALID_RESPONSE",
+      "stage": "generation",
+      "failure_kind": "response_schema",
+      "schema_rule": "schema_fields",
+      "count": 6
+    },
+    {
+      "code": "MODEL_OUTPUT_CAPACITY_EXCEEDED",
+      "stage": "generation",
+      "failure_kind": "output_budget",
+      "schema_rule": null,
+      "count": 1
+    },
+    {
+      "code": "RAG_DEADLINE_EXCEEDED",
+      "stage": "generation",
+      "failure_kind": null,
+      "schema_rule": null,
+      "count": 1
+    },
+    {
+      "code": "VERIFICATION_UNAVAILABLE",
+      "stage": "verification",
+      "failure_kind": "response_schema",
+      "schema_rule": "required_points",
+      "count": 1
+    },
+    {
+      "code": "VERIFICATION_UNAVAILABLE",
+      "stage": "verification",
+      "failure_kind": "response_schema",
+      "schema_rule": "span_coverage",
+      "count": 2
+    },
+    {
+      "code": "ANSWER_VERIFICATION_FAILED",
+      "stage": "verification",
+      "failure_kind": null,
+      "schema_rule": null,
+      "count": 1
+    }
+  ],
+  "physical_calls_by_stage": {
+    "retrieval": {
+      "calls": 529,
+      "calls_with_usage": 0,
+      "billing_statuses": {
+        "not_applicable": 529
+      },
+      "validation_statuses": {
+        "not_applicable": 529
+      },
+      "usage_counter_sums": {}
+    },
+    "embedding": {
+      "calls": 80,
+      "calls_with_usage": 79,
+      "billing_statuses": {
+        "usage_observed": 79,
+        "unknown": 1
+      },
+      "validation_statuses": {
+        "not_applicable": 80
+      },
+      "usage_counter_sums": {
+        "prompt_tokens": 1541,
+        "total_tokens": 1541
+      }
+    },
+    "reranking": {
+      "calls": 79,
+      "calls_with_usage": 79,
+      "billing_statuses": {
+        "usage_observed": 79
+      },
+      "validation_statuses": {
+        "not_applicable": 79
+      },
+      "usage_counter_sums": {
+        "total_tokens": 370874
+      }
+    },
+    "generation": {
+      "calls": 112,
+      "calls_with_usage": 111,
+      "billing_statuses": {
+        "usage_observed": 111,
+        "unknown": 1
+      },
+      "validation_statuses": {
+        "passed": 104,
+        "failed": 8
+      },
+      "usage_counter_sums": {
+        "prompt_tokens": 212988,
+        "completion_tokens": 52922,
+        "total_tokens": 265910
+      }
+    },
+    "verification": {
+      "calls": 104,
+      "calls_with_usage": 102,
+      "billing_statuses": {
+        "usage_observed": 102,
+        "unknown": 2
+      },
+      "validation_statuses": {
+        "passed": 94,
+        "not_applicable": 1,
+        "failed": 9
+      },
+      "usage_counter_sums": {
+        "prompt_tokens": 333268,
+        "completion_tokens": 67524,
+        "total_tokens": 400792
+      }
+    }
+  }
+}

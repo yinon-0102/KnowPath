@@ -1,0 +1,38 @@
+{
+  "started_at": "2026-09-20T17:40:03.483109+00:00",
+  "checks": [
+    {
+      "name": "isolated_containers_created",
+      "count": 3
+    },
+    {
+      "name": "migrations_and_storage",
+      "head": "0014_rag_snapshots",
+      "table_count": 35
+    }
+  ],
+  "profile": "model",
+  "gate_report": "C:\\Users\\27202\\Desktop\\KnowPath\\.worktrees\\rag-foundation\\py\\.rag-evaluation\\reliability-model-20260921-2\\gate.json",
+  "models": {
+    "chat": "qwen-plus",
+    "embedding": "text-embedding-v3"
+  },
+  "services": {
+    "mysql": "mysql:8.4",
+    "neo4j": "neo4j:5.26-community",
+    "qdrant": "qdrant/qdrant:v1.13.6"
+  },
+  "service_versions": {
+    "mysql": "8.4.11",
+    "neo4j": "5.26.30",
+    "qdrant": "1.13.6"
+  },
+  "status": "passed",
+  "expected": 1,
+  "executed": 1,
+  "gate_errors": [],
+  "cleanup": {
+    "removed_or_absent": 3,
+    "remaining_containers": []
+  }
+}

@@ -1,0 +1,27 @@
+{
+  "source": "skip-audit-20260921.xml",
+  "mode": "offline, external service opt-ins explicitly absent",
+  "testcases": 1487,
+  "skipped": 222,
+  "failures": 0,
+  "errors": 0,
+  "skip_reasons": {
+    "requires explicit MySQL test URL": 159,
+    "requires explicit Neo4j and Qdrant test endpoints": 4,
+    "two-connection regression requires MySQL": 12,
+    "requires explicit Neo4j test URI": 3,
+    "concurrent writer coverage uses MySQL and memory": 1,
+    "production SQL startup recovery": 1,
+    "real MySQL row locks required": 6,
+    "requires MySQL transaction scheduling": 2,
+    "requires explicit real MySQL fixture": 6,
+    "requires MySQL locks": 2,
+    "forces MySQL overlapping transaction snapshots": 4,
+    "requires MySQL row locks": 4,
+    "LEARNING_TEST_QDRANT_URL is not set": 11,
+    "requires opt-in MySQL admin URL for isolated test DB": 4,
+    "requires dedicated opt-in Qdrant URL": 1,
+    "requires explicit real model opt-in": 1,
+    "SQL persistence integration variant": 1
+  }
+}

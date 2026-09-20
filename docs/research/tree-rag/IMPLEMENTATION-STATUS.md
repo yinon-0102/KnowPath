@@ -20,7 +20,14 @@
 | 接入 | `LEARNING_RAG_PLUGIN=legacy|a|b1`，协议适配器，build/validate/publish/rollback CLI，schema2引用解析API |
 | 评测工具 | 冻结输入/来源/学习模块代码/依赖锁，A/B1交替且无隐式重试，保留失败和缺失分母，来源跨度覆盖及人工离线评分 |
 
-## 验证证据
+## 修复后验证入口
+
+已实施必跑测试门禁、安全调用诊断、完整协议容量规划、成对修正预约、
+有界核验状态机和覆盖响应头/响应体的阶段截止保护。详细机制及最终证据见
+[可靠性修复记录](RELIABILITY-REMEDIATION.md)和[独立门禁报告](evaluation/reliability-20260921/README.md)。
+下方1265通过/222跳过为修复前历史记录；不能作为修复后门禁结果。
+
+## 修复前验证证据（历史记录）
 
 - 最后对话发布修复后的整体学习/RAG回归：**1265 passed, 222 skipped, 514 deselected**，耗时261.58秒。
   命令为 `python -m pytest knowpath_backend/test -q -k 'rag or learning' --basetemp=.pytest-rag-delivery-20260921-published`。
@@ -55,6 +62,18 @@ dev-v3已按固定配置完整执行40题A/B1配对：80次请求，A/B1各15次
 见[完整开发报告](evaluation/runs/2026-09-20-dev-v3/summary.md)与
 [逐题原文及回答](evaluation/runs/2026-09-20-dev-v3/review.md)。
 模型返回answered/supported只说明运行时模型判断，人工任务成功率、胜负与采用结论均保持未知。
+
+## 修复后 V7 开发集结果
+
+V7 在新冻结 ID `72d0b3cb8cc881ca3952f986c692eb45426c3aa3bed4effc1ac3995a81347098` 下完成80/80：
+A 正常29/40、B1正常31/40，未执行0。A P50/P95为28.28/83.31秒，B1为30.36/108.02秒。
+运行时状态为 A 22 answered、6 partial、1 insufficient；B1 22 answered、8 partial、1 insufficient。
+这些结果尚未人工评分，不能当作任务成功率；价格未配置，保留集未执行。完整机器摘要和逐题材料见
+[V7报告](evaluation/runs/2026-09-21-reliability-dev-v7/summary.md)及对应归档。
+
+修复后门禁：offline-4 为1426/1426通过、无意外skip/xfail；model-4为1/1必跑用例通过，
+含A/B1真实模型链路、消息发布、HTTP引用回查和错误版本拒绝；store-3为182/182通过，三类临时容器已清理。
+这些是工程和小样本连通性证据，不替代人工语义验收。V7仍有20次服务/契约失败，故不切换默认插件。
 
 法规14题的[代理辅助分析](evaluation/runs/2026-09-20-dev-v3/law-review-notes.md)发现：
 部分回答在证据已进入上下文时仍遗漏条件，B1扩展也不一定形成相对A的新证据。这些是待人工核对的

@@ -88,6 +88,7 @@ def test_input_budget_failure_records_safe_bounds_before_http(monkeypatch,failur
     ('stop','[]',{'prompt_tokens':42},'content_shape','stop'),
     ('stop','{}',{'prompt_tokens':42,'completion_tokens':2001},'output_budget','stop'),
     ('stop','{}',{'prompt_tokens':True,'completion_tokens':2},'usage_invalid','stop'),
+    ('stop','{}',{'prompt_tokens':42,'input_tokens':43,'completion_tokens':2},'usage_invalid','stop'),
 ])
 def test_invalid_response_records_enums_and_valid_usage_without_content(
         monkeypatch,finish,content,usage,kind,expected_finish):
@@ -102,7 +103,11 @@ def test_invalid_response_records_enums_and_valid_usage_without_content(
         with pytest.raises(VerificationError) as caught:
             model.generate_json([{'role':'user','content':'private-prompt'}],deadline=time.monotonic()+10)
     assert caught.value.code=='MODEL_INVALID_RESPONSE' and len(calls)==1
-    assert model.last_usage is None
+    if type(usage.get('prompt_tokens')) is int:
+        assert model.last_usage['prompt_tokens'] == usage['prompt_tokens']
+        assert 'private' not in json.dumps(model.last_usage)
+    else:
+        assert model.last_usage is None
     details=caught.value.details
     assert details['failure_kind']==kind
     assert details.get('finish_reason')==expected_finish

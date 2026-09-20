@@ -21,6 +21,17 @@ from uuid import uuid4
 BACKEND = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(BACKEND))
 
+MODEL_SETTINGS = {"DASHSCOPE_API_KEY", "LEARNING_CHAT_MODEL", "LEARNING_CHAT_PROVIDER",
+    "LEARNING_CHAT_BASE_URL", "LEARNING_CHAT_API_KEY_ENV", "LEARNING_CHAT_TIMEOUT_SECONDS",
+    "LEARNING_CONTEXT_BUDGET_TOKENS", "LEARNING_EMBEDDING_MODEL", "LEARNING_EMBEDDING_PROVIDER",
+    "LEARNING_EMBEDDING_BASE_URL", "LEARNING_EMBEDDING_API_KEY_ENV", "LEARNING_EMBEDDING_DIMENSION",
+    "RAG_RESPONSE_FORMAT", "RAG_MODEL_INPUT_TOKENS", "RAG_MODEL_OUTPUT_TOKENS", "RAG_MAX_DRAFT_BYTES",
+    "RAG_REVISION_GENERATION_SECONDS", "RAG_REVISION_VERIFICATION_SECONDS", "RAG_DEADLINE_SECONDS",
+    "RAG_RERANK_BASE_URL", "RAG_RERANK_API_KEY_ENV", "RAG_RERANK_MODEL",
+    "RAG_MAX_REQUEST_COST", "RAG_PRICING_FILE"}
+MODEL_SETTINGS.update({"RAG_TOKEN_PROFILE_MANIFEST", "RAG_TOKEN_PROFILE_SHA256"})
+MODEL_KEY_SETTINGS = ("LEARNING_CHAT_API_KEY_ENV", "LEARNING_EMBEDDING_API_KEY_ENV", "RAG_RERANK_API_KEY_ENV")
+
 
 def docker(*args):
     result = subprocess.run(["docker", *args], capture_output=True, text=True, timeout=120)
@@ -50,14 +61,11 @@ class Acceptance:
         assert endpoint.startswith("127.0.0.1:")
         return endpoint.split(":")[-1]
 
-    def configure(self):
+    def configure_models(self, env_file=None):
         from dotenv import dotenv_values
-        values = dotenv_values(BACKEND / ".env")
-        allowed = {"DASHSCOPE_API_KEY", "LEARNING_CHAT_MODEL", "LEARNING_CHAT_PROVIDER",
-                   "LEARNING_CHAT_BASE_URL", "LEARNING_CHAT_API_KEY_ENV", "LEARNING_CHAT_TIMEOUT_SECONDS",
-                   "LEARNING_EMBEDDING_MODEL", "LEARNING_EMBEDDING_PROVIDER", "LEARNING_EMBEDDING_BASE_URL",
-                   "LEARNING_EMBEDDING_API_KEY_ENV", "LEARNING_EMBEDDING_DIMENSION"}
-        for setting in ("LEARNING_CHAT_API_KEY_ENV", "LEARNING_EMBEDDING_API_KEY_ENV"):
+        values = dotenv_values(env_file or BACKEND / ".env")
+        allowed = set(MODEL_SETTINGS)
+        for setting in MODEL_KEY_SETTINGS:
             key_name = os.getenv(setting) or values.get(setting)
             if key_name:
                 allowed.add(key_name)
@@ -73,6 +81,10 @@ class Acceptance:
         if settings.chat_provider != "dashscope" or settings.embedding_provider != "dashscope":
             raise RuntimeError("DASHSCOPE_REQUIRED_FOR_THIS_ACCEPTANCE")
         self.report["models"] = {"chat": settings.chat_model, "embedding": settings.embedding_model}
+        return settings
+
+    def configure_storage(self):
+        """Provision disposable stores without reading or changing business settings."""
         prefix = "knowpath-accept-" + uuid4().hex[:10]
         mysql = self.container(prefix + "-mysql", "mysql:8.4", 3306,
                                {"MYSQL_ROOT_PASSWORD": "acceptance-root", "MYSQL_DATABASE": "knowpath_acceptance",
@@ -81,13 +93,24 @@ class Acceptance:
                                {"NEO4J_AUTH": "neo4j/acceptance-only", "NEO4J_server_memory_heap_max__size": "512M",
                                 "NEO4J_server_memory_pagecache_size": "256M"})
         qdrant = self.container(prefix + "-qdrant", "qdrant/qdrant:v1.13.6", 6333, {})
-        os.environ.update(DATABASE_URL=f"mysql+pymysql://acceptance:acceptance-only@127.0.0.1:{mysql}/knowpath_acceptance",
+        environment = dict(DATABASE_URL=f"mysql+pymysql://acceptance:acceptance-only@127.0.0.1:{mysql}/knowpath_acceptance",
                           LEARNING_PERSISTENCE="sql", LEARNING_RETRIEVAL_BACKEND="qdrant",
                           NEO4J_URI=f"bolt://127.0.0.1:{neo4j}", NEO4J_USERNAME="neo4j", NEO4J_PASSWORD="acceptance-only",
                           QDRANT_URL=f"http://127.0.0.1:{qdrant}", QDRANT_COLLECTION="knowpath_acceptance",
                           QDRANT_API_KEY="", LEARNING_LOCAL_TOKEN="acceptance-local-token-for-isolated-run")
-        os.environ.pop("NEO4J_DATABASE", None)
+        environment.update(LEARNING_TEST_MYSQL_URL=environment["DATABASE_URL"],
+                           LEARNING_TEST_MYSQL_ADMIN_URL=f"mysql+pymysql://root:acceptance-root@127.0.0.1:{mysql}/mysql",
+                           LEARNING_TEST_NEO4J_URI=environment["NEO4J_URI"],
+                           LEARNING_TEST_QDRANT_URL=environment["QDRANT_URL"],
+                           RAG_TEST_QDRANT_URL=environment["QDRANT_URL"],
+                           NEO4J_DATABASE="neo4j", PYTHON_DOTENV_DISABLED="1")
+        self.report["services"] = {"mysql": "mysql:8.4", "neo4j": "neo4j:5.26-community", "qdrant": "qdrant/qdrant:v1.13.6"}
         self.checked("isolated_containers_created", count=3)
+        return environment
+
+    def configure(self):
+        settings = self.configure_models()
+        os.environ.update(self.configure_storage())
         return settings
 
     def run(self):

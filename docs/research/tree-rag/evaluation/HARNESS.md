@@ -134,3 +134,27 @@ only actually reviewed entries into the `--reviews` input; null does not mean
 incorrect or reviewed. The renderer makes no provider calls and does not change
 the frozen dataset or its approval state. Real-material label drafts live in
 `real-draft/`, including their public-source checksums and explicit limitations.
+
+The reliability repair freezes the complete compact wire configuration under
+`prompts.protocol`: response format, canonical draft byte cap, generation/check
+time reservations, evidence locator version, and counting profile provenance.
+`segment-id-v1` supplies all original text as deterministic segments and lets the
+checker select locally defined IDs. The server restores exact Unicode offsets;
+models neither count character positions nor reproduce PDF whitespace.
+
+`whole-source-v1` shows generation only full source text and source IDs; segment
+IDs are confined to checking. `request-enum-v1` binds allowed source, segment and
+claim IDs in the native schema through the same body builder used for counting
+and sending. The bounded claim pool is c1 through c12. `unicode-plain-v1` changes
+output notation instructions without modifying source text. A provider `stop`
+finish reason does not make incomplete JSON valid. These policies are frozen.
+
+Every ConfiguredPipeline request owns a bounded call journal. Successful rows
+retain it under `response.trace.call_journal`; failed rows retain it under
+`call_journal` independently of an answer. Each physical HTTP call reports stage,
+safe failure/contract classification, duration and available provider usage.
+Retrieval HTTP calls are distinguished from billed model calls. Missing usage
+remains unknown; neither planned reservations nor JSON parsing success imply an
+actual invoice or semantically correct answer. Labels and model/checker verdicts
+remain separate. Interrupted experiments preserve the full scheduled denominator
+and explicitly identify missing records and potentially in-flight unknown cost.

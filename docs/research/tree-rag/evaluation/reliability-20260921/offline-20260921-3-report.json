@@ -1,0 +1,14 @@
+{
+  "started_at": "2026-09-20T17:59:39.080366+00:00",
+  "checks": [],
+  "profile": "offline",
+  "gate_report": "C:\\Users\\27202\\Desktop\\KnowPath\\.worktrees\\rag-foundation\\py\\.rag-evaluation\\reliability-offline-20260921-3\\gate.json",
+  "status": "passed",
+  "expected": 1397,
+  "executed": 1397,
+  "gate_errors": [],
+  "cleanup": {
+    "removed_or_absent": 0,
+    "remaining_containers": []
+  }
+}

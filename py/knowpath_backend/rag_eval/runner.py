@@ -97,10 +97,12 @@ def run(freeze_path, output_path, *, partition="dev", pipeline_factory, scope_re
                         json.dumps(record, allow_nan=False)
                     except Exception as error:
                         from knowpath_backend.learning.rag.verification import VerificationError, safe_error_details
+                        from knowpath_backend.learning.rag.diagnostics import safe_journal_snapshot
                         from knowpath_backend.learning.rag.retrieval import RetrievalError
                         code = error.code if isinstance(error, (VerificationError, RetrievalError)) else 'EVALUATION_REQUEST_FAILED'
                         details = safe_error_details(error.details) if isinstance(error,VerificationError) else {}
                         record.update(service_success=False, error_code=code, error_details=details, response=None)
+                        record['call_journal'] = safe_journal_snapshot(getattr(error, 'call_journal', None))
                     finally:
                         if pipeline is not None and hasattr(pipeline, "close"):
                             try: pipeline.close()

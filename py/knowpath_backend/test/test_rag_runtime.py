@@ -73,3 +73,25 @@ def test_transport_preserves_tighter_provider_timeout_and_bounds_unset_stages(mo
     assert observed[0]['read'] == 5
     assert 0 < observed[0]['write'] <= 30
     assert 0 < observed[0]['pool'] <= 30
+
+
+@pytest.mark.parametrize('code,kind', [('RAG_STAGE_BUDGET_EXCEEDED','stage_budget'),
+                                      ('RAG_DEADLINE_EXCEEDED','deadline')])
+def test_pre_call_failure_records_its_actual_stage(build_workspace, monkeypatch, code, kind):
+    from knowpath_backend.learning.rag.runtime import ConfiguredPipeline
+    from knowpath_backend.learning.config import LearningSettings
+    from knowpath_backend.learning.rag.verification import VerificationError
+    state, *_ = build_workspace
+    instance = ConfiguredPipeline(state.material_repository, state.space_service, LearningSettings(), 'a')
+
+    def fail(question, *, journal, **kwargs):
+        journal.set_stage('reranking')
+        raise VerificationError(code, details={'stage':'generation'})
+
+    monkeypatch.setattr(instance, '_answer', fail)
+    with pytest.raises(VerificationError) as caught:
+        instance.answer('test')
+    value = caught.value.call_journal
+    assert value['stage'] == 'generation'
+    assert value['failure_kind'] == kind
+    assert value['physical_calls'] == 0

@@ -25,15 +25,15 @@ def test_unknown_provider_price_blocks_call():
         ledger.reserve(request())
 
 
-def test_transport_rejects_over_budget_before_provider_io():
+def test_transport_rejects_over_budget_before_provider_io(monkeypatch):
     import time
     from knowpath_backend.learning.rag.runtime import DeadlineTransport
     ledger = RequestSpending({'enabled': True, 'ceiling': '.00001', 'pricing': {'currency':'CNY',
         'date':'2026-09-20','price_table': {'test': {'input_per_million': 1, 'output_per_million': 2}}}})
     calls = []
     transport = DeadlineTransport(time.monotonic()+10, ledger)
-    transport.transport.close()
-    transport.transport = httpx.MockTransport(lambda req: (calls.append(req),httpx.Response(200))[1])
+    monkeypatch.setattr(httpx, 'HTTPTransport', lambda **kwargs:
+        httpx.MockTransport(lambda req: (calls.append(req),httpx.Response(200))[1]))
     with httpx.Client(transport=transport) as client:
         with pytest.raises(VerificationError, match='RAG_COST_BUDGET_EXCEEDED'):
             client.send(request())

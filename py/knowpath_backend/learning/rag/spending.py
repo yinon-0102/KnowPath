@@ -42,6 +42,31 @@ class RequestSpending:
         self.reserved = Decimal(0)
         self.calls = 0
         self.lock = Lock()
+        self.model_credits = []
+
+    def reserve_model_pair(self, plans):
+        """Reserve generation and verification together, before either send."""
+        if not self.config['enabled']: return
+        try:
+            if not isinstance(plans, list) or len(plans) != 2:
+                raise ValueError('a complete generation/check pair is required')
+            credits = []
+            for plan in plans:
+                if any(type(plan.get(key)) is not int or plan[key] <= 0 for key in ('input_bound', 'output_bound')):
+                    raise ValueError('positive bounded model plan required')
+                rate = self.config['pricing']['price_table'][plan['model']]
+                amount = (_amount(rate['input_per_million']) * plan['input_bound']
+                          + _amount(rate['output_per_million']) * plan['output_bound']) / 1_000_000
+                credits.append((plan['model'], amount + _amount(rate.get('per_call', 0))))
+        except (ValueError, TypeError, KeyError, InvalidOperation, AttributeError):
+            raise VerificationError('RAG_SPEND_CONFIG_INVALID') from None
+        with self.lock:
+            if self.model_credits: raise VerificationError('RAG_SPEND_CONFIG_INVALID')
+            amount = sum(value for _, value in credits)
+            if self.reserved + amount > _amount(self.config['ceiling']):
+                raise VerificationError('RAG_COST_BUDGET_EXCEEDED')
+            self.reserved += amount
+            self.model_credits = credits
 
     def reserve(self, request):
         if not self.config['enabled']:
@@ -67,6 +92,13 @@ class RequestSpending:
         except (ValueError, TypeError, KeyError, InvalidOperation, AttributeError):
             raise VerificationError('RAG_SPEND_CONFIG_INVALID') from None
         with self.lock:
+            if request.url.path.endswith('/chat/completions') and self.model_credits:
+                expected_model, credit = self.model_credits[0]
+                if expected_model != model: raise VerificationError('RAG_SPEND_CONFIG_INVALID')
+                if amount > credit: raise VerificationError('RAG_COST_BUDGET_EXCEEDED')
+                self.model_credits.pop(0)
+                self.calls += 1
+                return
             if self.reserved + amount > _amount(self.config['ceiling']):
                 raise VerificationError('RAG_COST_BUDGET_EXCEEDED')
             self.reserved += amount
@@ -79,5 +111,6 @@ class RequestSpending:
         with self.lock:
             return {'enabled': True, 'ceiling': self.config['ceiling'],
                 'reserved_upper_bound': str(self.reserved), 'reserved_calls': self.calls,
+                'pending_model_reservations': len(self.model_credits),
                 'currency': self.config['pricing']['currency'], 'price_date': self.config['pricing']['date'],
                 'billing_statement': False}
