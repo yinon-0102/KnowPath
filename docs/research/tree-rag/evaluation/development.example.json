@@ -1,0 +1,57 @@
+{
+  "dataset": "dataset.jsonl",
+  "split": "split.json",
+  "rubric": "rubric.md",
+  "human_review_status": "pending",
+  "repeats": 2,
+  "order_schedule": "alternating",
+  "retries": 0,
+  "profile": {"manifest_configuration_hashes": {}},
+  "models": {
+    "chat_provider": "dashscope",
+    "chat_model": "qwen-plus",
+    "chat_base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    "embedding_provider": "dashscope",
+    "embedding_model": "text-embedding-v3",
+    "embedding_dimension": 1024,
+    "embedding_base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    "rerank_model": "gte-rerank-v2",
+    "rerank_endpoint": "https://dashscope.aliyuncs.com/api/v1/services/rerank/text-rerank/text-rerank"
+  },
+  "prompts": {"implementation": "frozen_python_sources"},
+  "budgets": {
+    "keyword_candidates": 30,
+    "vector_candidates": 30,
+    "rerank_candidates": 40,
+    "context_tokens": 5000,
+    "max_generation_calls": 2,
+    "max_verification_calls": 2,
+    "deadline_seconds": 120,
+    "chat_timeout_seconds": 60,
+    "model_context_tokens": 16000,
+    "model_input_tokens": 12000,
+    "model_output_tokens": 2000,
+    "rerank_input_tokens": 90000,
+    "transport_retries": 0,
+    "spending": {"enabled": false}
+  },
+  "environment": {"qdrant_url": "http://127.0.0.1:6333", "collection_prefix": "knowpath_rag_content"},
+  "statistics": {
+    "method": "family_descriptive",
+    "estimand": "full_task_success_difference",
+    "weighting": "equal_family",
+    "repeat_aggregation": "question_mean",
+    "failures": "zero",
+    "quantile": "nearest_rank",
+    "seed": 0
+  },
+  "pricing": {"currency": "USD", "date": null, "price_table": null},
+  "gates": {
+    "max_p95_latency_ms": null,
+    "max_mean_cost_per_request": null,
+    "max_b1_latency_ratio": null,
+    "max_b1_cost_ratio": null
+  },
+  "decision_rule": "exploratory_no_adoption",
+  "runtime_bindings": {}
+}

@@ -1,0 +1,4 @@
+```{.python .input}
+#@tab tensorflow
+tf.reduce_sum(A, axis=[0, 1])  # 结果和tf.reduce_sum(A)相同
+```

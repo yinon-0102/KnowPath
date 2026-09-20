@@ -1,0 +1,3 @@
+```{.python .input}
+A.mean(axis=0), A.sum(axis=0) / A.shape[0]
+```

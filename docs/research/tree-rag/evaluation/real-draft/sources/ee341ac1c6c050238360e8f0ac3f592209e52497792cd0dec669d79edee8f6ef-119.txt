@@ -1,0 +1,4 @@
+```{.python .input}
+#@tab pytorch
+A.mean(), A.sum() / A.numel()
+```

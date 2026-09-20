@@ -80,8 +80,6 @@ def bound_snapshot(snapshot, *, budget):
     original_source_count = len(sources)
     while len(sources) > 1 and prompt_tokens(result) > budget:
         sources.pop()
-    while sources and prompt_tokens(result) > budget and len(sources[0]["text"]) > 128:
-        sources[0]["text"] = sources[0]["text"][:max(128, len(sources[0]["text"]) // 2)]
     if not sources or prompt_tokens(result) > budget:
         raise MessageGenerationError("CONTEXT_BUDGET_EXCEEDED")
 

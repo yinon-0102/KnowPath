@@ -1,0 +1,4 @@
+```{.python .input}
+x = np.arange(4)
+x
+```

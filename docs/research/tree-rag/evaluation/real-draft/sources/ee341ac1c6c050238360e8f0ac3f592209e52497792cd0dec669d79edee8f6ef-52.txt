@@ -1,0 +1,4 @@
+当我们交换矩阵的行和列时，结果称为矩阵的*转置*（transpose）。
+通常用$\mathbf{a}^\top$来表示矩阵的转置，如果$\mathbf{B}=\mathbf{A}^\top$，
+则对于任意$i$和$j$，都有$b_{ij}=a_{ji}$。
+因此，在 :eqref:`eq_matrix_def`中的转置是一个形状为$n \times m$的矩阵：

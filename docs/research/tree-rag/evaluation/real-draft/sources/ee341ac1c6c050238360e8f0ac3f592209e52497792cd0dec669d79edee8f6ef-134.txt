@@ -1,0 +1,3 @@
+```{.python .input}
+A / sum_A
+```

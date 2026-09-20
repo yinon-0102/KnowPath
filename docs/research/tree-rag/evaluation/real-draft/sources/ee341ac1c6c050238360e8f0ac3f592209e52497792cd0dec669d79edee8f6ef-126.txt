@@ -1,0 +1,4 @@
+```{.python .input}
+#@tab paddle
+A.mean(axis=0), A.sum(axis=0) / A.shape[0]
+```

@@ -1,0 +1,2 @@
+$$\mathbf{x} =\begin{bmatrix}x_{1}  \\x_{2}  \\ \vdots  \\x_{n}\end{bmatrix},$$
+:eqlabel:`eq_vec_def`

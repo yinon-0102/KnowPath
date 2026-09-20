@@ -1,0 +1,5 @@
+```{.python .input}
+#@tab paddle
+A = paddle.reshape(paddle.arange(20), (5, 4))
+A
+```

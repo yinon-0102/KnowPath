@@ -185,11 +185,17 @@ class MaterialDeletionService:
             self._remove('corrections', [c['id'] for c in corrections])
             self.graphs.repository.delete_history(material_id, [r['id'] for r in histories])
             self._invalidate_replays(material_id, {s['id'] for s in affected_spaces})
+            rag_cleanup = dict(material_version_ids=[], rag_indexes=[], rag_write_ids=[])
+            if self.uow:
+                from .rag_cleanup import capture_rag_cleanup
+                with self.uow.session() as session:
+                    rag_cleanup = capture_rag_cleanup(session, material_id)
             self.materials.delete_material(material_id)
             run = self.runs.create('material_delete')
             event = {'id': str(uuid4()), 'event_type': 'material.delete', 'aggregate_type': 'material',
                      'aggregate_id': material_id, 'payload': {'material_id': material_id, 'run_id': run['id'],
-                         'revision_ids': [r['id'] for r in histories], 'collections': sorted(collections)}, 'status': 'pending', 'attempts': 0,
+                         'revision_ids': [r['id'] for r in histories], 'collections': sorted(collections),
+                         **rag_cleanup}, 'status': 'pending', 'attempts': 0,
                      'lease_token': None, 'lease_until': None, 'available_at': None, 'created_at': now()}
             self.repository.put_record('outbox', event)
             return {'run_id': run['id'], 'material_id': material_id, 'status': 'queued'}
@@ -234,6 +240,13 @@ class MaterialDeletionWorker:
     def execute(self, claimed):
         succeeded = False
         try:
+            # Check before the external sweep, never only after it. Otherwise an
+            # in-flight write could land after deletion and close its intent just
+            # before our final SQL check, causing a false completed result.
+            for identifier in claimed['payload'].get('rag_write_ids', []):
+                intent = self.repository.get_record('outbox', identifier, lock=False)
+                if intent['event_type'] != 'rag.index.write' or intent['status'] not in {'completed', 'abandoned'}:
+                    raise RuntimeError('RAG_WRITE_IN_PROGRESS')
             self.cleaner.delete(claimed['payload'])
             succeeded = True
         except Exception:
@@ -267,6 +280,23 @@ class ExternalMaterialCleaner:
     def __init__(self, preparer):
         self.graph, self.vectors = preparer.graph, preparer.vectors.backend
 
+    def _delete_content_pair(self, identity):
+        """One journaled pair, verified by the same exact external selector."""
+        from qdrant_client import models
+        collection = identity['collection']
+        if not self.vectors.client.collection_exists(collection):
+            return {'verified': True}
+        selector = models.Filter(must=[
+            models.FieldCondition(key='material_version_id',
+                match=models.MatchValue(value=identity['material_version_id'])),
+            models.FieldCondition(key='retrieval_version_id',
+                match=models.MatchValue(value=identity['retrieval_version_id']))])
+        self.vectors.client.delete(collection,
+            points_selector=models.FilterSelector(filter=selector), wait=True)
+        if self.vectors.client.count(collection, count_filter=selector, exact=True).count:
+            raise RuntimeError('content vector cleanup not verified')
+        return {'verified': True}
+
     def delete(self, payload):
         from neo4j import Query
         from qdrant_client import models
@@ -288,3 +318,31 @@ class ExternalMaterialCleaner:
             self.vectors.client.delete(item.name, points_selector=models.FilterSelector(filter=selector), wait=True)
             if self.vectors.client.count(item.name, count_filter=selector, exact=True).count:
                 raise RuntimeError('vector cleanup not verified')
+        # Content-v2 points have original-version and retrieval-version identity,
+        # not legacy material_id. Destinations were journaled before SQL erasure.
+        # The worker checks durable write fences before entering this cleaner.
+        # The deletion-only adapter neither builds indexes nor owns this client.
+        from ..rag.registry import ManagedPlugin
+        for index in payload.get('rag_indexes', []):
+            collection = index.get('collection')
+            versions = index.get('material_version_ids')
+            retrievals = index.get('retrieval_version_ids')
+            if (not isinstance(collection, str) or not collection
+                    or not isinstance(versions, list) or not versions
+                    or not isinstance(retrievals, list) or not retrievals
+                    or any(not isinstance(value, str) or not value for value in versions + retrievals)):
+                raise ValueError('invalid content cleanup identity')
+            plugin = ManagedPlugin('a', None, delete_callback=self._delete_content_pair)
+            try:
+                # Preserve existing grouped journals: the pair union is exactly
+                # the former intersection of the two allowed identity sets.
+                for version_id in sorted(set(versions)):
+                    for retrieval_id in sorted(set(retrievals)):
+                        identity = dict(collection=collection, material_version_id=version_id,
+                                        retrieval_version_id=retrieval_id)
+                        receipt = plugin.delete(identity)
+                        if (not isinstance(receipt, dict) or receipt.get('status') != 'deleted'
+                                or receipt.get('verified') is not True or receipt.get('identity') != identity):
+                            raise RuntimeError('content vector cleanup not verified')
+            finally:
+                plugin.close()

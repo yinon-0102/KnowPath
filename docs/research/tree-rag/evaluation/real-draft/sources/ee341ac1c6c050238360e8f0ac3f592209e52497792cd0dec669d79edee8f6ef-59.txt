@@ -1,0 +1,2 @@
+作为方阵的一种特殊类型，[***对称矩阵*（symmetric matrix）$\mathbf{A}$等于其转置：$\mathbf{A} = \mathbf{A}^\top$**]。
+这里定义一个对称矩阵$\mathbf{B}$：

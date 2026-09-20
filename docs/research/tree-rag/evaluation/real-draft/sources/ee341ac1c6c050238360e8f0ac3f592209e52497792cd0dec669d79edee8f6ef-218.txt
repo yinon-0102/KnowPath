@@ -1,0 +1,3 @@
+:begin_tab:`mxnet`
+[Discussions](https://discuss.d2l.ai/t/1752)
+:end_tab:

@@ -1,0 +1,6 @@
+```{.python .input}
+#@tab tensorflow
+a = 2
+X = tf.reshape(tf.range(24), (2, 3, 4))
+a + X, (a * X).shape
+```

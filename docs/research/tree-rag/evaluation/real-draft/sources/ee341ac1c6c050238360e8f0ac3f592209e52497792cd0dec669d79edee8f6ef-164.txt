@@ -1,0 +1,4 @@
+```{.python .input}
+#@tab pytorch
+A.shape, x.shape, torch.mv(A, x)
+```

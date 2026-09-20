@@ -1,0 +1,5 @@
+```{.python .input}
+#@tab paddle
+u = paddle.to_tensor([3.0, -4.0])
+paddle.norm(u)
+```

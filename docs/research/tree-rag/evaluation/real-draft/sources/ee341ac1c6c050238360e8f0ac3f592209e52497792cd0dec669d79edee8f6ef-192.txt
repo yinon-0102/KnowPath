@@ -1,0 +1,4 @@
+```{.python .input}
+u = np.array([3, -4])
+np.linalg.norm(u)
+```

@@ -1,0 +1,5 @@
+```{.python .input}
+#@tab paddle
+A_sum_axis0 = A.sum(axis=0)
+A_sum_axis0, A_sum_axis0.shape
+```

@@ -1,0 +1,4 @@
+```{.python .input}
+#@tab tensorflow
+A.shape, tf.reduce_sum(A)
+```

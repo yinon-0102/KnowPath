@@ -1,0 +1,3 @@
+```{.python .input}
+B == B.T
+```

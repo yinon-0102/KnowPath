@@ -1,0 +1,4 @@
+```{.python .input}
+A = np.arange(20).reshape(5, 4)
+A
+```

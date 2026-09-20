@@ -1,0 +1,5 @@
+```{.python .input}
+#@tab pytorch
+B = torch.ones(4, 3)
+torch.mm(A, B)
+```

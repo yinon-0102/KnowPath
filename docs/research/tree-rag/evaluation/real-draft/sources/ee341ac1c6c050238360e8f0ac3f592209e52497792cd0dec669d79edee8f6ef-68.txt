@@ -1,0 +1,4 @@
+```{.python .input}
+#@tab paddle
+B == paddle.transpose(B, perm=[1, 0])
+```

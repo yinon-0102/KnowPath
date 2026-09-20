@@ -1,0 +1,4 @@
+```{.python .input}
+#@tab paddle
+A.shape, x.shape, paddle.mv(A, x)
+```

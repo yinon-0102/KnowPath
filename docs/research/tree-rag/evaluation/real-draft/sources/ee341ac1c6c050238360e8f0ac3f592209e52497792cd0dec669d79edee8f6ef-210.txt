@@ -1,0 +1,4 @@
+```{.python .input}
+#@tab tensorflow
+tf.norm(tf.ones((4, 9)))
+```

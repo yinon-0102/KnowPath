@@ -1,0 +1,4 @@
+```{.python .input}
+#@tab tensorflow
+len(x)
+```

@@ -1,0 +1,5 @@
+```{.python .input}
+#@tab paddle
+y = paddle.ones(shape=[4], dtype='float32')
+x, y, paddle.dot(x, y)
+```

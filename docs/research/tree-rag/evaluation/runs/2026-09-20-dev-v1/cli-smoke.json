@@ -1,0 +1,8 @@
+{
+  "build": true,
+  "validate": true,
+  "publish": true,
+  "stale_publish_rejected": true,
+  "rollback_a": true,
+  "restored_b1": true
+}

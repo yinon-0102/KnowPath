@@ -22,6 +22,24 @@ from ..errors import _domain_error, _error_response
 router = APIRouter(route_class=ContractRoute)
 
 
+from ...rag.contracts import Citation
+
+
+@router.post('/api/v1/learning-spaces/{space_id}/citations/resolve')
+async def resolve_citation(service: MaterialServiceDep, source_access: SourceAccessDep,
+                           space_id: str, payload: Citation) -> JSONResponse:
+    from ...persistence.rag_repository import SqlRagRepository
+    uow = getattr(service.repository, 'unit_of_work', None)
+    if uow is None:
+        return _error_response(409, 'SOURCE_MAPPING_INVALID', '当前存储尚未启用新版引用')
+    try:
+        result = await asyncio.to_thread(source_access.consult_citation, payload.model_dump(mode='json'),
+            space_id, rag_repository=SqlRagRepository(uow.engine))
+        return JSONResponse(status_code=200, content=result)
+    except (DomainNotFound, DomainConflict) as exc:
+        return _domain_error(exc)
+
+
 @router.post("/api/v1/materials", status_code=201)
 async def create_material(ingestion: IngestionServiceDep,
     file: UploadFile = File(...),

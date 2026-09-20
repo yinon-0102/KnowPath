@@ -1,0 +1,4 @@
+```{.python .input}
+y = np.ones(4)
+x, y, np.dot(x, y)
+```

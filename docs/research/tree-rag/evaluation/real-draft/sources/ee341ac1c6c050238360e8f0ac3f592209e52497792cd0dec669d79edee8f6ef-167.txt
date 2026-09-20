@@ -1,0 +1,2 @@
+在掌握点积和矩阵-向量积的知识后，
+那么**矩阵-矩阵乘法**（matrix-matrix multiplication）应该很简单。

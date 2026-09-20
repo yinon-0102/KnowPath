@@ -1,0 +1,4 @@
+```{.python .input}
+B = np.ones(shape=(4, 3))
+np.dot(A, B)
+```

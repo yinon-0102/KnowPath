@@ -1,0 +1,3 @@
+现在我们知道如何计算点积，可以开始理解*矩阵-向量积*（matrix-vector product）。
+回顾分别在 :eqref:`eq_matrix_def`和 :eqref:`eq_vec_def`中定义的矩阵$\mathbf{A} \in \mathbb{R}^{m \times n}$和向量$\mathbf{x} \in \mathbb{R}^n$。
+让我们将矩阵$\mathbf{A}$用它的行向量表示：

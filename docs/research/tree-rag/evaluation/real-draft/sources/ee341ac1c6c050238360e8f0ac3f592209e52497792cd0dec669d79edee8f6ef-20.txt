@@ -1,0 +1,5 @@
+```{.python .input}
+#@tab pytorch
+x = torch.arange(4)
+x
+```

@@ -1,0 +1,4 @@
+```{.python .input}
+#@tab paddle
+paddle.norm(paddle.ones(shape=[4, 9], dtype='float32'))
+```

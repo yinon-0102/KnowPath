@@ -1,0 +1,5 @@
+```{.python .input}
+#@tab pytorch
+A = torch.arange(20).reshape(5, 4)
+A
+```

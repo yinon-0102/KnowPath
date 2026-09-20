@@ -31,6 +31,7 @@ def create_app(
     question_generator=None,
     answer_generator=None,
     source_retriever=None,
+    rag_pipeline=None,
 ) -> FastAPI:
     service = service or MaterialService(InMemoryMaterialRepository())
     settings = settings or LearningSettings.from_env()
@@ -41,6 +42,7 @@ def create_app(
         run_service = RunService(service.repository.run_repository)
     state = LearningState(material_repository=service.repository, run_service=run_service,
                           context_settings=settings,
+                          rag_pipeline=rag_pipeline,
                           question_generator=question_generator if question_generator is not None else DashScopeQuestionGenerator(settings),
                           answer_generator=answer_generator if answer_generator is not None else DashScopeAnswerGenerator(settings),
                           source_retriever=source_retriever if source_retriever is not None else configured_retriever(settings))

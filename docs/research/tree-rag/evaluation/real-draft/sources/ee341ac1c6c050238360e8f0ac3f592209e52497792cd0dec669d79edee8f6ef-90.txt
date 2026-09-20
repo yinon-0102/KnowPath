@@ -1,0 +1,6 @@
+```{.python .input}
+#@tab paddle
+a = 2
+X = paddle.reshape(paddle.arange(24), (2, 3, 4))
+a + X, (a * X).shape
+```

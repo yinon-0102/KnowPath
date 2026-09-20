@@ -27,7 +27,7 @@ from knowpath_backend.learning.persistence.graph_repository import InMemoryGraph
 
 class LearningState:
     def __init__(self, material_repository: MaterialRepository | None = None, *,
-                 run_service: RunService | None = None, space_service: SpaceService | None = None, question_generator=None, answer_generator=None, source_retriever=None, context_settings=None) -> None:
+                 run_service: RunService | None = None, space_service: SpaceService | None = None, question_generator=None, answer_generator=None, source_retriever=None, context_settings=None, rag_pipeline=None) -> None:
         self.material_repository = material_repository or InMemoryMaterialRepository()
         self.material_service = MaterialService(self.material_repository)
         uow = getattr(self.material_repository, "unit_of_work", None)
@@ -50,7 +50,10 @@ class LearningState:
         self.correction_service = CorrectionService(self.graph_service, self.space_service)
         self.knowledge_update_service = KnowledgeUpdateService(learning_repository, space_service, self.graph_service, self.run_service)
         self.assessment_service = AssessmentService(learning_repository, space_service, self.run_service, question_generator)
-        self.message_service = MessageService(learning_repository, space_service, self.assessment_service, self.run_service, answer_generator, source_retriever, context_settings)
+        if rag_pipeline is None:
+            from .rag.runtime import configured_pipeline
+            rag_pipeline = configured_pipeline(self.material_repository, space_service, context_settings)
+        self.message_service = MessageService(learning_repository, space_service, self.assessment_service, self.run_service, answer_generator, source_retriever, context_settings, rag_pipeline)
         self.spaces: dict[str, dict[str, Any]] = {}
         self.topics: dict[str, dict[str, Any]] = {}
         self.plans: dict[str, dict[str, Any]] = {}

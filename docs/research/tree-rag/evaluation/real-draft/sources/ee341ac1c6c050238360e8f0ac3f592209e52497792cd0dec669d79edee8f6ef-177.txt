@@ -1,0 +1,5 @@
+```{.python .input}
+#@tab paddle
+B = paddle.ones(shape=[4, 3], dtype='float32')
+paddle.mm(A, B)
+```

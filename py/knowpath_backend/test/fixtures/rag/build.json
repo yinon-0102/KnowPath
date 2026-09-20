@@ -1,0 +1,8 @@
+{
+  "space_id": "replace-with-isolated-test-space-id",
+  "material_version_id": "replace-with-isolated-test-material-version-id",
+  "plugin": "b1",
+  "max_tokens": 1800,
+  "collection_prefix": "knowpath_rag_test_cli",
+  "retry": false
+}

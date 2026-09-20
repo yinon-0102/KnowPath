@@ -44,7 +44,7 @@ class GraphPreparer:
                 if chunk is None or (chunk.id in expected and chunk.content_hash != expected[chunk.id]["content_hash"]):
                     raise ValueError("source content mismatch")
                 sources[chunk.id] = {**ref, "topic_id": node["id"], "topic_name": node["name"],
-                    "graph_version": manifest["graph_version"], "content_hash": chunk.content_hash, "text": chunk.text[:6000]}
+                    "graph_version": manifest["graph_version"], "content_hash": chunk.content_hash, "text": chunk.text}
         sources = [sources[k] for k in sorted(sources)]
         if not sources:
             raise ValueError("empty prepared graph")

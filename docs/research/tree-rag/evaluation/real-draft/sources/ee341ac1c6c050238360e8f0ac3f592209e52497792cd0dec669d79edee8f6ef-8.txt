@@ -1,0 +1,3 @@
+```{.python .input}
+#@tab pytorch
+import torch

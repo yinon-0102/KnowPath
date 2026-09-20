@@ -1,0 +1,6 @@
+```{.python .input}
+#@tab tensorflow
+A = tf.reshape(tf.range(20, dtype=tf.float32), (5, 4))
+B = A  # 不能通过分配新内存将A克隆到B
+A, A + B
+```

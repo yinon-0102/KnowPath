@@ -1,0 +1,5 @@
+```{.python .input}
+#@tab pytorch
+A_sum_axis1 = A.sum(axis=1)
+A_sum_axis1, A_sum_axis1.shape
+```

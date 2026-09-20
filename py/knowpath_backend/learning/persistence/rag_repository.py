@@ -150,6 +150,24 @@ class SqlRagRepository:
     def get_chunk(self, retrieval_version_id, chunk_id):
         return self._get("rag_chunks", retrieval_version_id=retrieval_version_id, chunk_id=chunk_id)
 
+    @classmethod
+    def _list_payloads(cls, connection, name, retrieval_version_id):
+        table = TABLES[name]
+        rows = connection.execute(sa.select(table).where(
+            table.c.retrieval_version_id == retrieval_version_id).order_by(*table.primary_key)).mappings()
+        return [deepcopy(row["payload"]) for row in rows]
+
+    def list_chunks(self, retrieval_version_id):
+        with self.engine.connect() as connection:
+            return self._list_payloads(connection, "rag_chunks", retrieval_version_id)
+
+    def list_nodes(self, retrieval_version_id):
+        with self.engine.connect() as connection:
+            return self._list_payloads(connection, "rag_nodes", retrieval_version_id)
+
+    def get_manifest(self, retrieval_version_id, manifest_id):
+        return self._get("rag_manifests", retrieval_version_id=retrieval_version_id, manifest_id=manifest_id)
+
     def put_node(self, payload):
         payload = _json_copy(payload)
         payload.setdefault("parent_node_id", None)

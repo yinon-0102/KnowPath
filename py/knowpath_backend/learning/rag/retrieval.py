@@ -6,6 +6,7 @@ import json
 import math
 import os
 import re
+import time
 from uuid import UUID
 
 import httpx
@@ -54,6 +55,7 @@ class DashScopeEmbedder:
     def __init__(self, settings=None, *, client=None):
         self.settings = settings or LearningSettings.from_env()
         self.client = client
+        self.last_usage = None
         if (self.settings.embedding_provider, self.settings.embedding_model, self.settings.embedding_dimension) != (
                 "dashscope", "text-embedding-v3", 1024):
             raise ValueError("vector retrieval currently requires DashScope text-embedding-v3 / 1024")
@@ -67,6 +69,8 @@ class DashScopeEmbedder:
         return self.settings.embedding_model
 
     def embed(self, texts, *, query=False):
+        self.last_usage = None
+        started = time.monotonic()
         if not texts:
             return []
         if any(not isinstance(t, str) or not t.strip() or len(t) > 8000 for t in texts):
@@ -78,6 +82,7 @@ class DashScopeEmbedder:
         owned = self.client is None
         client = self.client if self.client is not None else httpx.Client(timeout=60.0, follow_redirects=False)
         vectors = []
+        input_tokens, complete_usage, calls = 0, True, 0
         try:
             for start in range(0, len(texts), 10):
                 batch = texts[start:start + 10]
@@ -93,6 +98,13 @@ class DashScopeEmbedder:
                     raise RetrievalError("EMBEDDING_UNAVAILABLE") from None
                 try:
                     rows = response.json()["data"]
+                    calls += 1
+                    usage = response.json().get('usage', {})
+                    tokens = usage.get('prompt_tokens', usage.get('input_tokens')) if isinstance(usage,dict) else None
+                    if type(tokens) is int and tokens >= 0:
+                        input_tokens += tokens
+                    else:
+                        complete_usage = False
                     if not isinstance(rows, list) or len(rows) != len(batch):
                         raise ValueError()
                     ordered = {}
@@ -108,6 +120,8 @@ class DashScopeEmbedder:
         finally:
             if owned:
                 client.close()
+        self.last_usage = {'calls':calls,'model':self.model_version,'input_tokens':input_tokens if complete_usage else None,
+            'complete':complete_usage,'elapsed_seconds':time.monotonic()-started}
         return vectors
 
 

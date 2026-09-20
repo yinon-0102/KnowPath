@@ -1,0 +1,5 @@
+```{.python .input}
+#@tab tensorflow
+A_sum_axis1 = tf.reduce_sum(A, axis=1)
+A_sum_axis1, A_sum_axis1.shape
+```

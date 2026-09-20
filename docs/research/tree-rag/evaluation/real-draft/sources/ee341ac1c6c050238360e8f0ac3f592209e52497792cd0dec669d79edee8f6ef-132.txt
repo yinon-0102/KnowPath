@@ -1,0 +1,5 @@
+```{.python .input}
+#@tab paddle
+sum_A = paddle.sum(A, axis=1, keepdim=True)
+sum_A
+```

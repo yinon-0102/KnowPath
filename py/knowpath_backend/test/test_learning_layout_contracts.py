@@ -44,7 +44,15 @@ def test_full_openapi_matches_pre_refactor_contract():
     expected = json.loads((FIXTURES / "learning_openapi.json").read_text(encoding="utf-8"))
     app = isolated_app()
 
-    assert app.openapi() == expected
+    actual = app.openapi()
+    # The RAG migration is additive. Preserve every pre-refactor HTTP contract
+    # while checking the explicitly added v2 endpoint independently.
+    assert set(actual['paths']) - set(expected['paths']) == {'/api/v1/learning-spaces/{space_id}/citations/resolve'}
+    actual['paths'].pop('/api/v1/learning-spaces/{space_id}/citations/resolve')
+    assert set(actual['components']['schemas']) - set(expected['components']['schemas']) == {'Citation','SourceSpan'}
+    for name in ('Citation','SourceSpan'):
+        actual['components']['schemas'].pop(name)
+    assert actual == expected
     def api_routes(routes):
         for route in routes:
             if isinstance(route, APIRoute):
@@ -54,15 +62,18 @@ def test_full_openapi_matches_pre_refactor_contract():
                 yield from api_routes(included.routes)
 
     routes = list(api_routes(app.routes))
-    assert len(routes) == 49
+    assert len(routes) == 50
     assert all(isinstance(route, ContractRoute) for route in routes)
-    assert len({(route.path, method) for route in routes for method in route.methods}) == 49
+    assert len({(route.path, method) for route in routes for method in route.methods}) == 50
 
 
 def test_mysql_schema_matches_pre_refactor_contract():
     expected = json.loads((FIXTURES / "learning_mysql_schema.json").read_text(encoding="utf-8"))
 
-    assert mysql_schema_contract() == expected
+    actual = mysql_schema_contract()
+    from knowpath_backend.learning.persistence.rag_models import TABLES
+    assert set(actual) - set(expected) == set(TABLES)
+    assert {name:value for name,value in actual.items() if name not in TABLES} == expected
 
 
 def test_multiple_apps_keep_auth_materials_and_runs_isolated():

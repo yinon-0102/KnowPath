@@ -22,6 +22,28 @@ from knowpath_backend.learning.persistence.rag_repository import SqlRagRepositor
 from knowpath_backend.test.test_rag_repository import seed, span
 
 
+def test_mysql_manifest_publish_pin_and_cas(mysql_rag):
+    from knowpath_backend.learning.rag.lifecycle import ManifestLifecycle
+    from knowpath_backend.learning.persistence.rag_repository import RagConflict
+    from knowpath_backend.test.test_rag_lifecycle import receipt, expected
+    repo, engine = mysql_rag
+    seed(repo)
+    scope = repo.get_scope_snapshot('scope')
+    repo.put_scope_chunk_map(dict(scope_snapshot_id='scope', retrieval_version_id='rv', chunk_id='chunk'))
+    with engine.begin() as connection:
+        connection.execute(Base.metadata.tables['learning_spaces'].update().where(
+            Base.metadata.tables['learning_spaces'].c.id == 'space').values(scope_version=1,
+            bindings=[dict(scope['bindings'][0], graph_status='ready')]))
+    lifecycle = ManifestLifecycle(repo)
+    manifest = lifecycle.start('rv','m',scope,expected(),{'embedding_model':'test'})
+    lifecycle.validate('rv','m',receipt,attempt=manifest['attempt'])
+    assert lifecycle.publish('rv','m',0) == 1
+    assert lifecycle.pin(scope)[0]['manifest_id'] == 'm'
+    with pytest.raises(RagConflict):
+        lifecycle.publish('rv','m',0)
+    assert lifecycle.publish('rv','m',1) == 2
+
+
 @pytest.fixture
 def mysql_rag(monkeypatch):
     admin_url = os.getenv("LEARNING_TEST_MYSQL_ADMIN_URL")

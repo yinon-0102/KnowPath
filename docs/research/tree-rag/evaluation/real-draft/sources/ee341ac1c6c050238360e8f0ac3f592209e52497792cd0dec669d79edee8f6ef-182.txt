@@ -1,0 +1,1 @@
+$$f(\alpha \mathbf{x}) = |\alpha| f(\mathbf{x}).$$

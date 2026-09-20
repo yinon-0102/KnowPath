@@ -28,7 +28,7 @@ def index_material_version(repository, retriever, version_id):
     for topic in topics_for_version(version.material_id, version):
         for ref in topic["source_refs"]:
             sources.append({**ref, "topic_id": topic["id"], "topic_name": topic["name"],
-                            "graph_version": 1, "text": chunks[ref["chunk_id"]].text[:6000]})
+                            "graph_version": 1, "text": chunks[ref["chunk_id"]].text})
     result = retriever.index(sources)
     return {**result, "material_version_id": version_id, "graph_version": 1}
 

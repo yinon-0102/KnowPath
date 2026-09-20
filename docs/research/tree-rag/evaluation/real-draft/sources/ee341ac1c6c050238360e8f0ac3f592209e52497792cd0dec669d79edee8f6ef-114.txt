@@ -1,0 +1,4 @@
+```{.python .input}
+#@tab pytorch
+A.sum(axis=[0, 1])  # 结果和A.sum()相同
+```

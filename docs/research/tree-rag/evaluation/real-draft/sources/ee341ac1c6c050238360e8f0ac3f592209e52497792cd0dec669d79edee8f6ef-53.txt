@@ -1,0 +1,9 @@
+$$
+\mathbf{A}^\top =
+\begin{bmatrix}
+    a_{11} & a_{21} & \dots  & a_{m1} \\
+    a_{12} & a_{22} & \dots  & a_{m2} \\
+    \vdots & \vdots & \ddots  & \vdots \\
+    a_{1n} & a_{2n} & \dots  & a_{mn}
+\end{bmatrix}.
+$$

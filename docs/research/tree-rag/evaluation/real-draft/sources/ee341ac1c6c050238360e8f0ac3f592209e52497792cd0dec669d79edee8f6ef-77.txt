@@ -1,0 +1,5 @@
+```{.python .input}
+A = np.arange(20).reshape(5, 4)
+B = A.copy()  # 通过分配新内存，将A的一个副本分配给B
+A, A + B
+```

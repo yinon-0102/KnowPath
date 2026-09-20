@@ -1,8 +1,8 @@
 # KnowPath 可插拔 RAG 整体设计与实施计划 v1.1
 
-> 状态：设计与产品边界已确认，工程执行计划已补充，已开始第一批基础实现（进度见文末）。2026-09-20，用户确认质量与证据可追溯优先、语义分块、普通混合 RAG、分阶段树插件、第 10.9 节行为边界及四项工程建议。模型选型和具体数值由开发集评测确定。本轮将普通 RAG 方案与四项工程细化合并至桌面原文件；内容修订为 v1.1，文件名保留 v1.0 以沿用原路径。
+> 状态：设计与产品边界已确认，工程执行计划已补充，A/B1 工程能力已实现，80次真实开发请求已完成（30次正常返回、50次失败，配置尚未通过验收；后续诊断见实施记录）。2026-09-20，用户确认质量与证据可追溯优先、语义分块、普通混合 RAG、分阶段树插件、第 10.9 节行为边界及四项工程建议。模型选型和具体数值由开发集评测确定。项目原稿与桌面原路径同步维护；桌面文件名沿用 v1.0，内容为 v1.1。
 >
-> 执行说明：本文件记录已确认的整体设计、分阶段任务与验收要求。2026-09-20 已按用户确认的四项建议补充本文附录 A《工程执行计划》，落实算法规则、版本迁移、五批开发任务与验收选择标准；实现时使用 `executing-plans`，如用户选择委派再使用 `subagent-driven-development`。此次授权是写入计划，不自动启动代码实现。
+> 执行说明：本文件记录已确认的整体设计、分阶段任务与验收要求。2026-09-20 已按用户确认的四项建议补充本文附录 A《工程执行计划》，落实算法规则、版本迁移、五批开发任务与验收选择标准；实现时使用 `executing-plans`，如用户选择委派再使用 `subagent-driven-development`。用户随后已授权持续实现；工程结果和剩余人工验收依赖见文末。
 
 **日期：** 2026-09-20。
 
@@ -10,7 +10,7 @@
 
 **架构：** 两套插件共享可追溯的原文、语义分块、范围与版本约束，以及重排、上下文组装、回答生成和支持性检查。普通插件采用 BM25＋向量召回、RRF 融合；树插件首版增加文档结构和有界父子上下文检索，章节摘要跨层检索作为独立增强实验。
 
-**技术基础与候选：** 复用项目 Python 后端、SQL、Qdrant 和任务机制；简单文本 PDF 先验证现有提取器，复杂结构按需要对照 Docling、MinerU。BM25 实现、中文分词器及 reranker 型号通过实测选择；embedding 与生成模型以现有支持配置为实验起点，具体版本和参数在运行记录中冻结。所有计划中的新能力均不代表已经实现。
+**技术基础与候选：** 复用项目 Python 后端、SQL、Qdrant 和任务机制；简单文本 PDF 先验证现有提取器，复杂结构按需要对照 Docling、MinerU。BM25 实现、中文分词器及 reranker 型号通过实测选择；embedding 与生成模型以现有支持配置为实验起点，具体版本和参数在运行记录中冻结。设计描述不等同于验收通过，实际交付以文末实现记录为准。
 
 ---
 
@@ -30,7 +30,7 @@
 
 本稿整合前一轮总体架构与最新联网调研。发生冲突时，以本稿中的最新阶段划分为准：B1 不生成摘要，B2 增加摘要导航，B3 才研究摘要参与生成。旧稿中的“首版默认递归摘要”和旧实验编号不再作为本稿定义。
 
-本轮完成整体设计和行为边界确认；代码实施、数据迁移及真实模型评测属于后续工作，不因文档确认而视为已经执行。
+设计确认与代码交付分别记录。后续已实现 A/B1 与共享链路，并在独立环境执行追加迁移、真实服务验证和开发评测；人工质量验收与最终选择仍须按本文门槛完成。
 
 ## 2. 核心判断与路线选择
 
@@ -50,7 +50,7 @@
 
 ## 3. 现有样本与结构解析研究
 
-### 3.1 已知检查结果
+### 3.1 设计阶段的原始解析检查
 
 2026-09-20 根据用户对复杂排版的反馈，首轮材料调整为：37 页《中华人民共和国未成年人保护法（2024年修正版）》PDF、线性代数 Markdown、简体《论语》TXT。新 PDF 为简体、单栏文字，来自上海市城市管理行政执法局公开附件，比此前约 40～50 页的偏好稍短；原 44 页繁体食物安全 PDF 留作复杂排版样本。
 
@@ -287,13 +287,13 @@ Qdrant 保存原文和摘要向量，按 collection 或 profile 区分。关键�
 
 用户已选择回答质量与证据可追溯优先，并确认采用本节方案与第 10.9 节行为边界。延迟和费用仍作为验收指标记录；实现库、模型型号及参数由验证确定，不将计划中的设计描述为已实现能力。
 
-### 10.1 定位与当前实现的差距
+### 10.1 定位与原有 A0 实现的差距
 
 普通插件应能独立服务 KnowPath 的资料问答、解释和学习辅导。推荐它在线执行平面的原文 chunk 检索，解析阶段同样识别章节、条款及代码/公式边界。利用结构分块和保留标题路径，不等于在线执行树检索；树 B1 额外通过父子关系扩展原文，B2 再增加摘要导航。
 
 现有代码已经提供来源快照、版本与学习范围检查、上下文预算、模型适配和引用身份校验。需要补齐的是自然边界分块、真正的中文关键词检索、混合融合、独立重排、证据完整性选择，以及无答案/部分回答契约。
 
-当前关键词按中文单字及英文词的出现数量排序，不能称为 BM25；keyword/qdrant 二选一，没有 RRF 和 rerank。检索只使用当前原始 message，历史在回答阶段可见，尚未解决检索前的指代消歧。旧配置保留为 A0 历史参考。
+原有 A0 关键词按中文单字及英文词的出现数量排序，不能称为 BM25；keyword/qdrant 二选一，没有 RRF 和 rerank。检索只使用当前原始 message，历史在回答阶段可见，尚未解决检索前的指代消歧。旧配置保留为 A0 历史参考。
 
 | 路线 | 能力与代价 | 当前安排 |
 |---|---|---|
@@ -370,7 +370,7 @@ flowchart TD
 
 建议开发集起点：关键词 Top-30、向量 Top-30，RRF 融合、身份去重后最多 40 个候选进入重排。最终实际预算与第 4.2 节一起调整。
 
-当前对话 service 对检索返回有 1～8 条的限制，并检查来源字典与原始白名单一致。后续需把候选排名/分数放进独立结果对象，再由公共层取得权威正文；解除固定八条限制时同步调整空结果契约，不能直接向原来源字典追加评分字段而绕过已有检查。
+原有对话 service 对检索返回有 1～8 条的限制，并检查来源字典与原始白名单一致。新 A/B1 链路已将候选排名/分数放进独立结果对象，再由公共层取得权威正文和处理空结果；旧入口保留原契约，不能通过向原来源字典追加评分字段绕过检查。
 
 首轮 RRF 可以从等权、k=60 起步。每通道内部先去重，同一 chunk 的两路命中保留排名和来源供解释；不直接相加 BM25 分数与余弦相似度。
 
@@ -512,11 +512,11 @@ flowchart TD
 
 ## 12. 分阶段计划与验收产物
 
-以下为已确认设计对应的阶段任务。本文附录 A《工程执行计划》已补充代码路径、接口契约、迁移步骤与各批验证命令，按“① 数据契约与迁移 → ② 解析建库 → ③ 普通 RAG → ④ 树形 B1 → ⑤ 对照评测”执行。所有新增模块、测试和 CLI 为拟实施内容，尚未运行；模型和数值参数由开发集验证并在保留集前冻结。
+以下为已确认设计对应的阶段任务。本文附录 A《工程执行计划》已补充代码路径、接口契约、迁移步骤与各批验证命令，按“① 数据契约与迁移 → ② 解析建库 → ③ 普通 RAG → ④ 树形 B1 → ⑤ 对照评测”执行。新增模块、测试和 CLI 已实现并执行验证；模型和数值参数仍须通过开发集评估，并在保留集前冻结。
 
 | 阶段 | 任务 | 验收产物与进入下一阶段的条件 |
 |---|---|---|
-| P0 设计整理 | 整合普通/树形方案、产品边界、接口、预算与评测 | 本版设计完成，交付桌面副本；实施与评测仍为后续任务 |
+| P0 设计整理 | 整合普通/树形方案、产品边界、接口、预算与评测 | 本版设计完成，桌面副本随实施进度更新；实际交付与评测见文末 |
 | P1 结构研究 | 核验三份资料结构；对照 PDF 解析候选 | 原文定位与章节边界核验记录，明确可用结构和回退类型 |
 | P2 共同基础与 A | 实现共享原文、语义分块、索引、范围、普通插件及回答检查；建立证据标注集 | 可独立运行的普通基线、固定数据快照、真实模型评测与第 11.4 节边界验收记录 |
 | P3 树插件 B1 | 增加结构关系、有界父子扩展和独立可用状态 | 相同预算的 A/B1 报告，确认来源、范围、版本和成本可追溯 |
@@ -554,9 +554,36 @@ flowchart TD
 
 ## 14. 文档维护与交付
 
-2026-09-20 按用户要求，直接更新桌面已有的 `KnowPath-RAG整体设计与实施计划-v1.0.md`。文件名保留，内容修订为 v1.1。普通 RAG 方案、共享能力、树形 B1 及四项执行细化合并在本文件内，无需打开另一份工程计划。
+用户已授权持续实现。本稿维护整体设计，工程执行计划维护逐项状态；两者合并到桌面既有路径
+`C:\Users\27202\Desktop\KnowPath-RAG整体设计与实施计划-v1.0.md`，文件名不变。
+实现位于 `.worktrees/rag-foundation`、分支 `codex/rag-foundation`。
 
-正文为整体方案；附录 A 包含算法执行规则、版本与迁移关系、五批开发任务、文件路径、拟实施验证命令和验收选择标准。所有开发任务仍未完成，本次文档更新不代表已经运行迁移或真实模型评测。
+操作命令见 [操作手册](C:/Users/27202/Desktop/KnowPath/.worktrees/rag-foundation/docs/research/tree-rag/OPERATIONS.md)。开发集实测、人工质量验收与默认方案选择分开记录，
+不将测试通过或模型自评支持当成人工正确率。以下首批记录保留为历史节点，当前状态见
+[实施记录](C:/Users/27202/Desktop/KnowPath/.worktrees/rag-foundation/docs/research/tree-rag/IMPLEMENTATION-STATUS.md)。
+
+## 2026-09-20 首批实施进度（历史记录）
+
+已按修正后的计划开始实施，代码位于独立分支 `codex/rag-foundation`、项目内 `.worktrees/rag-foundation` 工作区。已实现数据/引用契约、原文范围映射、9 张追加表与迁移、不可变仓储、新旧引用和测验查阅审计桥接，以及删除事务兼容。最终相关回归 188 项通过、18 项跳过，包含 3 项真实 MySQL 临时库验证；10 道受控合成题的来源与划分校验通过。
+
+这只是第一批基础实现。当前映射锚定旧解析 chunk，真实资料回填与新解析器映射、索引发布、普通 RAG 完整回答链路、B1 和真实模型对照仍待后续批次。现有业务库未迁移，在线检索未切换；上述开发复选框按完整批次验收保留未完成，不能将基础测试通过视为全部实施完成。
+
+## 2026-09-21 续实施结果（当前状态）
+
+最终学习/RAG回归：1265项通过、222项跳过、514项未选中；仅有一条既存依赖弃用警告。跳过不计为通过。
+
+普通A、树形B1及共享基础已实现，包括语义分块、混合检索、真实重排、范围映射、版本发布/恢复、
+一次修正及再次核验、引用回查、删除保护、调用/费用预算与真实对话接入。最后一轮补齐了运行时安全错误详情；
+完整工程和测试证据见[实施记录](C:/Users/27202/Desktop/KnowPath/.worktrees/rag-foundation/docs/research/tree-rag/IMPLEMENTATION-STATUS.md)，操作见
+[操作手册](C:/Users/27202/Desktop/KnowPath/.worktrees/rag-foundation/docs/research/tree-rag/OPERATIONS.md)。
+
+40道开发题A/B1共80次真实请求已完成：30次正常返回、50次失败。预先指定的5道已见失败题采用
+统一24k输入/4k输出再诊断，共10次中4次正常返回、6次失败。较大预算仍未解决服务可靠性；
+正常返回不等于语义正确，不能据此宣布B1优胜或任一配置已验收。
+
+60题人工标签、回答支持关系复核、开发配置完善、价格与四项部署门槛、保留集和最终选择尚未完成。
+当前默认保留legacy；具体依据和后续前置工作见[当前采用决定](C:/Users/27202/Desktop/KnowPath/.worktrees/rag-foundation/docs/research/tree-rag/evaluation/decision.md)。
+保留集未使用；原80次与10次诊断分别保留冻结代码、输入及全部失败，不用后续修复改写实验历史。
 
 ---
 
@@ -570,13 +597,13 @@ flowchart TD
 
 **Tech Stack:** Python 3.13、Pydantic、SQLAlchemy/Alembic、MySQL、Qdrant、pytest，复用现有模型 provider、Run 与发布保护机制。
 
-**授权与状态：** 2026-09-20 用户要求将四项建议写入执行计划。本次仅修改本方案文档，下面的新文件、接口、数据库表、命令入口均为拟实施内容；没有完成代码实现、迁移或模型评测。总体行为边界见本文正文第 10.9 节。本计划细化首版执行规则，不扩大到 B2/B3、自动路由或联网补知识。
+**授权与状态：** 用户随后已授权持续实施。A/B1、共享回答链路、迁移、发布恢复和评测工具已落地，已完成80次真实开发请求（30次正常返回、50次失败）。默认配置未通过验收，后续预算诊断与修复单独记录；人工标签、费用/延迟门槛和保留集验收仍未完成。以下按实际证据更新，操作说明见 [操作手册](C:/Users/27202/Desktop/KnowPath/.worktrees/rag-foundation/docs/research/tree-rag/OPERATIONS.md)，结果见[实施记录](C:/Users/27202/Desktop/KnowPath/.worktrees/rag-foundation/docs/research/tree-rag/IMPLEMENTATION-STATUS.md)。总体行为边界见本文正文第 10.9 节。本计划细化首版执行规则，不扩大到 B2/B3、自动路由或联网补知识。
 
 ---
 
 ## 1. 执行基线与文件职责
 
-本轮已核对现有路径：`learning/rag/retrieval.py` 的 `point_id` 包含 `graph_version`；`learning/rag/indexing.py` 固定图版本 1；该文件与 `learning/conversations/service.py`、`learning/knowledge/preparation.py` 均存在 `text[:6000]`。不能仅删除身份字段或截断表达式，就认为完成范围隔离与长文本支持。
+设计时核对的旧路径：`learning/rag/retrieval.py` 的 `point_id` 包含 `graph_version`；`learning/rag/indexing.py` 固定图版本 1；该文件与 `learning/conversations/service.py`、`learning/knowledge/preparation.py` 曾存在 `text[:6000]`。本次保留旧身份适配器，新增独立检索身份与范围映射，三处静默截断已替换为完整证据和显式预算检查；不能仅删字段或截断表达式就认为完成隔离。
 
 下表路径以 `py/knowpath_backend/` 为前缀；迁移、评测资料另列完整仓库相对路径。新增文件明确标为“新增”，现有文件只调整职责交接，不进行无关重构。
 
@@ -678,16 +705,16 @@ def bounded_candidates(ranked, expansions, allowed):
 
 ## 4. 按批次执行与验证
 
-所有命令从仓库 `py` 目录运行，使用 `uv run`；下文新增测试及 CLI 须在对应任务实现后执行。测试先编写可观察业务断言、运行确认失败，再完成实现、重跑及审查。按独立任务提交，避免混入现有未提交资料。数据库迁移与真实服务测试仅使用专用测试环境。
+所有命令从实施工作区的 `py` 目录运行，使用 `uv run` 或同环境 Python；下文测试及 CLI 已有实现。测试先编写可观察业务断言、运行确认失败，再完成实现、重跑及审查。按独立任务提交，避免混入现有未提交资料。数据库迁移与真实服务测试仅使用专用测试环境。
 
 ### 批次①：数据契约、范围与迁移
 
 **文件：** 第 1 节 `contracts.py`、`scope.py`、`rag_repository.py`、`db.py`、`0014_rag_snapshots.py`；修改 `source_access.py`、`knowledge/preparation.py`、`spaces/service.py`。新增测试 `py/knowpath_backend/test/test_rag_contracts.py`、`test_rag_scope.py`、`test_rag_migrations.py`。
 
-- [ ] 写入契约：`prepare(snapshot, profile, task_context) → manifest`；`retrieve(request) → candidates/status/error/trace`；`delete(identity) → receipt`；`close() → None`。请求固定 query/original_query、scope_snapshot_id、manifest_ids、预算、deadline；候选只带身份、通道、rank、score、parent_id。核验结果使用第 2.2 节枚举。
-- [ ] 建立测试：相同正文改图版本仍隔离范围；原文版本变化不能错配；新块跨允许/排除边界被整体拒绝；解析产物 hash 不同不能直接比较 offset；旧引用保持原始定位；删除后旧引用也不可读取；测验查阅新引用仍记 assistance。
-- [ ] 实现追加表与映射，运行旧消息/图谱范围测试；每次迁移检查 schema 与 ORM 一致。
-- [ ] 从第一批开始创建 `docs/research/tree-rag/evaluation/dataset.jsonl`、`rubric.md`、`split.json`；准备受控跨页、条件例外、范围排除、冲突、服务失败夹具，明确与真实资料分开。
+- [x] 写入契约：`prepare(snapshot, profile, task_context) → manifest`；`retrieve(request) → candidates/status/error/trace`；`delete(identity) → receipt`；`close() → None`。请求固定 query/original_query、scope_snapshot_id、manifest_ids、预算、deadline；候选只带身份、通道、rank、score、parent_id。核验结果使用第 2.2 节枚举。
+- [x] 建立测试：相同正文改图版本仍隔离范围；原文版本变化不能错配；新块跨允许/排除边界被整体拒绝；解析产物 hash 不同不能直接比较 offset；旧引用保持原始定位；删除后旧引用也不可读取；测验查阅新引用仍记 assistance。
+- [x] 实现追加表与映射，运行旧消息/图谱范围测试；每次迁移检查 schema 与 ORM 一致。
+- [x] 从第一批开始创建 `docs/research/tree-rag/evaluation/dataset.jsonl`、`rubric.md`、`split.json`；准备受控跨页、条件例外、范围排除、冲突、服务失败夹具，明确与真实资料分开。
 
 ```powershell
 uv run alembic heads
@@ -701,17 +728,17 @@ uv run pytest knowpath_backend/test/test_rag_contracts.py knowpath_backend/test/
 
 **文件：** 新增 `parsing.py`、`chunking.py`、`lifecycle.py`、`cli.py`；修改 `materials/service.py`、`workers/material_ingest.py`、`rag/indexing.py`、`rag/retrieval.py`、`materials/deletion.py`、`spaces/deletion.py`。新增测试 `test_rag_chunking.py`、`test_rag_lifecycle.py`、`test_rag_services_integration.py`，均位于 `py/knowpath_backend/test/`。
 
-- [ ] 先写三种格式定位夹具和故障注入测试：跨页条文、短独立定义、公式/代码、重名小节、损坏内容；向量写到一半失败、重复构建、并发发布、删除期间重试。
-- [ ] 实现语义边界、多个来源跨度与输入上限检测。替换现有三处截断时逐一验证长文本进入分块/预算路径，不能直接把超长文本送入模型。
-- [ ] 核验真实 PDF 的 9 章、132 条和 37 页定位；检查教材公式、《论语》篇章。结构不确定与正文损坏分别标记。
-- [ ] 实现 build/validate/publish/rollback；CLI 接受 JSON 清单文件，失败返回非零退出码和稳定错误码。构建报告包含漏失文本、映射失败和 readiness，而非只有总 chunk 数。
-- [ ] 创建 `knowpath_backend/test/fixtures/rag/build.json`，只指向测试资料及测试存储。执行以下未来 CLI 流程，主动制造失败并验证旧发布仍可用。
+- [x] 先写三种格式定位夹具和故障注入测试：跨页条文、短独立定义、公式/代码、重名小节、损坏内容；向量写到一半失败、重复构建、并发发布、删除期间重试。
+- [x] 实现语义边界、多个来源跨度与输入上限检测。替换现有三处截断时逐一验证长文本进入分块/预算路径，不能直接把超长文本送入模型。
+- [x] 核验真实 PDF 的 9 章、132 条和 37 页定位；检查教材公式、《论语》篇章。结构不确定与正文损坏分别标记。
+- [x] 实现 build/validate/publish/rollback；CLI 接受 JSON 清单文件，失败返回非零退出码和稳定错误码。构建报告包含漏失文本、映射失败和 readiness，而非只有总 chunk 数。
+- [x] 创建 `knowpath_backend/test/fixtures/rag/build.json`，只指向测试资料及测试存储。执行以下未来 CLI 流程，主动制造失败并验证旧发布仍可用。
 
 ```powershell
 uv run pytest knowpath_backend/test/test_rag_chunking.py knowpath_backend/test/test_rag_lifecycle.py -q
 uv run python -m knowpath_backend.learning.rag.cli build --config knowpath_backend/test/fixtures/rag/build.json --output .rag-test-manifest.json
 uv run python -m knowpath_backend.learning.rag.cli validate --manifest .rag-test-manifest.json
-uv run python -m knowpath_backend.learning.rag.cli publish --manifest .rag-test-manifest.json
+uv run python -m knowpath_backend.learning.rag.cli publish --manifest .rag-test-manifest.json --expected-generation 0
 uv run pytest knowpath_backend/test/test_rag_services_integration.py -q
 ```
 
@@ -722,11 +749,11 @@ uv run pytest knowpath_backend/test/test_rag_services_integration.py -q
 **文件：** 新增 `bm25.py`、`fusion.py`、`plugins.py`、`reranking.py`、`context.py`、`verification.py`、`pipeline.py`；修改第 1 节 conversations、config、provider 与 API 文件。新增测试 `test_rag_hybrid.py`、`test_rag_context.py`、`test_rag_verification.py`、`test_rag_pipeline.py`，位于 `py/knowpath_backend/test/`。
 
 - [ ] 用开发集选择中文分词/BM25 实现、模型与 token 计数器，保存精确版本和 profile；共同标题前缀两组一致。未具备真正 BM25 前不得把单字匹配命名为 BM25。
-- [ ] 编写并实现通道去重和 RRF 测试：排名从 1 开始，单通道单 chunk 只贡献一次，采用 `sum(weight / (k + rank))`，不直接相加异构分数。记录重排前/后证据覆盖。
-- [ ] 实现组级预算裁剪；测试条件丢失时不发布完整结论、部分回答、多资料各侧引用、冲突并列、无命中不作全文否定、超时与取消。
-- [ ] 实现最多一次修正及再次核验；分别注入首次不支持、二次仍不支持、核验服务异常，验证状态和调用次数。未核验内容不能提前进入最终消息事件。
-- [ ] conversation service 只负责快照/任务/发布编排，把检索与核验逻辑留在 RAG 模块。保留活动测验确定性分支，并从普通问答实验中单列。
-- [ ] 扩展 `test_rag_services_integration.py` 真实调用 embedding、reranker、生成、核验，记录服务版本/响应和错误，不把替身当作真实集成。
+- [x] 编写并实现通道去重和 RRF 测试：排名从 1 开始，单通道单 chunk 只贡献一次，采用 `sum(weight / (k + rank))`，不直接相加异构分数。记录重排前/后证据覆盖。
+- [x] 实现组级预算裁剪；测试条件丢失时不发布完整结论、部分回答、多资料各侧引用、冲突并列、无命中不作全文否定、超时与取消。
+- [x] 实现最多一次修正及再次核验；分别注入首次不支持、二次仍不支持、核验服务异常，验证状态和调用次数。未核验内容不能提前进入最终消息事件。
+- [x] conversation service 只负责快照/任务/发布编排，把检索与核验逻辑留在 RAG 模块。保留活动测验确定性分支，并从普通问答实验中单列。
+- [x] 扩展 `test_rag_services_integration.py` 真实调用 embedding、reranker、生成、核验，记录服务版本/响应和错误，不把替身当作真实集成。
 
 ```powershell
 uv run pytest knowpath_backend/test/test_rag_hybrid.py knowpath_backend/test/test_rag_context.py knowpath_backend/test/test_rag_verification.py knowpath_backend/test/test_rag_pipeline.py knowpath_backend/test/test_learning_message_retrieval.py -q
@@ -739,9 +766,9 @@ uv run pytest knowpath_backend/test/test_rag_services_integration.py -q
 
 **文件：** 新增 `tree.py`、测试 `py/knowpath_backend/test/test_rag_tree.py`；修改 `plugins.py`、`lifecycle.py`，其余公共链路沿用批次③。
 
-- [ ] 先用带明确条件、续文及排除章节的结构夹具验证第 2.1 节算法，覆盖无父节点、重复种子、父节点热点、扩展不足、超过 40、跨版本父节点等情况。
-- [ ] 实现候选扩展与 trace；所有外部服务收到的内容必须已经通过 scope 校验。B1 readiness 不要求摘要，A readiness 不要求 B1。
-- [ ] 对 A/B1 检查同一叶子、同一基础召回、同一重排/上下文上限和公共生成配置；记录实际候选数、token、调用和额外读取量。
+- [x] 先用带明确条件、续文及排除章节的结构夹具验证第 2.1 节算法，覆盖无父节点、重复种子、父节点热点、扩展不足、超过 40、跨版本父节点等情况。
+- [x] 实现候选扩展与 trace；所有外部服务收到的内容必须已经通过 scope 校验。B1 readiness 不要求摘要，A readiness 不要求 B1。
+- [x] 对 A/B1 检查同一叶子、同一基础召回、同一重排/上下文上限和公共生成配置；记录实际候选数、token、调用和额外读取量。
 - [ ] 开发集逐题检查扩展是否找到必要条件、是否引入噪声；只在开发集调整数值。组装器不能偏向树插件，确定性约束两组使用同一套测试。
 
 ```powershell
@@ -755,19 +782,20 @@ uv run pytest knowpath_backend/test/test_rag_tree.py knowpath_backend/test/test_
 **文件：** 第 1 节 `rag_eval/` 五个文件；评测目录新增 `development.json`、`freeze.json`、`runs/`、`decision.md`；新增 `py/knowpath_backend/test/test_rag_eval.py`。
 
 - [ ] 完成约 60 题人工核验标签，按问题家族划分约 40 开发/20 保留，同义改写不能跨组。每题包含 question_id、family_id、允许范围、文档快照、必要证据跨度、答案要点、可回答性、题型。
-- [ ] 为评分器写受控报告测试：部分回答不算全成功；服务失败计入全请求分母；配对失败不丢弃；金标不能进入在线 pipeline；不同解析/范围快照不能混为同一运行。
+- [x] 为评分器写受控报告测试：部分回答不算全成功；服务失败计入全请求分母；配对失败不丢弃；金标不能进入在线 pipeline；不同解析/范围快照不能混为同一运行。
 - [ ] 在开发集写定 rubric 和 `development.json` 配置，后者包含题集/split/rubric 路径、资料与范围快照、模型/提示词/profile、候选/token/调用预算、重复次数、统计方法和成本门槛。`freeze.json` 保存这些值及输入文件 hash。保留集运行前冻结，runner 拒绝缺字段及 hash 不匹配。
 - [ ] 费用/延迟门槛由开发集容量与部署要求确定，填入数值字段 `max_p95_latency_ms`、`max_mean_cost_per_request`、`max_b1_latency_ratio`、`max_b1_cost_ratio`；未填数值不得启动保留集选择实验。未经实测不在文档中捏造用户预算。
-- [ ] 对同题运行 A/B1，交替顺序减少服务时段偏差；重复次数在冻结配置中写定，两组一致，不因某次结果不利而重跑挑选。保留原始失败与重试记录。
+- [x] 对同题运行 A/B1，交替顺序减少服务时段偏差；重复次数在冻结配置中写定，两组一致，不因某次结果不利而重跑挑选。保留原始失败与重试记录。dev-v3完整80次已归档，服务失败不删样；后续小样本预算诊断另行冻结，不替代原报告。
+- [x] 形成开发集服务状态、错误码、候选/重排/上下文/引用跨度覆盖、延迟及逐题复核材料；附法规代理分析，所有人审质量与未知费用保持未知。
 - [ ] 形成逐题配对胜负、错误归因、分题型结果、成本/延迟及不确定性报告。输出完整请求和服务成功子集两种统计，并明确分母。
 
-以下为本批拟新增 CLI 契约；`freeze` 从完成的开发配置生成不可变文件，`run` 必须验证冻结内容，`report` 不重新调用生成模型：
+以下为已实现 CLI 契约；`freeze` 从完成的开发配置生成不可变文件，`run` 必须验证冻结内容，`report` 不重新调用生成模型：
 
 ```powershell
 uv run pytest knowpath_backend/test/test_rag_eval.py -q
 uv run python -m knowpath_backend.rag_eval.cli freeze --config ../docs/research/tree-rag/evaluation/development.json --output ../docs/research/tree-rag/evaluation/freeze.json
-uv run python -m knowpath_backend.rag_eval.cli run --freeze ../docs/research/tree-rag/evaluation/freeze.json --split heldout --plugins a b1 --output ../docs/research/tree-rag/evaluation/runs/heldout.jsonl
-uv run python -m knowpath_backend.rag_eval.cli report --freeze ../docs/research/tree-rag/evaluation/freeze.json --input ../docs/research/tree-rag/evaluation/runs/heldout.jsonl --output ../docs/research/tree-rag/evaluation/decision.md
+uv run python -m knowpath_backend.rag_eval.cli run --freeze ../docs/research/tree-rag/evaluation/freeze.json --partition heldout --output ../docs/research/tree-rag/evaluation/runs/heldout.jsonl
+uv run python -m knowpath_backend.rag_eval.cli report --freeze ../docs/research/tree-rag/evaluation/freeze.json --results ../docs/research/tree-rag/evaluation/runs/heldout.jsonl --reviews human-reviews.json --output ../docs/research/tree-rag/evaluation/decision.json
 ```
 
 **验收：** 固定配置的真实 A/B1 报告可重放，关键语义判定经人工复核。若凭据/服务缺失，报告写明未运行部分和影响，本批不勾选完成。
@@ -802,16 +830,34 @@ uv run python -m knowpath_backend.rag_eval.cli report --freeze ../docs/research/
 
 ## 6. 交付清单与后续执行边界
 
-- [ ] ① 数据契约、追加迁移、兼容引用与首批题集。
-- [ ] ② 可追溯分块、索引清单、故障恢复与真实存储集成记录。
-- [ ] ③ 独立普通基线、公共核验、真实服务集成与开发集报告。
-- [ ] ④ 有界 B1、完整 trace、共同预算与范围验收。
+- [x] ① 数据契约、追加迁移、兼容引用与首批题集。
+- [x] ② 可追溯分块、索引清单、故障恢复与真实存储集成记录。
+- [x] ③ 独立普通基线、公共核验、真实服务集成与开发集报告。报告暴露配置及语义风险，勾选交付不代表质量验收通过。
+- [x] ④ 有界 B1、完整 trace、共同预算与范围验收。
 - [ ] ⑤ 冻结配置、真实保留集 A/B1 报告、逐题归因与采用结论。
 
-实施顺序固定为共同基础与普通 RAG → 树形 B1 → 真实模型配对评测。每批分别保存确定性测试、真实服务集成、真实模型质量记录；前两类通过不替代第三类。本轮交付仅为工程计划，所有开发复选框保持未完成。
+实施顺序固定为共同基础与普通 RAG → 树形 B1 → 真实模型配对评测。每批分别保存确定性测试、真实服务集成、真实模型质量记录；前两类通过不替代第三类。工程实现与人工验收分开记录，不能把开发代码齐备勾选为全部方案验收完成。
 
-## 2026-09-20 首批实施进度
+## 2026-09-20 首批实施进度（历史记录）
 
 已按修正后的计划开始实施，代码位于独立分支 `codex/rag-foundation`、项目内 `.worktrees/rag-foundation` 工作区。已实现数据/引用契约、原文范围映射、9 张追加表与迁移、不可变仓储、新旧引用和测验查阅审计桥接，以及删除事务兼容。最终相关回归 188 项通过、18 项跳过，包含 3 项真实 MySQL 临时库验证；10 道受控合成题的来源与划分校验通过。
 
 这只是第一批基础实现。当前映射锚定旧解析 chunk，真实资料回填与新解析器映射、索引发布、普通 RAG 完整回答链路、B1 和真实模型对照仍待后续批次。现有业务库未迁移，在线检索未切换；上述开发复选框按完整批次验收保留未完成，不能将基础测试通过视为全部实施完成。
+
+## 2026-09-21 续实施结果（当前状态）
+
+最终学习/RAG回归：1265项通过、222项跳过、514项未选中；仅有一条既存依赖弃用警告。跳过不计为通过。
+
+以上首批记录已由后续实现推进：普通A、树形B1、共同分块/范围/版本、发布恢复、删除、生成核验、
+费用与调用预算、真实对话接入和冻结评测工具均已交付。代码在 `codex/rag-foundation` 分支的独立工作区。
+最后补齐真实插件prepare/delete调用、统一可冻结的模型预算、费用估算、超时保护，以及真实对话的安全错误详情。
+
+完整开发实验80次中30次正常返回、50次失败；独立24k/4k预算诊断10次中4次正常返回、6次失败。
+后者没有记录到输入预算超限，仍有4次总期限超限、1次核验服务失败、1次生成结构校验失败。
+原始失败、固定分母、源码及输入快照均保留。最后的对话错误发布修复发生在预算诊断归档之后，未参与该实验。
+测试证据见[实施记录](C:/Users/27202/Desktop/KnowPath/.worktrees/rag-foundation/docs/research/tree-rag/IMPLEMENTATION-STATUS.md)，实际决策见
+[当前采用决定](C:/Users/27202/Desktop/KnowPath/.worktrees/rag-foundation/docs/research/tree-rag/evaluation/decision.md)。
+
+尚未完成：60题人工标签与回答支持关系复核、开发配置选择与新完整验证、实际价格及四个部署门槛、
+保留集报告和最终采用决定。运行时默认继续为legacy，不以测试通过替代这些验收。
+B2/B3与自动路由仍须满足原计划条件后再启动，不列为首版已实现能力。

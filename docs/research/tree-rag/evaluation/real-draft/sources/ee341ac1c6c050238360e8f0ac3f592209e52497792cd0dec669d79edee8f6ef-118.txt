@@ -1,0 +1,3 @@
+```{.python .input}
+A.mean(), A.sum() / A.size
+```

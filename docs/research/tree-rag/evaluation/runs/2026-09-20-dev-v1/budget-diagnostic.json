@@ -1,0 +1,33 @@
+[
+  {
+    "input_bytes": 7977,
+    "keys": [
+      "question",
+      "evidence"
+    ],
+    "evidence_count": 11,
+    "input_limit": 12000
+  },
+  {
+    "input_bytes": 9349,
+    "keys": [
+      "question",
+      "evidence",
+      "draft"
+    ],
+    "evidence_count": 11,
+    "input_limit": 12000
+  },
+  {
+    "input_bytes": 13888,
+    "keys": [
+      "question",
+      "evidence",
+      "previous_draft",
+      "verification_feedback",
+      "instruction"
+    ],
+    "evidence_count": 11,
+    "input_limit": 12000
+  }
+]

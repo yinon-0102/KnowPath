@@ -18,6 +18,7 @@ env/
 .mypy_cache/
 .ruff_cache/
 .coverage
+py/.rag-evaluation/
 htmlcov/
 
 # Secrets and local configuration

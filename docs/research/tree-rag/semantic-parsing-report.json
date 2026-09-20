@@ -1,0 +1,557 @@
+{
+  "profile": {
+    "tokenizer": "utf8-byte-upper-bound-v1",
+    "max_tokens": 1800,
+    "budget_applies_to": "source_text; metadata prefix excluded"
+  },
+  "audit_scope": "Immutable legacy extraction artifacts, not original binary file bytes. Whitespace joins follow CitationResolver.",
+  "limitations": [
+    "Automated structural/mapping audit, not human semantic accuracy or answer quality.",
+    "Legacy parser already discarded Markdown headings and some blank lines; these cannot be recovered as evidence.",
+    "PDF running headers/page numbers are retained because removing them would discard source text.",
+    "Sample fixture identities are deterministic substitutes for parser-generated UUIDs; production identities are untouched."
+  ],
+  "samples": [
+    {
+      "filename": "minors-protection-law-2024.pdf",
+      "raw_sha256": "1984750c417fbc6e8e3b108d964ab38844418019bc54bee2d19e9cac84356842",
+      "legacy_artifacts": 37,
+      "chunks": 142,
+      "unit_kinds": {
+        "paragraph": 1,
+        "heading": 9,
+        "article": 132
+      },
+      "section_paths": [
+        [
+          "第一章 总则"
+        ],
+        [
+          "第七章 司法保护"
+        ],
+        [
+          "第三章 学校保护"
+        ],
+        [
+          "第九章 附 则"
+        ],
+        [
+          "第二章 家庭保护"
+        ],
+        [
+          "第五章 网络保护"
+        ],
+        [
+          "第八章 法律责任"
+        ],
+        [
+          "第六章 政府保护"
+        ],
+        [
+          "第四章 社会保护"
+        ]
+      ],
+      "distinct_article_count": 132,
+      "distinct_article_ids": [
+        "第一条",
+        "第一百一十一条",
+        "第一百一十七条",
+        "第一百一十三条",
+        "第一百一十九条",
+        "第一百一十二条",
+        "第一百一十五条",
+        "第一百一十八条",
+        "第一百一十六条",
+        "第一百一十四条",
+        "第一百一十条",
+        "第一百三十一条",
+        "第一百三十二条",
+        "第一百三十条",
+        "第一百二十一条",
+        "第一百二十七条",
+        "第一百二十三条",
+        "第一百二十九条",
+        "第一百二十二条",
+        "第一百二十五条",
+        "第一百二十八条",
+        "第一百二十六条",
+        "第一百二十四条",
+        "第一百二十条",
+        "第一百条",
+        "第一百零一条",
+        "第一百零七条",
+        "第一百零三条",
+        "第一百零九条",
+        "第一百零二条",
+        "第一百零五条",
+        "第一百零八条",
+        "第一百零六条",
+        "第一百零四条",
+        "第七十一条",
+        "第七十七条",
+        "第七十三条",
+        "第七十九条",
+        "第七十二条",
+        "第七十五条",
+        "第七十八条",
+        "第七十六条",
+        "第七十四条",
+        "第七十条",
+        "第七条",
+        "第三十一条",
+        "第三十七条",
+        "第三十三条",
+        "第三十九条",
+        "第三十二条",
+        "第三十五条",
+        "第三十八条",
+        "第三十六条",
+        "第三十四条",
+        "第三十条",
+        "第三条",
+        "第九十一条",
+        "第九十七条",
+        "第九十三条",
+        "第九十九条",
+        "第九十二条",
+        "第九十五条",
+        "第九十八条",
+        "第九十六条",
+        "第九十四条",
+        "第九十条",
+        "第九条",
+        "第二十一条",
+        "第二十七条",
+        "第二十三条",
+        "第二十九条",
+        "第二十二条",
+        "第二十五条",
+        "第二十八条",
+        "第二十六条",
+        "第二十四条",
+        "第二十条",
+        "第二条",
+        "第五十一条",
+        "第五十七条",
+        "第五十三条",
+        "第五十九条",
+        "第五十二条",
+        "第五十五条",
+        "第五十八条",
+        "第五十六条",
+        "第五十四条",
+        "第五十条",
+        "第五条",
+        "第八十一条",
+        "第八十七条",
+        "第八十三条",
+        "第八十九条",
+        "第八十二条",
+        "第八十五条",
+        "第八十八条",
+        "第八十六条",
+        "第八十四条",
+        "第八十条",
+        "第八条",
+        "第六十一条",
+        "第六十七条",
+        "第六十三条",
+        "第六十九条",
+        "第六十二条",
+        "第六十五条",
+        "第六十八条",
+        "第六十六条",
+        "第六十四条",
+        "第六十条",
+        "第六条",
+        "第十一条",
+        "第十七条",
+        "第十三条",
+        "第十九条",
+        "第十二条",
+        "第十五条",
+        "第十八条",
+        "第十六条",
+        "第十四条",
+        "第十条",
+        "第四十一条",
+        "第四十七条",
+        "第四十三条",
+        "第四十九条",
+        "第四十二条",
+        "第四十五条",
+        "第四十八条",
+        "第四十六条",
+        "第四十四条",
+        "第四十条",
+        "第四条"
+      ],
+      "cross_page_chunks": 19,
+      "multi_artifact_chunks": 19,
+      "continuation_chunks": 0,
+      "atomic_chunks": 0,
+      "short_verses_under_100_bytes": 0,
+      "maximum_source_token_count": 1311,
+      "exact_source_reconstruction": true,
+      "missing_nonwhitespace_characters": 0,
+      "duplicated_nonwhitespace_characters": 0,
+      "examples": {
+        "paragraph": {
+          "source_text": "中华人民共和国未成年人保护法\n（1991 年 9 月 4 日第七届全国人民代表大会常务委员会第二十一次会议通过 2006\n年 12 月 29 日第十届全国人民代表大会常务委员会第二十五次会议第一次修订 根\n据 2012 年 10 月 26 日第十一届全国人民代表大会常务委员会第二十九次会议《关于\n修改〈中华人民共和国未成年人保护法〉的决定》第一次修正 2020 年 10 月 17 日\n第十三届全国人民代表大会常务委员会第二十二次会议第二次修订 2024 年 4 月 26\n日第十四届全国人民代表大会常务委员会第九次会议《关于修改<中华人民共和国农\n业技术推广法>、<中华人民共和国未成年人保护法>、<中华人民共和国生物安全法>\n的决定》第二次修正）\n",
+          "section_path": [],
+          "source_spans": [
+            {
+              "material_version_id": "1984750c417fbc6e8e3b108d964ab38844418019bc54bee2d19e9cac84356842",
+              "artifact_hash": "22c3f9ecabc299d88d0683d1a6d306df77b5fa83db3e549e0d1754d4a92b65cd",
+              "start": 0,
+              "end": 327,
+              "page": 1,
+              "block": "16c25d9394386024716a7b44edd83b42ca56e836055a54dfef63a9613bb7705e"
+            }
+          ]
+        },
+        "heading": {
+          "source_text": "第一章 总则\n",
+          "section_path": [
+            "第一章 总则"
+          ],
+          "source_spans": [
+            {
+              "material_version_id": "1984750c417fbc6e8e3b108d964ab38844418019bc54bee2d19e9cac84356842",
+              "artifact_hash": "22c3f9ecabc299d88d0683d1a6d306df77b5fa83db3e549e0d1754d4a92b65cd",
+              "start": 327,
+              "end": 334,
+              "page": 1,
+              "block": "16c25d9394386024716a7b44edd83b42ca56e836055a54dfef63a9613bb7705e"
+            }
+          ]
+        },
+        "article": {
+          "source_text": "第一条 为了保护未成年人身心健康，保障未成年人合法\n权益，促进未成年人德智体美劳全面发展，培养有理想、有道\n德、有文化、有纪律的社会主义建设者和接班人，培养担当民\n族复兴大任的时代新人，根据宪法，制定本法。\n",
+          "section_path": [
+            "第一章 总则"
+          ],
+          "source_spans": [
+            {
+              "material_version_id": "1984750c417fbc6e8e3b108d964ab38844418019bc54bee2d19e9cac84356842",
+              "artifact_hash": "22c3f9ecabc299d88d0683d1a6d306df77b5fa83db3e549e0d1754d4a92b65cd",
+              "start": 334,
+              "end": 438,
+              "page": 1,
+              "block": "16c25d9394386024716a7b44edd83b42ca56e836055a54dfef63a9613bb7705e"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "filename": "linear-algebra-zh.md",
+      "raw_sha256": "ee341ac1c6c050238360e8f0ac3f592209e52497792cd0dec669d79edee8f6ef",
+      "legacy_artifacts": 222,
+      "chunks": 218,
+      "unit_kinds": {
+        "paragraph": 84,
+        "code": 120,
+        "math": 14
+      },
+      "section_paths": [
+        [
+          "线性代数"
+        ],
+        [
+          "线性代数",
+          "关于线性代数的更多信息"
+        ],
+        [
+          "线性代数",
+          "向量"
+        ],
+        [
+          "线性代数",
+          "向量",
+          "长度、维度和形状"
+        ],
+        [
+          "线性代数",
+          "小结"
+        ],
+        [
+          "线性代数",
+          "张量"
+        ],
+        [
+          "线性代数",
+          "张量算法的基本性质"
+        ],
+        [
+          "线性代数",
+          "标量"
+        ],
+        [
+          "线性代数",
+          "点积（Dot Product）"
+        ],
+        [
+          "线性代数",
+          "矩阵"
+        ],
+        [
+          "线性代数",
+          "矩阵-向量积"
+        ],
+        [
+          "线性代数",
+          "矩阵-矩阵乘法"
+        ],
+        [
+          "线性代数",
+          "练习"
+        ],
+        [
+          "线性代数",
+          "范数"
+        ],
+        [
+          "线性代数",
+          "范数",
+          "范数和目标"
+        ],
+        [
+          "线性代数",
+          "降维"
+        ],
+        [
+          "线性代数",
+          "降维",
+          "非降维求和"
+        ]
+      ],
+      "distinct_article_count": 0,
+      "distinct_article_ids": [],
+      "cross_page_chunks": 0,
+      "multi_artifact_chunks": 4,
+      "continuation_chunks": 0,
+      "atomic_chunks": 134,
+      "short_verses_under_100_bytes": 0,
+      "maximum_source_token_count": 904,
+      "exact_source_reconstruction": true,
+      "missing_nonwhitespace_characters": 0,
+      "duplicated_nonwhitespace_characters": 0,
+      "examples": {
+        "paragraph": {
+          "source_text": ":label:`sec_linear-algebra`",
+          "section_path": [
+            "线性代数"
+          ],
+          "source_spans": [
+            {
+              "material_version_id": "ee341ac1c6c050238360e8f0ac3f592209e52497792cd0dec669d79edee8f6ef",
+              "artifact_hash": "e01b3a352841c93c13d89342c13a54dac35068fb4a0c391b9d30ec7096f9ca80",
+              "start": 0,
+              "end": 27,
+              "page": null,
+              "block": "a37dda269dfca95efb189b239030441fe8d0db48b3f1a42d630121da1a6894bf"
+            }
+          ]
+        },
+        "code": {
+          "source_text": "```{.python .input}\nfrom mxnet import np, npx\nnpx.set_np()\nx = np.array(3.0)\ny = np.array(2.0)\nx + y, x * y, x / y, x ** y\n```",
+          "section_path": [
+            "线性代数",
+            "标量"
+          ],
+          "source_spans": [
+            {
+              "material_version_id": "ee341ac1c6c050238360e8f0ac3f592209e52497792cd0dec669d79edee8f6ef",
+              "artifact_hash": "6716235d5e3b76de26ae6ce63f176efb1d60398dae05c0b9adccb59016acb4e9",
+              "start": 0,
+              "end": 58,
+              "page": null,
+              "block": "528ae6f55e8792a9385f2d9e63aeef131fdbbac5c4564d9072ec87e510f23960"
+            },
+            {
+              "material_version_id": "ee341ac1c6c050238360e8f0ac3f592209e52497792cd0dec669d79edee8f6ef",
+              "artifact_hash": "efea1e8653db0382fa13a97bb2443b682b31187c8c7165f52e1f503bd0439788",
+              "start": 0,
+              "end": 35,
+              "page": null,
+              "block": "3030a8b87a093a34f2e8658fb405589c20dfb21d5744d599d3484be48bde0cb7"
+            },
+            {
+              "material_version_id": "ee341ac1c6c050238360e8f0ac3f592209e52497792cd0dec669d79edee8f6ef",
+              "artifact_hash": "20d24f221e50ca87c9aaf5e7c03794012e49e13059a94228d036dce51f15d00e",
+              "start": 0,
+              "end": 31,
+              "page": null,
+              "block": "365f568f259f935bc8569755e0e94acb06a9b410f78133ae29376a5d7111f623"
+            }
+          ]
+        },
+        "math": {
+          "source_text": "$$\\mathbf{x} =\\begin{bmatrix}x_{1}  \\\\x_{2}  \\\\ \\vdots  \\\\x_{n}\\end{bmatrix},$$\n",
+          "section_path": [
+            "线性代数",
+            "向量"
+          ],
+          "source_spans": [
+            {
+              "material_version_id": "ee341ac1c6c050238360e8f0ac3f592209e52497792cd0dec669d79edee8f6ef",
+              "artifact_hash": "72c6032bc1cb3aa69efa76d75d772ca87b0285f2163c52f4604c2b6fc264520d",
+              "start": 0,
+              "end": 80,
+              "page": null,
+              "block": "fe1f877d4f89b82235223f8052539c1620854888e07a7944fcbf4fa40b9e8e7b"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "filename": "lunyu-zh-hans.txt",
+      "raw_sha256": "c826c0e8494922585b1eed29b2093b7cd44c9ff43fda9cb44356fca8b463f926",
+      "legacy_artifacts": 574,
+      "chunks": 574,
+      "unit_kinds": {
+        "paragraph": 60,
+        "document_boundary": 2,
+        "heading": 20,
+        "verse": 492
+      },
+      "section_paths": [
+        [
+          "为政第二"
+        ],
+        [
+          "乡党第十"
+        ],
+        [
+          "先进第十一"
+        ],
+        [
+          "八佾第三"
+        ],
+        [
+          "公冶长第五"
+        ],
+        [
+          "卫灵公第十五"
+        ],
+        [
+          "子张第十九"
+        ],
+        [
+          "子罕第九"
+        ],
+        [
+          "子路第十三"
+        ],
+        [
+          "季氏第十六"
+        ],
+        [
+          "学而第一"
+        ],
+        [
+          "宪问第十四"
+        ],
+        [
+          "尧曰第二十"
+        ],
+        [
+          "微子第十八"
+        ],
+        [
+          "泰伯第八"
+        ],
+        [
+          "述而第七"
+        ],
+        [
+          "里仁第四"
+        ],
+        [
+          "阳货第十七"
+        ],
+        [
+          "雍也第六"
+        ],
+        [
+          "颜渊第十二"
+        ]
+      ],
+      "distinct_article_count": 0,
+      "distinct_article_ids": [],
+      "cross_page_chunks": 0,
+      "multi_artifact_chunks": 0,
+      "continuation_chunks": 0,
+      "atomic_chunks": 0,
+      "short_verses_under_100_bytes": 238,
+      "maximum_source_token_count": 1312,
+      "exact_source_reconstruction": true,
+      "missing_nonwhitespace_characters": 0,
+      "duplicated_nonwhitespace_characters": 0,
+      "examples": {
+        "paragraph": {
+          "source_text": "The Project Gutenberg eBook of 论语",
+          "section_path": [],
+          "source_spans": [
+            {
+              "material_version_id": "c826c0e8494922585b1eed29b2093b7cd44c9ff43fda9cb44356fca8b463f926",
+              "artifact_hash": "68f16004fd1f6aad925179cd964e575f6d0318559b311f9a5e7bf86c655bde18",
+              "start": 0,
+              "end": 33,
+              "page": null,
+              "block": "d403eff100c5f23b83894aa69466fa881a9eb16de01dc76d0bed4ef45643e40b"
+            }
+          ]
+        },
+        "document_boundary": {
+          "source_text": "*** START OF THE PROJECT GUTENBERG EBOOK 论语 ***",
+          "section_path": [],
+          "source_spans": [
+            {
+              "material_version_id": "c826c0e8494922585b1eed29b2093b7cd44c9ff43fda9cb44356fca8b463f926",
+              "artifact_hash": "14a1783529d05dc0cc68665906e8f47b832db2b4177f4a2cd89cd282f81e2469",
+              "start": 0,
+              "end": 47,
+              "page": null,
+              "block": "ec1582cb9371327616a19edb67cb718ffb088ac4b8379ba5b0db98e4b0a6a4aa"
+            }
+          ]
+        },
+        "heading": {
+          "source_text": "学而第一",
+          "section_path": [
+            "学而第一"
+          ],
+          "source_spans": [
+            {
+              "material_version_id": "c826c0e8494922585b1eed29b2093b7cd44c9ff43fda9cb44356fca8b463f926",
+              "artifact_hash": "f40ae2f3bfb5e4b8e8c774d4dd472e226c39a085714ea5231ee458ffe84b7851",
+              "start": 0,
+              "end": 4,
+              "page": null,
+              "block": "aedc013f59286647a5db0c677fb44ae286f15146465e2672301c7f9347ae1f1f"
+            }
+          ]
+        },
+        "verse": {
+          "source_text": "1. 子曰：「学而时习之，不亦说乎？有朋自远方来，不亦乐乎？人不知而不愠，不亦君子乎？」",
+          "section_path": [
+            "学而第一"
+          ],
+          "source_spans": [
+            {
+              "material_version_id": "c826c0e8494922585b1eed29b2093b7cd44c9ff43fda9cb44356fca8b463f926",
+              "artifact_hash": "587ef7d8be6bf6935b5a9fef7ab6505d754f90b30badad6dd62265c287ad9878",
+              "start": 0,
+              "end": 44,
+              "page": null,
+              "block": "a22519922549107c2dea5cb715c560eaeb51a64fbb5a5386e888ffac748bfaf1"
+            }
+          ]
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,4 @@
+```{.python .input}
+sum_A = A.sum(axis=1, keepdims=True)
+sum_A
+```

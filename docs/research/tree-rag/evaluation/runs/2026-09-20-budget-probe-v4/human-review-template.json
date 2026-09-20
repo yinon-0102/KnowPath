@@ -1,0 +1,102 @@
+[
+  {
+    "question_id": "real-law-03",
+    "plugin": "a",
+    "repeat": 0,
+    "success": null,
+    "partial": null,
+    "error_type": null,
+    "reviewer": null,
+    "notes": ""
+  },
+  {
+    "question_id": "real-law-03",
+    "plugin": "b1",
+    "repeat": 0,
+    "success": null,
+    "partial": null,
+    "error_type": null,
+    "reviewer": null,
+    "notes": ""
+  },
+  {
+    "question_id": "real-law-13",
+    "plugin": "a",
+    "repeat": 0,
+    "success": null,
+    "partial": null,
+    "error_type": null,
+    "reviewer": null,
+    "notes": ""
+  },
+  {
+    "question_id": "real-law-13",
+    "plugin": "b1",
+    "repeat": 0,
+    "success": null,
+    "partial": null,
+    "error_type": null,
+    "reviewer": null,
+    "notes": ""
+  },
+  {
+    "question_id": "real-math-01",
+    "plugin": "a",
+    "repeat": 0,
+    "success": null,
+    "partial": null,
+    "error_type": null,
+    "reviewer": null,
+    "notes": ""
+  },
+  {
+    "question_id": "real-math-01",
+    "plugin": "b1",
+    "repeat": 0,
+    "success": null,
+    "partial": null,
+    "error_type": null,
+    "reviewer": null,
+    "notes": ""
+  },
+  {
+    "question_id": "real-math-04",
+    "plugin": "a",
+    "repeat": 0,
+    "success": null,
+    "partial": null,
+    "error_type": null,
+    "reviewer": null,
+    "notes": ""
+  },
+  {
+    "question_id": "real-math-04",
+    "plugin": "b1",
+    "repeat": 0,
+    "success": null,
+    "partial": null,
+    "error_type": null,
+    "reviewer": null,
+    "notes": ""
+  },
+  {
+    "question_id": "real-lunyu-02",
+    "plugin": "a",
+    "repeat": 0,
+    "success": null,
+    "partial": null,
+    "error_type": null,
+    "reviewer": null,
+    "notes": ""
+  },
+  {
+    "question_id": "real-lunyu-02",
+    "plugin": "b1",
+    "repeat": 0,
+    "success": null,
+    "partial": null,
+    "error_type": null,
+    "reviewer": null,
+    "notes": ""
+  }
+]

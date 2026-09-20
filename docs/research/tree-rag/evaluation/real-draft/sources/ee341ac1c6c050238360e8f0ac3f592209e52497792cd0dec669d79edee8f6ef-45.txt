@@ -1,0 +1,4 @@
+对于任意$\mathbf{A} \in \mathbb{R}^{m \times n}$，
+$\mathbf{A}$的形状是（$m$,$n$）或$m \times n$。
+当矩阵具有相同数量的行和列时，其形状将变为正方形；
+因此，它被称为*方阵*（square matrix）。

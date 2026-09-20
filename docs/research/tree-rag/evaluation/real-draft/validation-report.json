@@ -1,0 +1,19 @@
+{
+  "questions": 60,
+  "documents": 3,
+  "dev": 40,
+  "heldout": 20,
+  "families": 21,
+  "verified_spans": 16732,
+  "source_artifacts": 833,
+  "expected_status_counts": {
+    "answered": 50,
+    "partial": 4,
+    "insufficient": 3,
+    "clarify": 3
+  },
+  "human_review_status": "pending",
+  "heldout_executed": false,
+  "providers_called": false,
+  "checks": "Exact artifact hash, UTF-8 quote, Unicode offsets, allowed-scope coverage, answer-point references and family split only; no human semantic approval."
+}

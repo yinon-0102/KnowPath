@@ -1,0 +1,3 @@
+```{.python .input}
+A.shape, x.shape, np.dot(A, x)
+```

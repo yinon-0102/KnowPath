@@ -12,6 +12,7 @@ from knowpath_backend.learning.spaces.service import SpaceService, now
 from knowpath_backend.learning.rag.retrieval import KeywordRetriever, RetrievalError, configured_retriever
 from knowpath_backend.learning.config import LearningSettings
 from knowpath_backend.learning.conversations.context import bound_snapshot, project_memory
+from knowpath_backend.learning.rag.verification import VerificationError, safe_error_details
 
 
 def uid():
@@ -19,12 +20,13 @@ def uid():
 
 
 class MessageService:
-    def __init__(self, repository, spaces, assessments, runs, generator=None, retriever=None, context_settings=None):
+    def __init__(self, repository, spaces, assessments, runs, generator=None, retriever=None, context_settings=None, rag_pipeline=None):
         self.repository, self.spaces, self.assessments, self.runs = repository, spaces, assessments, runs
         self.generator = generator if generator is not None else DashScopeAnswerGenerator()
         self.commands = SpaceService(repository, spaces.materials)
         self.retriever = retriever if retriever is not None else configured_retriever()
         self.context_settings = context_settings or getattr(self.generator, "settings", None) or LearningSettings.from_env()
+        self.rag_pipeline = rag_pipeline
 
     def send(self, space_id, payload, key=None, *, dispatch=None, durable=False):
         payload = SendMessage.model_validate(payload).model_dump()
@@ -106,7 +108,7 @@ class MessageService:
                     raise DomainConflict("BOUND_VERSION_UNAVAILABLE", "绑定资料版本不可用")
                 chunk = next((c for c in version.chunks if c.id == ref["chunk_id"]), None)
                 if chunk is not None:
-                    sources[chunk.id] = {**ref, "topic_id": topic["id"], "topic_name": topic["name"], "text": chunk.text[:6000],
+                    sources[chunk.id] = {**ref, "topic_id": topic["id"], "topic_name": topic["name"], "text": chunk.text,
                                          "graph_version": topic["graph_version"]}
         return list(sources.values())
 
@@ -144,44 +146,84 @@ class MessageService:
                     return
                 if self._terminal(current):
                     return
+                interrupted = current["snapshot"].get("rag_execution_started") is True
+                if interrupted or (self.rag_pipeline is not None and not current["snapshot"]["hint"]):
+                    # Commit the fence before any external call. A crashed
+                    # attempt may have consumed its provider budget even when
+                    # no result was saved; replay must fail closed, including
+                    # after deployment changes the configured pipeline.
+                    current["snapshot"] = {**current["snapshot"], "rag_mode": True,
+                                           "rag_execution_started": True}
                 current["status"] = "generating"
                 self.repository.put_record("messages", current)
         except DomainNotFound:
             return
         snapshot = current["snapshot"]
+        if interrupted:
+            self._publish_answer(initial, identifier, snapshot, None, None,
+                                 "RAG_EXECUTION_INTERRUPTED", None, job=job)
+            return
         error = None
+        error_details = {}
+        answer_status = None
         try:
-            # Active assessment hints remain deterministic and require no provider.
-            retriever = KeywordRetriever() if snapshot["hint"] else self.retriever
-            retrieval_sources = snapshot.get("retrieval_sources", snapshot["sources"])
-            try:
-                selected = retriever.select(snapshot["message"], copy.deepcopy(retrieval_sources), limit=8)
-            except RetrievalError:
-                raise
-            except Exception:
-                raise RetrievalError("VECTOR_UNAVAILABLE") from None
-            if (not isinstance(selected, list) or not 1 <= len(selected) <= 8
-                    or any(row not in retrieval_sources for row in selected)
-                    or len({row["chunk_id"] for row in selected}) != len(selected)):
-                raise RetrievalError("RETRIEVAL_VALIDATION_FAILED")
-            snapshot = {**snapshot, "sources": copy.deepcopy(selected), "retrieval_sources": retrieval_sources}
-            snapshot = bound_snapshot(snapshot, budget=self.context_settings.context_budget_tokens)
-            if not self._record_sources(identifier, snapshot, job=job):
-                return
-            if snapshot["hint"]:
-                raw = {"text": "先在引用资料中定位相关概念，列出题目的已知条件，再逐步检查自己的推理。这里提供学习提示，不直接给出活动测验答案。",
-                       "citation_ids": [snapshot["sources"][0]["chunk_id"]]}
+            if self.rag_pipeline is not None and not snapshot["hint"]:
+                def cancelled():
+                    if job is not None:
+                        job.check()
+                    return self.runs.get(current["run_id"])["status"] not in {"queued", "running"}
+                result = self.rag_pipeline.answer(snapshot["message"], space_id=current["space_id"],
+                    expected_scope_version=snapshot["scope_version"], expected_bindings=snapshot["bindings"],
+                    cancelled=cancelled, history=copy.deepcopy(snapshot.get('history', [])))
+                snapshot = {**snapshot, "sources": result["sources"], "rag_trace": result["trace"]}
+                if not self._record_sources(identifier, snapshot, job=job):
+                    return
+                text, citations, answer_status = result["text"], result["citations"], result["status"]
             else:
-                raw = self.generator.generate(copy.deepcopy(snapshot))
-            text, citations = validate_answer(raw, snapshot["sources"])
+                text, citations, snapshot = self._legacy_answer(identifier, snapshot, job=job)
+                if text is None:
+                    return
         except LeaseLost:
             raise
+        except VerificationError as exc:
+            error = exc.code
+            error_details = safe_error_details(exc.details)
         except (MessageGenerationError, RetrievalError) as exc:
             error = exc.code
         except Exception:
-            # An injected/custom provider must never leak upstream credentials or
-            # exception details through Run/SSE, or leave the run active forever.
+            # Custom providers must not leak request/credential details.
             error = "MODEL_UNAVAILABLE"
+        self._publish_answer(initial, identifier, snapshot, text if error is None else None,
+                             citations if error is None else None, error, answer_status,
+                             error_details=error_details, job=job)
+
+    def _legacy_answer(self, identifier, snapshot, *, job=None):
+        # Active assessment hints remain deterministic and require no provider.
+        retriever = KeywordRetriever() if snapshot["hint"] else self.retriever
+        retrieval_sources = snapshot.get("retrieval_sources", snapshot["sources"])
+        try:
+            selected = retriever.select(snapshot["message"], copy.deepcopy(retrieval_sources), limit=8)
+        except RetrievalError:
+            raise
+        except Exception:
+            raise RetrievalError("VECTOR_UNAVAILABLE") from None
+        if (not isinstance(selected, list) or not 1 <= len(selected) <= 8
+                or any(row not in retrieval_sources for row in selected)
+                or len({row["chunk_id"] for row in selected}) != len(selected)):
+            raise RetrievalError("RETRIEVAL_VALIDATION_FAILED")
+        snapshot = {**snapshot, "sources": copy.deepcopy(selected), "retrieval_sources": retrieval_sources}
+        snapshot = bound_snapshot(snapshot, budget=self.context_settings.context_budget_tokens)
+        if not self._record_sources(identifier, snapshot, job=job):
+            return None, None, snapshot
+        if snapshot["hint"]:
+            raw = {"text": "先在引用资料中定位相关概念，列出题目的已知条件，再逐步检查自己的推理。这里提供学习提示，不直接给出活动测验答案。",
+                   "citation_ids": [snapshot["sources"][0]["chunk_id"]]}
+        else:
+            raw = self.generator.generate(copy.deepcopy(snapshot))
+        text, citations = validate_answer(raw, snapshot["sources"])
+        return text, citations, snapshot
+
+    def _publish_answer(self, initial, identifier, snapshot, text, citations, error, answer_status, *, error_details=None, job=None):
         try:
             with self.repository.transaction():
                 space = self.spaces.repository.get(initial["space_id"])
@@ -190,7 +232,9 @@ class MessageService:
                     job.check()
                 if current["status"] != "generating" or self._terminal(current):
                     return
-                error = self._context_error(space, current, snapshot) or error
+                context_error = self._context_error(space, current, snapshot)
+                if context_error:
+                    error, error_details = context_error, {}
                 if error:
                     public = {"UNSUPPORTED_MODEL": "当前模型不支持所需能力", "RATE_LIMITED": "模型请求过于频繁，请稍后重试",
                               "MODEL_UNAVAILABLE": "对话模型暂时不可用", "MESSAGE_VALIDATION_FAILED": "回答未通过来源校验",
@@ -201,11 +245,33 @@ class MessageService:
                               "VECTOR_PROFILE_MISMATCH": "向量索引配置不匹配，需要重建索引",
                               "RETRIEVAL_VALIDATION_FAILED": "检索结果未通过来源校验"}
                     public["CONTEXT_BUDGET_EXCEEDED"] = "当前问题与引用资料超过上下文预算，请缩短问题或调整预算"
+                    public.update({
+                        "RAG_INDEX_NOT_READY": "当前学习范围的内容索引尚未发布",
+                        "RAG_DEADLINE_EXCEEDED": "本次检索与回答超过时间预算",
+                        "RAG_COST_BUDGET_EXCEEDED": "本次检索与回答超过费用预算",
+                        "RAG_SPEND_CONFIG_INVALID": "检索与回答的费用预算配置无效",
+                        "RAG_EXECUTION_INTERRUPTED": "上次回答执行已中断，为避免重复调用，本次任务未重放，请重新发送消息",
+                        "RETRIEVAL_DEADLINE_EXCEEDED": "本次检索超过时间预算",
+                        "VERIFICATION_UNAVAILABLE": "回答核验服务未能完成，本次回答未发布",
+                        "GENERATION_INVALID_RESPONSE": "回答格式未通过校验",
+                        "MODEL_INVALID_RESPONSE": "模型返回格式无效",
+                        "MODEL_TOKEN_BUDGET_EXCEEDED": "问题与证据超过模型输入预算",
+                        "RERANK_UNAVAILABLE": "证据重排服务暂时不可用",
+                        "RERANK_INVALID_RESPONSE": "证据重排结果无效",
+                        "RERANK_TOKEN_BUDGET_EXCEEDED": "检索候选超过重排输入预算",
+                        "RERANK_CANDIDATE_BUDGET_EXCEEDED": "检索候选超过重排数量预算",
+                        "RAG_SOURCE_INVALID": "原文映射未通过校验",
+                        "RAG_CANDIDATES_INVALID": "检索候选未通过身份校验",
+                        "RAG_RERANK_INVALID": "重排结果未通过身份校验",
+                        "RETRIEVAL_SCOPE_INVALID": "检索范围无效",
+                        "RETRIEVAL_INVALID_RESPONSE": "检索结果无效",
+                    })
                     if error not in public:
                         error = "MODEL_UNAVAILABLE"
+                        error_details = {}
                     failure = {"code": error, "message": public.get(error, "对话生成失败"),
-                               "details": {}, "retryable": error in TRANSIENT_ERRORS}
-                    if job is not None and job.retry(failure):
+                               "details": safe_error_details(error_details), "retryable": error in TRANSIENT_ERRORS}
+                    if job is not None and not snapshot.get('rag_mode') and job.retry(failure):
                         current["status"] = "pending"
                         self.repository.put_record("messages", current)
                         return
@@ -213,6 +279,8 @@ class MessageService:
                     current["status"] = "failed"
                 else:
                     response = {"message_id": identifier, "session_id": current["conversation_id"], "text": text, "citations": citations}
+                    if answer_status is not None:
+                        response["answer_status"] = answer_status
                     for offset in range(0, len(text), 256):
                         self.runs.append_event(current["run_id"], "message.delta", {"delta": text[offset:offset + 256]})
                     self.runs.append_event(current["run_id"], "message.completed", response)
@@ -251,7 +319,9 @@ class MessageService:
                     raise RetrievalError(error)
                 current["snapshot"] = snapshot
                 self.repository.put_record("messages", current)
-                refs = [{k: v for k, v in row.items() if k not in {"text", "topic_id", "topic_name"}}
+                refs = [{k: v for k, v in row.items() if k in {
+                            "material_id", "material_version_id", "chunk_id", "graph_version",
+                            "retrieval_version_id", "source_spans", "citation_schema_version"}}
                         for row in snapshot["sources"]]
                 self.runs.append_event(current["run_id"], "tool.completed", {"tool": "learning_sources", "source_refs": refs})
                 return True
