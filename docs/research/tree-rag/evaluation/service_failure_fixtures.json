@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "source_kind": "controlled",
+  "human_review_status": "pending",
+  "purpose": "fault_injection_specifications_not_executed_results",
+  "cases": [
+    {
+      "case_id": "fault-retrieval-timeout",
+      "question_id": "ctrl-001",
+      "stage": "retrieval",
+      "fault": "timeout"
+    },
+    {
+      "case_id": "fault-generation-unavailable",
+      "question_id": "ctrl-003",
+      "stage": "generation",
+      "fault": "provider_unavailable"
+    },
+    {
+      "case_id": "fault-verification-invalid",
+      "question_id": "ctrl-008",
+      "stage": "verification",
+      "fault": "invalid_structured_response"
+    }
+  ],
+  "expected": {
+    "answer_status": "failed",
+    "task_success": false,
+    "include_in_all_request_denominator": true,
+    "publish_unverified_answer": false,
+    "preserve_paired_counterpart": true
+  }
+}

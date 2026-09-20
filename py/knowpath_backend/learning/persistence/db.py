@@ -372,3 +372,7 @@ def create_db_engine(settings: DatabaseSettings | None = None):
 
 def init_db(engine) -> None:
     Base.metadata.create_all(engine)
+
+
+# Register additive RAG tables after Base and the legacy schema are defined.
+from knowpath_backend.learning.persistence import rag_models as _rag_models  # noqa: E402,F401

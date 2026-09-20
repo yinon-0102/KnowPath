@@ -117,6 +117,13 @@ class SpaceService:
             return space
         return self._execute("space.update", space_id, payload, key, change)
 
+    def rag_scope_snapshot(self, space_id):
+        """Freeze authoritative original ranges without switching live retrieval."""
+        from knowpath_backend.learning.rag.scope import learning_scope
+        with self.repository.transaction():
+            space = self.repository.get(space_id)
+            return learning_scope(space, self.bound_topics(space), self.materials)
+
     def bound_topics(self, space):
         topics = {}
         for binding in space["bindings"]:

@@ -1,0 +1,2 @@
+# Fixture hashes and Unicode offsets are defined over exact UTF-8 LF bytes.
+docs/research/tree-rag/evaluation/** text eol=lf

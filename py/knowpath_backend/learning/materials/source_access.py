@@ -24,6 +24,13 @@ class SourceAccessService:
         self.assessments = assessments
         self.repository = assessments.repository
 
+    def consult_citation(self, citation, space_id, *, rag_repository=None):
+        """Versioned citation access preserves the existing assistance audit."""
+        from knowpath_backend.learning.rag.sources import CitationResolver
+        spaces = self.assessments.spaces
+        return CitationResolver(spaces.materials, spaces, source_access=self,
+                                rag_repository=rag_repository).resolve(citation, space_id=space_id)
+
     def consult(self, material_id, version_id, chunk_ids, space_id=None):
         def bound(bindings):
             return any(b["material_id"] == material_id and b["material_version_id"] == version_id for b in bindings)

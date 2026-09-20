@@ -157,6 +157,8 @@ class SqlAlchemyMaterialRepository:
 
     def delete_material(self, material_id: str) -> None:
         with self.unit_of_work.session() as session:
+            from .rag_cleanup import erase_material_rag
+            erase_material_rag(session, material_id)
             session.query(SourceChunkRow).filter(SourceChunkRow.material_version_id.in_(select(MaterialVersionRow.id).where(MaterialVersionRow.material_id == material_id))).delete(synchronize_session=False)
             session.query(MaterialRawRow).filter(MaterialRawRow.version_id.in_(
                 select(MaterialVersionRow.id).where(MaterialVersionRow.material_id == material_id)

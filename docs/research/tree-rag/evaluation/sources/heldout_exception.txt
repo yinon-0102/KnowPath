@@ -1,0 +1,4 @@
+SYNTHETIC CONTROLLED SOURCE: Fjord shipment guide, page 1.
+Standard shipments leave on Monday. Fragile shipments always leave on Wednesday.
+SYNTHETIC CONTROLLED SOURCE: Fjord shipment guide, page 2.
+If Monday is a local holiday, standard shipments leave on Tuesday instead.

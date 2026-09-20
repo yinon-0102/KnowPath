@@ -1,0 +1,38 @@
+{
+  "schema_version": 1,
+  "dataset": "dataset.jsonl",
+  "source_kind": "controlled",
+  "purpose": "synthetic_harness_validation_only",
+  "human_review_status": "pending",
+  "real_material_holdout_status": "pending_not_collected",
+  "dev": {
+    "family_ids": [
+      "dev_permit",
+      "dev_scope",
+      "dev_conflict",
+      "dev_absent",
+      "dev_ambiguous"
+    ],
+    "question_ids": [
+      "ctrl-001",
+      "ctrl-002",
+      "ctrl-003",
+      "ctrl-004",
+      "ctrl-005",
+      "ctrl-006",
+      "ctrl-007"
+    ]
+  },
+  "heldout": {
+    "family_ids": [
+      "heldout_exception",
+      "heldout_conflict",
+      "heldout_absent"
+    ],
+    "question_ids": [
+      "ctrl-008",
+      "ctrl-009",
+      "ctrl-010"
+    ]
+  }
+}

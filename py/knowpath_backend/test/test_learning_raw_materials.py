@@ -198,6 +198,13 @@ def test_raw_migration_matches_metadata_and_preserves_old_tables(tmp_path, monke
     original = set(inspect(engine).get_table_names())
     command.upgrade(config, "0013_material_raw")
     with engine.connect() as connection:
-        assert compare_metadata(MigrationContext.configure(connection), Base.metadata) == []
+        # This regression checks the historical 0013 schema; newer additive RAG
+        # tables are verified against head by the migration suite separately.
+        from sqlalchemy import MetaData
+        historical = MetaData()
+        for table in Base.metadata.sorted_tables:
+            if not table.name.startswith("rag_"):
+                table.to_metadata(historical)
+        assert compare_metadata(MigrationContext.configure(connection), historical) == []
     command.downgrade(config, "0012_correction_context")
     assert set(inspect(engine).get_table_names()) == original

@@ -101,6 +101,8 @@ class SqlAlchemySpaceRepository:
 
     def delete(self, space_id):
         with self.unit_of_work.session() as session:
+            from .rag_cleanup import erase_space_rag
+            erase_space_rag(session, space_id)
             row = session.get(LearningSpaceRow, space_id)
             if row is not None:
                 session.delete(row)
