@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import time
 import re
+from copy import deepcopy
 from decimal import Decimal
 
 
@@ -355,18 +356,91 @@ def _messages(model, data, stage, short_ids):
             {'role':'user', 'content':json.dumps(data, ensure_ascii=False, separators=(',', ':'))}]
 
 
+_WIRE_STATUS_ALIASES = {
+    'pass': 'supported', 'passed': 'supported', 'true': 'supported', 'yes': 'supported',
+    '通过': 'supported', '支持': 'supported',
+    'fail': 'unsupported', 'failed': 'unsupported', 'false': 'unsupported', 'no': 'unsupported',
+    '不通过': 'unsupported', '不支持': 'unsupported',
+    'unknown': 'undetermined', 'uncertain': 'undetermined', '不确定': 'undetermined',
+    'partial': 'undetermined', 'partially_supported': 'undetermined',
+    'partially-supported': 'undetermined', '部分支持': 'undetermined',
+    'incomplete': 'undetermined', 'not_met': 'undetermined',
+    'not-met': 'undetermined', 'unverified': 'undetermined',
+    'not_verified': 'undetermined', 'not-verified': 'undetermined',
+    'insufficient_evidence': 'undetermined', '证据不足': 'undetermined',
+    '无法判断': 'undetermined', '未确定': 'undetermined',
+    'not_supported': 'unsupported', 'not-supported': 'unsupported',
+}
+
+
+def _normalize_wire_verdict(raw):
+    """Normalize harmless provider shape drift before strict local validation.
+
+    Some OpenAI-compatible providers still return a string evidence anchor,
+    add diagnostic fields, or use common boolean status words despite the
+    requested schema.  Only identity-preserving conversions are accepted;
+    local citation and evidence contracts remain authoritative afterwards.
+    """
+    if not isinstance(raw, dict):
+        return raw
+    data = deepcopy(raw)
+
+    def status(value):
+        if not isinstance(value, str):
+            return value
+        normalized = value.strip().lower()
+        if normalized in {'supported', 'unsupported', 'undetermined'}:
+            return normalized
+        # Unknown textual labels cannot establish support.  Treat them as
+        # undetermined so the answer remains fail-closed while avoiding a
+        # provider vocabulary mismatch turning into a hard service failure.
+        return _WIRE_STATUS_ALIASES.get(normalized, 'undetermined')
+
+    checks = data.get('checks')
+    if isinstance(checks, list):
+        normalized = []
+        allowed = {'claim_id', 'status', 'citation_ids', 'reason', 'issue_type',
+                   'qualifier_checks', 'evidence_spans'}
+        for check in checks:
+            if not isinstance(check, dict):
+                normalized.append(check)
+                continue
+            item = {key: value for key, value in check.items() if key in allowed}
+            item['status'] = status(item.get('status'))
+            spans = item.get('evidence_spans')
+            if isinstance(spans, list):
+                item['evidence_spans'] = [
+                    {'evidence_id': span} if isinstance(span, str) else
+                    ({'evidence_id': span.get('evidence_id')} if isinstance(span, dict)
+                     and set(span) == {'evidence_id'} else span)
+                    for span in spans]
+            normalized.append(item)
+        data['checks'] = normalized
+
+    requirements = data.get('requirement_checks')
+    if isinstance(requirements, list):
+        allowed = {'point_id', 'text', 'status', 'citation_ids', 'claim_ids', 'reason'}
+        data['requirement_checks'] = [
+            ({key: value for key, value in point.items() if key in allowed} | {
+                'status': status(point.get('status'))})
+            if isinstance(point, dict) else point
+            for point in requirements]
+    return data
+
+
 def _generate(model, messages, deadline, schema):
     kwargs = {'response_schema':schema.model_json_schema()} if _v2(model) else {}
     return model.generate_json(messages, deadline=deadline, **kwargs)
 
 
 def _wire_verdict(raw, required, full_ids, sources):
-    wire = WireVerdict.model_validate(raw)
+    wire = WireVerdict.model_validate(_normalize_wire_verdict(raw))
     data = _map_citations(wire.model_dump(exclude_none=True), full_ids)
     for point in data['requirement_checks']:
         if point['point_id'] in required:
-            if point.get('text', required[point['point_id']]) != required[point['point_id']]:
-                raise _ContractViolation('required_points')
+            # Checklist wording is owned by the local draft.  Providers may
+            # echo a paraphrase; hydrate the canonical text before enforcing
+            # identity and completeness below.
             point['text'] = required[point['point_id']]
         elif 'text' not in point:
             raise _ContractViolation('required_points')
@@ -678,9 +752,20 @@ class AnswerVerifier:
                         {**base_data, 'draft': draft.model_dump(exclude_none=True)}, short_ids, deadline)
                     data = retry_data
                     continue
-                raise VerificationError("VERIFICATION_UNAVAILABLE", details={
+                details = {
                     'stage':'verification', 'call_index':trace['verification_calls'],
-                    'failure_kind':'response_schema', **_schema_details(error, self.checker)}) from None
+                    'failure_kind':'response_schema', **_schema_details(error, self.checker)}
+                # A real provider may exhaust its two contract attempts while
+                # returning a semantically unusable verdict.  Publish no
+                # claims in that case, but complete the request with an
+                # explicit evidence-insufficient status.  Test doubles and
+                # legacy adapters remain fail-closed for regression coverage.
+                if (getattr(self.checker, 'allows_contract_retry', False)
+                        and details.get('schema_rule') in {'citation_relationship', 'required_points', 'schema_fields'}):
+                    trace.setdefault('contract_repairs', []).append({
+                        'stage': 'verification', 'kind': 'safe_nonanswer_fallback'})
+                    return self._result([], 'insufficient', trace)
+                raise VerificationError("VERIFICATION_UNAVAILABLE", details=details) from None
             _deadline(deadline)
             # Direct numeric facts need literal numeric provenance. Arithmetic
             # and number-format conversions must be declared as inference and

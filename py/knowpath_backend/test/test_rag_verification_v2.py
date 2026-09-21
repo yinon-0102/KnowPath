@@ -26,6 +26,10 @@ class Model:
         return copy.deepcopy(value)
 
 
+class RealLikeModel(Model):
+    allows_contract_retry = True
+
+
 def draft(status='answered', text=None):
     return dict(status=status, claims=[] if status in {'insufficient', 'clarify'} else [dict(
         claim_id='c1', text=text or SOURCE['source_text'], kind='fact', citation_ids=['s1'], depends_on=[])],
@@ -84,6 +88,61 @@ def test_wire_ids_restore_exact_identity_and_checklist_text_is_not_repeated():
         assert SOURCE['chunk_id'] not in model.calls[0][1]['content']
         assert model.schemas[0] is not None
     assert checker.calls[0][1]['content'].count('必要申请条件及例外') == 1
+
+
+def test_checker_wire_payload_normalizes_string_evidence_ids_and_ignores_diagnostic_extras():
+    checked = verdict()
+    checked['checks'][0]['evidence_spans'] = ['e1']
+    checked['requirement_checks'][0]['evidence_spans'] = ['e1']
+    result = AnswerVerifier(Model([draft()]), Model([checked])).answer(
+        '申请有哪些条件？', [SOURCE], deadline=time.monotonic() + 30,
+        max_generation_calls=1, max_verification_calls=1)
+    assert result['status'] == 'answered'
+    assert result['trace']['verdicts'][0]['checks'][0]['evidence_spans'][0]['start'] == 0
+
+
+def test_checker_wire_payload_accepts_common_status_aliases_without_relaxing_contract():
+    checked = verdict()
+    checked['checks'][0]['status'] = 'pass'
+    checked['requirement_checks'][0]['status'] = 'pass'
+    result = run(Model([draft()]), Model([checked]))
+    assert result['status'] == 'answered'
+
+
+def test_checker_replaces_rephrased_existing_requirement_text_with_local_canonical_text():
+    checked = verdict()
+    checked['requirement_checks'][0]['text'] = '模型改写的必要申请条件及例外'
+    result = run(Model([draft()]), Model([checked]))
+    assert result['status'] == 'answered'
+    assert result['trace']['verdicts'][0]['requirement_checks'][0]['text'] == '必要申请条件及例外'
+
+
+def test_checker_maps_partial_status_to_undetermined():
+    checked = verdict()
+    checked['requirement_checks'][0]['status'] = 'partially_supported'
+    result = AnswerVerifier(Model([draft()]), Model([checked])).answer(
+        '申请有哪些条件？', [SOURCE], deadline=time.monotonic() + 30,
+        max_generation_calls=1, max_verification_calls=1)
+    assert result['status'] == 'partial'
+
+
+def test_checker_maps_unknown_text_status_to_undetermined():
+    checked = verdict()
+    checked['requirement_checks'][0]['status'] = 'provider_specific_label'
+    result = AnswerVerifier(Model([draft()]), Model([checked])).answer(
+        '申请有哪些条件？', [SOURCE], deadline=time.monotonic() + 30,
+        max_generation_calls=1, max_verification_calls=1)
+    assert result['status'] == 'partial'
+
+
+def test_real_provider_contract_failure_degrades_to_safe_nonanswer():
+    checked = verdict()
+    checked['checks'][0]['claim_id'] = 'c2'
+    result = AnswerVerifier(Model([draft()]), RealLikeModel([checked])).answer(
+        '申请有哪些条件？', [SOURCE], deadline=time.monotonic() + 30,
+        max_generation_calls=1, max_verification_calls=1)
+    assert result['status'] == 'insufficient'
+    assert result['claims'] == []
 
 
 @pytest.mark.parametrize('field', ['subject','conditions','exceptions','negation','quantifiers'])
