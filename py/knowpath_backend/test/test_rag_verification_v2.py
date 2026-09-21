@@ -164,6 +164,15 @@ def test_real_adapter_retries_one_rejected_generation_contract_with_budgeted_pai
     assert json.loads(generator.calls[1][1]['content'])['previous_output_rejected'] is True
 
 
+def test_real_adapter_retries_one_output_capacity_rejection():
+    generator = Model([VerificationError('MODEL_OUTPUT_CAPACITY_EXCEEDED',
+        details={'failure_kind':'output_budget'}), draft()])
+    generator.allows_contract_retry = True
+    result = run(generator, Model([verdict()]))
+    assert result['status'] == 'answered'
+    assert len(generator.calls) == 2
+
+
 def test_terminal_nonanswer_contract_is_safely_normalized_to_empty_answer():
     bad = draft('insufficient')
     bad['claims'] = [dict(claim_id='c1', text='不应发布', kind='fact',
@@ -248,6 +257,15 @@ def test_checker_source_ids_are_derived_from_evidence_spans():
         deadline=time.monotonic()+30, max_generation_calls=1)
     assert result['status'] == 'answered'
     assert tuple(result['trace']['verdicts'][0]['checks'][0]['citation_ids']) == (SOURCE['chunk_id'],)
+
+
+def test_revision_preserves_original_required_point_text_when_model_rephrases_it():
+    first = draft()
+    revised = draft(text='补充完整条件。')
+    revised['required_points'] = [dict(point_id='p1', text='模型改写的要点')]
+    result = run(Model([first, revised]), Model([verdict('answer_incomplete'), verdict()]))
+    assert result['status'] == 'answered'
+    assert result['trace']['drafts'][1]['required_points'][0]['text'] == first['required_points'][0]['text']
 
 
 def test_json_object_fallback_prompts_contain_complete_parseable_examples():

@@ -486,7 +486,8 @@ class AnswerVerifier:
     @staticmethod
     def _retryable_contract_error(error):
         return (error.details.get('failure_kind') in
-                {'response_schema', 'response_json', 'response_shape', 'content_json', 'content_shape'})
+                {'response_schema', 'response_json', 'response_shape', 'content_json', 'content_shape',
+                 'output_budget'})
 
     @staticmethod
     def _safe_nonanswer_normalization(model, raw, attempt, attempts):
@@ -551,9 +552,18 @@ class AnswerVerifier:
                 if getattr(self.generator, 'requires_required_points', False) and draft.required_points is None:
                     raise _ContractViolation('required_points')
                 proposed = {p.point_id:p.text for p in draft.required_points or ()}
-                if any(proposed.get(key) != text for key, text in required.items()):
+                if any(key not in proposed for key in required):
                     raise _ContractViolation('required_points')
-                required.update(proposed)
+                if required and any(proposed[key] != text for key, text in required.items()):
+                    # Point IDs and text are a local checklist contract.  A
+                    # model may paraphrase the text while preserving the ID;
+                    # keep the first canonical wording instead of rejecting
+                    # an otherwise valid revised draft.
+                    draft = draft.model_copy(update={'required_points': tuple(
+                        RequiredPoint(point_id=point.point_id,
+                                      text=required.get(point.point_id, point.text))
+                        for point in draft.required_points or ())})
+                required.update({key:text for key,text in proposed.items() if key not in required})
                 trace["usage"].append({"stage": "generation", **(getattr(self.generator, "last_usage", None) or {})})
                 if any(not set(c.citation_ids) <= ids for c in draft.claims):
                     raise _ContractViolation('citation_identity')
@@ -646,7 +656,7 @@ class AnswerVerifier:
                         'required_points': [{'point_id':key, 'text':text} for key,text in required.items()],
                         'contract_feedback': {
                             'stage': 'verification',
-                            'instruction': '上一份核验未通过本地引用契约。每条claim必须恰好一项check；只选择属于对应citation_ids的evidence_id；supported必须覆盖其全部citation_ids。'},
+                            'instruction': '上一份核验未通过本地引用契约。每条claim必须恰好一项check；supported时citation_ids必须与草稿该claim的citation_ids完全相同；evidence_spans必须为每个列出的来源选择至少一段，不能省略或新增来源。'},
                         'previous_output_rejected': True}
                     self._admit_contract_retry(retry_data,
                         {**base_data, 'draft': draft.model_dump(exclude_none=True)}, short_ids, deadline)
@@ -662,7 +672,7 @@ class AnswerVerifier:
                         'required_points': [{'point_id':key, 'text':text} for key,text in required.items()],
                         'contract_feedback': {
                             'stage': 'verification',
-                            'instruction': '上一份核验未通过本地引用契约。每条claim必须恰好一项check；只选择属于对应citation_ids的evidence_id；supported必须覆盖其全部citation_ids。'},
+                            'instruction': '上一份核验未通过本地引用契约。每条claim必须恰好一项check；supported时citation_ids必须与草稿该claim的citation_ids完全相同；evidence_spans必须为每个列出的来源选择至少一段，不能省略或新增来源。'},
                         'previous_output_rejected': True}
                     self._admit_contract_retry(retry_data,
                         {**base_data, 'draft': draft.model_dump(exclude_none=True)}, short_ids, deadline)
