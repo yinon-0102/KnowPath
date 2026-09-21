@@ -8,12 +8,87 @@ from statistics import mean
 from .dataset import GATES, numeric, read_json, verify_freeze
 
 
+RANK_KS = (1, 3, 5, 10, 20, 40)
+SOURCE_IDENTITY = ("material_version_id", "artifact_hash", "page", "block")
+
+
 def _key(row):
     return row["question_id"], row["plugin"], row["repeat"]
 
 
 def _quantile(values, fraction):
     return sorted(values)[max(0, math.ceil(len(values) * fraction) - 1)] if values else None
+
+
+def _span_covers(span, target):
+    return (all(span.get(key) == target.get(key) for key in SOURCE_IDENTITY)
+            and span.get("start", 0) <= target.get("start", 0)
+            and span.get("end", 0) >= target.get("end", 0))
+
+
+def _rank_metrics(items, required):
+    """Calculate exact-coordinate ranking metrics for one ordered source list."""
+    if not required or items is None:
+        return None
+    rows = list(items)
+    relevant = [any(_span_covers(source_span, target)
+                    for target in required
+                    for source_span in item.get("source_spans", []))
+                for item in rows]
+    first_hit = next((index + 1 for index, value in enumerate(relevant) if value), None)
+    recall = {}
+    ndcg = {}
+    for k in RANK_KS:
+        covered = sum(any(_span_covers(source_span, target)
+                         for source_span in item.get("source_spans", []))
+                      for target in required for item in rows[:k])
+        # The inner sum above counts a target once per item.  Collapse it to a
+        # set of target indexes so duplicate chunks cannot inflate Recall@K.
+        covered_ids = {index for index, target in enumerate(required)
+                       if any(_span_covers(source_span, target)
+                              for item in rows[:k] for source_span in item.get("source_spans", []))}
+        del covered
+        recall[str(k)] = len(covered_ids) / len(required)
+        dcg = sum((1 / math.log2(index + 2)) for index, value in enumerate(relevant[:k]) if value)
+        ideal_count = min(k, sum(relevant))
+        ideal = sum(1 / math.log2(index + 2) for index in range(ideal_count))
+        ndcg[str(k)] = dcg / ideal if ideal else 0.0
+    return {"gold_spans": len(required), "list_length": len(rows),
+            "recall_at": recall, "mrr": 1 / first_hit if first_hit else 0.0,
+            "first_hit_rank": first_hit, "ndcg_at": ndcg}
+
+
+def _mean_rank_metrics(values):
+    values = [value for value in values if value is not None]
+    if not values:
+        return None
+    return {"questions": len(values), "gold_spans": sum(value["gold_spans"] for value in values),
+            "recall_at": {key: mean(value["recall_at"][key] for value in values) for key in map(str, RANK_KS)},
+            "mrr": mean(value["mrr"] for value in values),
+            "ndcg_at": {key: mean(value["ndcg_at"][key] for value in values) for key in map(str, RANK_KS)},
+            "first_hit_questions": sum(value["first_hit_rank"] is not None for value in values),
+            "no_hit_questions": sum(value["first_hit_rank"] is None for value in values)}
+
+
+def _tree_attribution(response, required):
+    if not required or not response:
+        return None
+    trace = response.get("trace", {})
+    retrieval = trace.get("retrieval", trace)
+    extensions = retrieval.get("extensions", []) or []
+    extension_ids = {item.get("chunk_id") for item in extensions if isinstance(item, dict)}
+    candidates = {item.get("chunk_id"): item for item in trace.get("candidate_sources", [])}
+    extension_items = [candidates[identifier] for identifier in extension_ids if identifier in candidates]
+    hit_ids = {identifier for identifier, item in ((item.get("chunk_id"), item) for item in extension_items)
+               if any(_span_covers(source_span, target)
+                      for source_span in item.get("source_spans", []) for target in required)}
+    return {"extension_count": len(extension_items), "extension_hit_count": len(hit_ids),
+            "extension_precision": len(hit_ids) / len(extension_items) if extension_items else None,
+            "extension_only_recall": len({index for index, target in enumerate(required)
+                                           if any(item.get("chunk_id") in extension_ids
+                                                  and _span_covers(source_span, target)
+                                                  for item in trace.get("candidate_sources", [])
+                                                  for source_span in item.get("source_spans", []))}) / len(required)}
 
 
 def evidence_coverage(response, gold, field):
@@ -26,9 +101,8 @@ def evidence_coverage(response, gold, field):
         return None
     spans = [span for item in container.get(field, []) for span in item.get("source_spans", [])]
     def covered(target):
-        identity = ("material_version_id", "artifact_hash", "page", "block")
         intervals = sorted((span["start"], span["end"]) for span in spans
-            if all(span.get(key) == target.get(key) for key in identity))
+            if all(span.get(key) == target.get(key) for key in SOURCE_IDENTITY))
         cursor = target["start"]
         for start, end in intervals:
             if start > cursor:
@@ -52,6 +126,17 @@ def _aggregate(items):
     citation_coverage = [r["citation_evidence_coverage"] for r in items if r.get("citation_evidence_coverage") is not None]
     candidate_coverage = [r['candidate_evidence_coverage'] for r in items if r.get('candidate_evidence_coverage') is not None]
     rerank_coverage = [r['rerank_evidence_coverage'] for r in items if r.get('rerank_evidence_coverage') is not None]
+    candidate_ranking = _mean_rank_metrics([r.get("candidate_ranking") for r in items])
+    reranked_ranking = _mean_rank_metrics([r.get("reranked_ranking") for r in items])
+    tree_values = [r.get("tree_attribution") for r in items if r.get("tree_attribution") is not None]
+    tree = None
+    if tree_values:
+        extension_count = sum(value["extension_count"] for value in tree_values)
+        extension_hit_count = sum(value["extension_hit_count"] for value in tree_values)
+        tree = {"questions": len(tree_values), "extension_count": extension_count,
+                "extension_hit_count": extension_hit_count,
+                "extension_precision": extension_hit_count / extension_count if extension_count else None,
+                "extension_only_recall": mean(value["extension_only_recall"] for value in tree_values)}
     unknown = len(items) - len(known)
     return dict(denominator=denominator, service_success_denominator=len(serviced),
         service_failures=sum(not r["service_success"] and not r.get("missing") for r in items),
@@ -74,6 +159,8 @@ def _aggregate(items):
         candidate_coverage_denominator=len(candidate_coverage),
         rerank_evidence_coverage=mean(rerank_coverage) if rerank_coverage else None,
         rerank_coverage_denominator=len(rerank_coverage),
+        candidate_ranking=candidate_ranking, reranked_ranking=reranked_ranking,
+        tree_attribution=tree,
         error_types=dict(Counter(r["error_type"] for r in items if r.get("error_type"))))
 
 
@@ -113,6 +200,12 @@ def report(freeze_path, results_path, reviews_path=None):
         record["citation_evidence_coverage"] = evidence_coverage(record.get("response"), selected[qid], "citations")
         record['candidate_evidence_coverage'] = evidence_coverage(record.get('response'), selected[qid], 'candidate_sources')
         record['rerank_evidence_coverage'] = evidence_coverage(record.get('response'), selected[qid], 'reranked_sources')
+        required = selected[qid].get("necessary_evidence", [])
+        response = record.get("response")
+        trace = response.get("trace", {}) if response else {}
+        record["candidate_ranking"] = _rank_metrics(trace.get("candidate_sources"), required)
+        record["reranked_ranking"] = _rank_metrics(trace.get("reranked_sources"), required)
+        record["tree_attribution"] = _tree_attribution(response, required)
         record.update(quality=None, partial=None, error_type=None)
         if not record.get("missing") and not record["service_success"]:
             record.update(quality=False, partial=False, error_type="service")

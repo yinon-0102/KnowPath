@@ -7,6 +7,38 @@ from types import SimpleNamespace
 import pytest
 
 
+def _rank_source(chunk_id, start=0, end=10):
+    return {"chunk_id": chunk_id, "source_spans": [{"material_version_id": "mv",
+        "artifact_hash": "hash", "page": 1, "block": "block", "start": start, "end": end}]}
+
+
+def test_tree_ranking_metrics_score_multi_gold_and_no_hit():
+    from knowpath_backend.rag_eval.scoring import _rank_metrics
+    gold = [{"material_version_id": "mv", "artifact_hash": "hash", "page": 1,
+             "block": "block", "start": 0, "end": 10},
+            {"material_version_id": "mv", "artifact_hash": "hash", "page": 1,
+             "block": "block", "start": 20, "end": 30}]
+    metrics = _rank_metrics([_rank_source("noise", 100, 110), _rank_source("first"),
+                             _rank_source("second", 20, 30)], gold)
+    assert metrics["recall_at"]["1"] == 0.0
+    assert metrics["recall_at"]["3"] == 1.0
+    assert metrics["mrr"] == 0.5
+    assert _rank_metrics([], gold)["mrr"] == 0.0
+
+
+def test_tree_attribution_counts_only_extension_hits():
+    from knowpath_backend.rag_eval.scoring import _tree_attribution
+    gold = [{"material_version_id": "mv", "artifact_hash": "hash", "page": 1,
+             "block": "block", "start": 0, "end": 10}]
+    response = {"trace": {"retrieval": {"extensions": [{"chunk_id": "ext"}],
+        }, "candidate_sources": [_rank_source("ext"), _rank_source("noise")]}}
+    result = _tree_attribution(response, gold)
+    assert result["extension_count"] == 1
+    assert result["extension_hit_count"] == 1
+    assert result["extension_precision"] == 1.0
+    assert result["extension_only_recall"] == 1.0
+
+
 @pytest.fixture
 def evaluation(tmp_path):
     root = Path(__file__).resolve().parents[3] / "docs/research/tree-rag/evaluation"
