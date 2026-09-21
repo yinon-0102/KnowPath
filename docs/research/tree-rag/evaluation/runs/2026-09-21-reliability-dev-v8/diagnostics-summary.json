@@ -1,0 +1,153 @@
+{
+  "scheduled_requests": 80,
+  "completed_requests": 80,
+  "missing_results": 0,
+  "human_review_status": "pending",
+  "human_task_success_rate": null,
+  "pricing_confirmed": false,
+  "heldout_executed": false,
+  "modes": {
+    "a": {
+      "requests": 40,
+      "service_successes": 34,
+      "service_failures": 6,
+      "answer_statuses": {
+        "answered": 22,
+        "partial": 11,
+        "insufficient": 1
+      },
+      "p50_latency_ms": 33004.120300058275,
+      "p95_latency_ms": 112605.07189994678
+    },
+    "b1": {
+      "requests": 40,
+      "service_successes": 34,
+      "service_failures": 6,
+      "answer_statuses": {
+        "answered": 24,
+        "partial": 9,
+        "insufficient": 1
+      },
+      "p50_latency_ms": 32690.83590002265,
+      "p95_latency_ms": 109611.06719996314
+    }
+  },
+  "errors": [
+    {
+      "code": "RAG_DEADLINE_EXCEEDED",
+      "stage": "verification",
+      "failure_kind": null,
+      "schema_rule": null,
+      "count": 2
+    },
+    {
+      "code": "VERIFICATION_UNAVAILABLE",
+      "stage": "verification",
+      "failure_kind": "response_schema",
+      "schema_rule": "citation_relationship",
+      "count": 3
+    },
+    {
+      "code": "GENERATION_INVALID_RESPONSE",
+      "stage": "generation",
+      "failure_kind": "response_schema",
+      "schema_rule": "schema_fields",
+      "count": 3
+    },
+    {
+      "code": "VERIFICATION_UNAVAILABLE",
+      "stage": "verification",
+      "failure_kind": "response_schema",
+      "schema_rule": "span_coverage",
+      "count": 1
+    },
+    {
+      "code": "ANSWER_VERIFICATION_FAILED",
+      "stage": "verification",
+      "failure_kind": null,
+      "schema_rule": null,
+      "count": 2
+    },
+    {
+      "code": "VERIFICATION_UNAVAILABLE",
+      "stage": "verification",
+      "failure_kind": "response_schema",
+      "schema_rule": "required_points",
+      "count": 1
+    }
+  ],
+  "physical_calls_by_stage": {
+    "retrieval": {
+      "calls": 532,
+      "calls_with_usage": 0,
+      "billing_statuses": {
+        "not_applicable": 532
+      },
+      "validation_statuses": {
+        "not_applicable": 532
+      },
+      "usage_counter_sums": {}
+    },
+    "embedding": {
+      "calls": 80,
+      "calls_with_usage": 80,
+      "billing_statuses": {
+        "usage_observed": 80
+      },
+      "validation_statuses": {
+        "not_applicable": 80
+      },
+      "usage_counter_sums": {
+        "prompt_tokens": 1560,
+        "total_tokens": 1560
+      }
+    },
+    "reranking": {
+      "calls": 80,
+      "calls_with_usage": 80,
+      "billing_statuses": {
+        "usage_observed": 80
+      },
+      "validation_statuses": {
+        "not_applicable": 80
+      },
+      "usage_counter_sums": {
+        "total_tokens": 376504
+      }
+    },
+    "generation": {
+      "calls": 128,
+      "calls_with_usage": 128,
+      "billing_statuses": {
+        "usage_observed": 128
+      },
+      "validation_statuses": {
+        "passed": 123,
+        "failed": 5
+      },
+      "usage_counter_sums": {
+        "prompt_tokens": 251233,
+        "completion_tokens": 62808,
+        "total_tokens": 314041
+      }
+    },
+    "verification": {
+      "calls": 123,
+      "calls_with_usage": 121,
+      "billing_statuses": {
+        "usage_observed": 121,
+        "unknown": 2
+      },
+      "validation_statuses": {
+        "passed": 109,
+        "failed": 13,
+        "not_applicable": 1
+      },
+      "usage_counter_sums": {
+        "prompt_tokens": 397508,
+        "completion_tokens": 85403,
+        "total_tokens": 482911
+      }
+    }
+  }
+}

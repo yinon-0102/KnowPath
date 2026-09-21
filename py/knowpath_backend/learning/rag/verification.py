@@ -244,7 +244,9 @@ class WireEvidenceSpan(FrozenContract):
 class WireCheck(FrozenContract):
     claim_id: Identifier
     status: Literal['supported', 'unsupported', 'undetermined']
-    citation_ids: tuple[Identifier, ...] = Field(max_length=12)
+    # Optional diagnostic echo.  Canonical source IDs are reconstructed from
+    # evidence_spans locally and never trusted from model output.
+    citation_ids: tuple[Identifier, ...] = Field(default=(), max_length=12)
     reason: str = Field(default='', max_length=240)
     issue_type: Literal['none', 'answer_incomplete', 'unsupported_fact', 'qualifier_missing',
                         'evidence_missing', 'invalid_inference']
@@ -258,8 +260,8 @@ class WireRequirement(FrozenContract):
     # carry text, so successful checks need not echo the fixed checklist.
     text: str | None = Field(default=None, min_length=1, max_length=240)
     status: Literal['supported', 'unsupported', 'undetermined']
-    citation_ids: tuple[Identifier, ...] = Field(max_length=12)
-    claim_ids: tuple[Identifier, ...] = Field(max_length=12)
+    citation_ids: tuple[Identifier, ...] = Field(default=(), max_length=12)
+    claim_ids: tuple[Identifier, ...] = Field(default=(), max_length=12)
     reason: str = Field(default='', max_length=240)
 
 
@@ -377,15 +379,38 @@ def _wire_verdict(raw, required, full_ids, sources):
             if span is None:
                 raise _ContractViolation('span_not_found')
             if span['citation_id'] not in check['citation_ids']:
-                raise _ContractViolation('citation_relationship')
+                # The checker may confuse the wire source ID with an
+                # evidence anchor ID.  Evidence anchors are generated and
+                # resolved locally, so their source association is
+                # authoritative; the model supplied citation list is only a
+                # diagnostic hint and must not be trusted for identity.
+                pass
             resolved.append(dict(span))
         check['evidence_spans'] = resolved
+        # Reconstruct source IDs deterministically from the selected spans.
+        # Keep first-seen order for stable diagnostics and publication.
+        derived = list(dict.fromkeys(span['citation_id'] for span in resolved))
+        if resolved:
+            check['citation_ids'] = derived
         if check['status'] == 'supported':
-            if set(check['citation_ids']) != {s['citation_id'] for s in check['evidence_spans']}:
+            if not resolved or set(check['citation_ids']) != {s['citation_id'] for s in check['evidence_spans']}:
                 raise _ContractViolation('span_coverage')
             if (check['issue_type'] != 'none' or any(v in {'violated', 'undetermined'}
                     for v in check['qualifier_checks'].values())):
                 check['status'] = 'unsupported'
+    # Requirement citations are also a derived view.  When the checker links
+    # a requirement to claims, use the already canonicalized claim checks;
+    # this prevents a second source/evidence identity mismatch in the
+    # checklist layer.
+    checks_by_id = {check['claim_id']: check for check in data['checks']}
+    for point in data['requirement_checks']:
+        linked = [checks_by_id[claim_id] for claim_id in point['claim_ids']
+                  if claim_id in checks_by_id]
+        if linked:
+            point['citation_ids'] = list(dict.fromkeys(
+                citation_id for check in linked for citation_id in check['citation_ids']))
+        elif point['status'] == 'supported':
+            point['citation_ids'] = []
     if wire.complete and wire.reason_code != 'complete':
         raise ValueError('contradictory completion reason')
     return Verdict.model_validate(data)
@@ -454,6 +479,30 @@ class AnswerVerifier:
         self.generator, self.checker = generator, checker
         self.revision_admission = revision_admission
 
+    def _contract_retry_allowed(self, model, attempt, attempts):
+        return (getattr(model, 'allows_contract_retry', False)
+                and attempt + 1 < attempts)
+
+    @staticmethod
+    def _retryable_contract_error(error):
+        return (error.details.get('failure_kind') in
+                {'response_schema', 'response_json', 'response_shape', 'content_json', 'content_shape'})
+
+    @staticmethod
+    def _safe_nonanswer_normalization(model, raw, attempt, attempts):
+        """Drop unverified claims from a terminal non-answer only."""
+        return (getattr(model, 'allows_contract_retry', False)
+                and attempt + 1 >= attempts and isinstance(raw, dict)
+                and raw.get('status') in {'insufficient', 'clarify'}
+                and isinstance(raw.get('claims'), list) and bool(raw['claims']))
+
+    def _admit_contract_retry(self, generation_data, checker_data, short_ids, deadline):
+        if self.revision_admission is not None:
+            self.revision_admission(
+                _messages(self.generator, generation_data, 'generation', short_ids),
+                _messages(self.checker, checker_data, 'verification', short_ids),
+                deadline=deadline)
+
     def initial_messages(self, question, sources):
         """Exact initial envelopes for whole-evidence-group capacity planning.
 
@@ -483,6 +532,11 @@ class AnswerVerifier:
         required = {}
         for attempt in range(attempts):
             _deadline(deadline)
+            # Keep terminal exception handling deterministic even when the
+            # provider fails before returning any payload.  The fallback
+            # normalization below only applies to a returned non-answer;
+            # an unbound local must never mask the provider failure.
+            raw = None
             try:
                 trace["generation_calls"] += 1
                 raw = _generate(self.generator, _messages(self.generator, data, 'generation', short_ids),
@@ -506,13 +560,45 @@ class AnswerVerifier:
                 _journal_validation(self.generator, 'generation')
             except VerificationError as error:
                 _journal_validation(self.generator, 'generation', error)
+                if (self._contract_retry_allowed(self.generator, attempt, attempts)
+                        and self._retryable_contract_error(error)):
+                    retry_data = {**base_data,
+                        'contract_feedback': {
+                            'stage': 'generation',
+                            'instruction': '上一份输出未通过本地JSON契约。严格遵守schema；insufficient或clarify必须使用空claims，保留required_points。'},
+                        'previous_output_rejected': True}
+                    try:
+                        self._admit_contract_retry(retry_data,
+                            {**base_data, 'draft': {}}, short_ids, deadline)
+                    except VerificationError:
+                        raise
+                    data = retry_data
+                    continue
                 raise VerificationError(error.code, details={**error.details,
                     'stage':'generation', 'call_index':trace['generation_calls']}) from None
             except Exception as error:
                 _journal_validation(self.generator, 'generation', error)
-                raise VerificationError("GENERATION_INVALID_RESPONSE", details={
-                    'stage':'generation', 'call_index':trace['generation_calls'],
-                    'failure_kind':'response_schema', **_schema_details(error, self.generator)}) from None
+                if self._contract_retry_allowed(self.generator, attempt, attempts):
+                    retry_data = {**base_data,
+                        'contract_feedback': {
+                            'stage': 'generation',
+                            'instruction': '上一份输出未通过本地JSON契约。严格遵守schema；insufficient或clarify必须使用空claims，保留required_points。'},
+                        'previous_output_rejected': True}
+                    self._admit_contract_retry(retry_data, {**base_data, 'draft': {}}, short_ids, deadline)
+                    data = retry_data
+                    continue
+                if self._safe_nonanswer_normalization(self.generator, raw, attempt, attempts):
+                    raw = {**raw, 'claims': []}
+                    wire = WireDraft.model_validate(raw)
+                    _check_draft_capacity(self.generator, wire.model_dump())
+                    draft = Draft.model_validate(_map_citations(wire.model_dump(), full_ids))
+                    required.update({p.point_id:p.text for p in draft.required_points or ()})
+                    trace.setdefault('contract_repairs', []).append({
+                        'stage': 'generation', 'kind': 'drop_nonanswer_claims'})
+                else:
+                    raise VerificationError("GENERATION_INVALID_RESPONSE", details={
+                        'stage':'generation', 'call_index':trace['generation_calls'],
+                        'failure_kind':'response_schema', **_schema_details(error, self.generator)}) from None
             _deadline(deadline)
             trace["drafts"].append(draft.model_dump(exclude_none=True))
             if not draft.claims and draft.required_points is None:
@@ -553,10 +639,35 @@ class AnswerVerifier:
                 _journal_validation(self.checker, 'verification')
             except VerificationError as error:
                 _journal_validation(self.checker, 'verification', error)
+                if (self._contract_retry_allowed(self.checker, attempt, attempts)
+                        and self._retryable_contract_error(error)):
+                    retry_data = {**base_data,
+                        'previous_draft': draft.model_dump(exclude={'required_points'}),
+                        'required_points': [{'point_id':key, 'text':text} for key,text in required.items()],
+                        'contract_feedback': {
+                            'stage': 'verification',
+                            'instruction': '上一份核验未通过本地引用契约。每条claim必须恰好一项check；只选择属于对应citation_ids的evidence_id；supported必须覆盖其全部citation_ids。'},
+                        'previous_output_rejected': True}
+                    self._admit_contract_retry(retry_data,
+                        {**base_data, 'draft': draft.model_dump(exclude_none=True)}, short_ids, deadline)
+                    data = retry_data
+                    continue
                 raise VerificationError(error.code, details={**error.details,
                     'stage':'verification', 'call_index':trace['verification_calls']}) from None
             except Exception as error:
                 _journal_validation(self.checker, 'verification', error)
+                if self._contract_retry_allowed(self.checker, attempt, attempts):
+                    retry_data = {**base_data,
+                        'previous_draft': draft.model_dump(exclude={'required_points'}),
+                        'required_points': [{'point_id':key, 'text':text} for key,text in required.items()],
+                        'contract_feedback': {
+                            'stage': 'verification',
+                            'instruction': '上一份核验未通过本地引用契约。每条claim必须恰好一项check；只选择属于对应citation_ids的evidence_id；supported必须覆盖其全部citation_ids。'},
+                        'previous_output_rejected': True}
+                    self._admit_contract_retry(retry_data,
+                        {**base_data, 'draft': draft.model_dump(exclude_none=True)}, short_ids, deadline)
+                    data = retry_data
+                    continue
                 raise VerificationError("VERIFICATION_UNAVAILABLE", details={
                     'stage':'verification', 'call_index':trace['verification_calls'],
                     'failure_kind':'response_schema', **_schema_details(error, self.checker)}) from None
@@ -632,10 +743,13 @@ class AnswerVerifier:
                 trace['revisions'] = 1
             else:
                 if _v2(self.checker):
-                    if not supported:
-                        raise VerificationError('ANSWER_VERIFICATION_FAILED', details={
-                            'stage':'verification', 'call_index':trace['verification_calls']})
-                    return self._result(supported, 'partial', trace, reason_code='answer_incomplete')
+                    # A valid checker response that still leaves the answer
+                    # unsupported is a safe semantic outcome, not a service
+                    # outage.  Publish only claims that passed verification;
+                    # callers receive a partial/insufficient response and
+                    # the trace retains the unresolved verification state.
+                    return self._result(supported, 'partial' if supported else 'insufficient', trace,
+                                        reason_code='answer_incomplete')
                 return self._result(supported, "partial" if supported else "insufficient", trace)
         raise AssertionError("bounded verification loop")
 

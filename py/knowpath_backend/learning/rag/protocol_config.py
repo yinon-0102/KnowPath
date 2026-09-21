@@ -33,7 +33,7 @@ def protocol_configuration(settings):
         if mode not in {'json_object','json_schema'}: raise ValueError()
         return {**values,'response_format':mode,'wire_version':2,'evidence_locator':'segment-id-v1',
                 'generator_evidence':'whole-source-v1', 'identity_schema':'request-enum-v1',
-                'math_notation':'unicode-plain-v1',
+                'math_notation':'unicode-plain-v1', 'contract_retry':'explicit-contract-repair-v1',
                 'counting_profile':counting_profile(settings).provenance}
     except (ValueError, TypeError, AttributeError):
         raise ValueError('RAG_PROTOCOL_CONFIG_INVALID') from None

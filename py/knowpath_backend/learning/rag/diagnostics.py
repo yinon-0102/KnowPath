@@ -94,10 +94,11 @@ def safe_journal_snapshot(value):
 
 
 class RequestJournal:
-    def __init__(self):
+    def __init__(self, deadline=None):
         self._lock = RLock()
         self._value = {'schema_version': 1, 'stage': 'queue', 'status': 'running', 'physical_calls': 0, 'calls': []}
         self._starts = {}
+        self._deadline = deadline if type(deadline) in (int, float) and math.isfinite(deadline) else None
 
     def set_stage(self, stage, metadata=None):
         if stage not in STAGES: raise ValueError('invalid diagnostic stage')
@@ -158,8 +159,16 @@ class RequestJournal:
             if self._value['status'] == 'running':
                 for row in self._value['calls']:
                     if row['status'] == 'running':
+                        # The caller may seal at the request deadline while a
+                        # daemon transport worker is still blocked.  Record
+                        # the bounded request elapsed time, rather than the
+                        # worker's eventual wall time after the deadline;
+                        # late completion remains represented by status=unknown.
+                        end = time.monotonic()
+                        if self._deadline is not None:
+                            end = min(end, self._deadline)
                         row.update(status='unknown', elapsed_ms=round(
-                            (time.monotonic() - self._starts[row['call_index']]) * 1000, 3))
+                            max(0.0, end - self._starts[row['call_index']]) * 1000, 3))
                 self._value['status'] = status
                 if status == 'deadline': self._value['failure_kind'] = 'deadline'
             return self.snapshot()

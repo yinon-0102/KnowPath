@@ -266,7 +266,7 @@ class ConfiguredPipeline:
         if not 0 < timeout <= 600:
             raise ValueError('invalid RAG deadline')
         deadline = time.monotonic() + timeout
-        journal = RequestJournal()
+        journal = RequestJournal(deadline)
         if not _REQUEST_SLOTS.acquire(timeout=timeout):
             error = VerificationError('RAG_DEADLINE_EXCEEDED')
             error.call_journal = journal.seal('deadline')
@@ -306,7 +306,7 @@ class ConfiguredPipeline:
         model_budget = model_budget_configuration(self.settings)
         from .protocol_config import protocol_configuration
         protocol = protocol_configuration(self.settings)
-        journal = journal or RequestJournal()
+        journal = journal or RequestJournal(deadline)
         timeout = max(.001, deadline-time.monotonic())
         # One client set per request prevents usage/deadline state leaking
         # between concurrent spaces. Endpoint credentials remain environment-only.

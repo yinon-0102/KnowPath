@@ -63,6 +63,16 @@ def test_generator_nonanswer_still_requires_valid_checker():
     assert len(checker.calls) == 1
 
 
+def test_terminal_generator_exception_keeps_provider_error_when_retry_is_enabled():
+    generator, checker = Model([RuntimeError('transport failed'), RuntimeError('transport failed')]), Model([])
+    generator.allows_contract_retry = True
+    with pytest.raises(VerificationError, match='GENERATION_INVALID_RESPONSE') as error:
+        run(generator, checker)
+    assert error.value.details['failure_kind'] == 'response_schema'
+    assert len(generator.calls) == 2
+    assert checker.calls == []
+
+
 def test_wire_ids_restore_exact_identity_and_checklist_text_is_not_repeated():
     generator, checker = Model([draft()]), Model([verdict()])
     result = run(generator, checker)
@@ -140,11 +150,52 @@ def test_failed_second_checker_never_publishes_new_draft():
     assert 'private' not in str(error.value)
 
 
+def test_real_adapter_retries_one_rejected_generation_contract_with_budgeted_pair():
+    bad = draft('insufficient')
+    bad['claims'] = [dict(claim_id='c1', text='不应出现在拒答中的内容', kind='fact',
+                          citation_ids=['s1'], depends_on=[])]
+    generator = Model([bad, draft('insufficient')])
+    generator.allows_contract_retry = True
+    checker = Model([verdict('evidence_missing')])
+    result = run(generator, checker)
+    assert result['status'] == 'insufficient'
+    assert len(generator.calls) == 2
+    assert len(checker.calls) == 1
+    assert json.loads(generator.calls[1][1]['content'])['previous_output_rejected'] is True
+
+
+def test_terminal_nonanswer_contract_is_safely_normalized_to_empty_answer():
+    bad = draft('insufficient')
+    bad['claims'] = [dict(claim_id='c1', text='不应发布', kind='fact',
+                          citation_ids=['s1'], depends_on=[])]
+    generator = Model([bad, bad])
+    generator.allows_contract_retry = True
+    checker = Model([verdict('evidence_missing')])
+    result = run(generator, checker)
+    assert result['status'] == 'insufficient'
+    assert result['claims'] == []
+    assert result['trace']['contract_repairs'] == [{'stage':'generation', 'kind':'drop_nonanswer_claims'}]
+
+
+def test_real_adapter_retries_one_rejected_checker_contract_without_publishing_unchecked_text():
+    generator = Model([draft(), draft()])
+    generator.allows_contract_retry = True
+    bad = verdict()
+    bad['checks'][0]['evidence_spans'] = [dict(evidence_id='e2')]
+    checker = Model([bad, verdict()])
+    checker.allows_contract_retry = True
+    result = run(generator, checker)
+    assert result['status'] == 'answered'
+    assert len(generator.calls) == len(checker.calls) == 2
+    assert json.loads(generator.calls[1][1]['content'])['previous_output_rejected'] is True
+
+
 def test_v2_numeric_rejection_invalidates_point_and_preserves_exact_sources():
     generator, checker = Model([draft(text='年满99岁才可申请。')]), Model([verdict()])
-    with pytest.raises(VerificationError, match='ANSWER_VERIFICATION_FAILED'):
-        AnswerVerifier(generator, checker).answer('申请条件？', [SOURCE],
-            deadline=time.monotonic()+30, max_generation_calls=1)
+    result = AnswerVerifier(generator, checker).answer('申请条件？', [SOURCE],
+        deadline=time.monotonic()+30, max_generation_calls=1)
+    assert result['status'] == 'insufficient'
+    assert result['claims'] == []
     assert ''.join(s['text'] for s in json.loads(checker.calls[0][1]['content'])['evidence'][0]['segments']) == SOURCE['source_text']
 
 
@@ -186,6 +237,19 @@ def test_supported_fact_cannot_silently_change_citation_association():
             [SOURCE, dict(SOURCE, chunk_id='other')], deadline=time.monotonic()+30)
 
 
+def test_checker_source_ids_are_derived_from_evidence_spans():
+    """A valid evidence anchor is authoritative for its source association."""
+    checked = verdict()
+    # Simulate the provider confusing a source short ID while selecting the
+    # correct evidence segment. Local protocol code must derive s1 from e1.
+    checked['checks'][0]['citation_ids'] = ['s2']
+    result = AnswerVerifier(Model([draft()]), Model([checked])).answer(
+        '申请条件？', [SOURCE, dict(SOURCE, chunk_id='other')],
+        deadline=time.monotonic()+30, max_generation_calls=1)
+    assert result['status'] == 'answered'
+    assert tuple(result['trace']['verdicts'][0]['checks'][0]['citation_ids']) == (SOURCE['chunk_id'],)
+
+
 def test_json_object_fallback_prompts_contain_complete_parseable_examples():
     generator, checker = Model([draft()]), Model([verdict()])
     run(generator, checker)
@@ -217,15 +281,14 @@ def test_initial_packing_templates_use_actual_wire_prompts_and_complete_evidence
     assert ''.join(s['text'] for s in check_data['evidence'][0]['segments']) == SOURCE['source_text']
 
 
-def test_exhausted_incomplete_answer_without_supported_claims_is_failed():
+def test_exhausted_incomplete_answer_without_supported_claims_is_safe_insufficient_result():
     checked = verdict('answer_incomplete')
     checked['checks'][0]['status'] = 'unsupported'
     checked['checks'][0]['issue_type'] = 'answer_incomplete'
     generator, checker = Model([draft(), draft()]), Model([checked, checked])
-    with pytest.raises(VerificationError, match='ANSWER_VERIFICATION_FAILED') as error:
-        run(generator, checker)
-    assert error.value.details['stage'] == 'verification'
-    assert error.value.details['call_index'] == 2
+    result = run(generator, checker)
+    assert result['status'] == 'insufficient'
+    assert result['claims'] == []
     assert len(generator.calls) == len(checker.calls) == 2
 
 
@@ -287,9 +350,10 @@ def test_numeric_fact_must_be_in_checked_span_not_elsewhere_in_same_chunk():
     checked = verdict()
     checked['checks'][0]['evidence_spans'] = [dict(evidence_id='e1')]
     generator, checker = Model([draft(text='age99.')]), Model([checked])
-    with pytest.raises(VerificationError, match='ANSWER_VERIFICATION_FAILED'):
-        AnswerVerifier(generator, checker).answer('age?', [source], deadline=time.monotonic()+30,
-            max_generation_calls=1)
+    result = AnswerVerifier(generator, checker).answer('age?', [source], deadline=time.monotonic()+30,
+        max_generation_calls=1)
+    assert result['status'] == 'insufficient'
+    assert result['claims'] == []
 
 
 @pytest.mark.parametrize('text,segment_id,start,end', [

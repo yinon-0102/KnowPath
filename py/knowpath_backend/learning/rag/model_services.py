@@ -138,6 +138,9 @@ class BudgetedJsonModel:
 
     requires_required_points = True
     protocol_version = 2
+    # A second call is an explicit, budgeted contract correction, not a hidden
+    # transport retry. Test doubles and legacy adapters remain fail-closed.
+    allows_contract_retry = True
 
     def __init__(self, settings=None, *, client=None, max_input_tokens=12000, max_output_tokens=2000,
                  journal=None, stage='generation'):

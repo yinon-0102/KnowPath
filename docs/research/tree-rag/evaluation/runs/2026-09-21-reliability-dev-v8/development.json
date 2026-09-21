@@ -1,0 +1,1358 @@
+{
+  "dataset": "dataset.jsonl",
+  "split": "split.json",
+  "rubric": "rubric.md",
+  "human_review_status": "pending",
+  "repeats": 1,
+  "order_schedule": "alternating",
+  "retries": 0,
+  "models": {
+    "chat_provider": "dashscope",
+    "chat_model": "qwen-plus",
+    "chat_base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    "embedding_provider": "dashscope",
+    "embedding_model": "text-embedding-v3",
+    "embedding_dimension": 1024,
+    "embedding_base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    "rerank_model": "gte-rerank-v2",
+    "rerank_endpoint": "https://dashscope.aliyuncs.com/api/v1/services/rerank/text-rerank/text-rerank"
+  },
+  "budgets": {
+    "keyword_candidates": 30,
+    "vector_candidates": 30,
+    "rerank_candidates": 40,
+    "context_tokens": 5000,
+    "max_generation_calls": 2,
+    "max_verification_calls": 2,
+    "deadline_seconds": 120.0,
+    "chat_timeout_seconds": 60.0,
+    "model_context_tokens": 32768,
+    "model_input_tokens": 24000,
+    "model_output_tokens": 4000,
+    "rerank_input_tokens": 90000,
+    "transport_retries": 0,
+    "spending": {
+      "enabled": false
+    }
+  },
+  "prompts": {
+    "implementation": "frozen_python_sources",
+    "protocol": {
+      "max_draft_bytes": 4000,
+      "revision_generation_seconds": 10,
+      "revision_verification_seconds": 25,
+      "response_format": "json_schema",
+      "wire_version": 2,
+      "evidence_locator": "segment-id-v1",
+      "generator_evidence": "whole-source-v1",
+      "identity_schema": "request-enum-v1",
+      "math_notation": "unicode-plain-v1",
+      "contract_retry": "explicit-contract-repair-v1",
+      "counting_profile": {
+        "kind": "conservative_upper_bound",
+        "provider": "dashscope",
+        "model": "qwen-plus",
+        "profile_id": "utf8-envelope-v1:dashscope:qwen-plus:message=32:request=64",
+        "tokenizer_revision": null,
+        "artifact_sha256": null,
+        "chat_template": "unverified_server_template_allowance",
+        "per_message_overhead": 32,
+        "request_overhead": 64
+      }
+    }
+  },
+  "environment": {
+    "qdrant_url": "http://127.0.0.1:6333",
+    "collection_prefix": "knowpath_rag_dev_cbfb40e88ea24e01"
+  },
+  "profile": {
+    "manifest_configuration_hashes": {
+      "c5bc2fff279c183dab58034f850c7d7086c5fc3f275e6926d4b21a774f3e855a": "e5f5c5a70f9b3ab9b63826a3322bb8ff1ff511a225118798cb0321a9ffe05d37",
+      "b44effe61919dfcb9e457bc70471327213a5ca45c5d70ecff346ec0c83b4d91d": "b5964cc37cdb94a193928b1eef17c154ef2588a3e8fa244380775032902c8a2a",
+      "f2bfc17135440d07add827a58e67a121cee7363786bb3e8f112d8aa43c509559": "34d54ef79e1d2ba99485635de2bb2f47e60cf1c83d0f04e086880ad9b81c9575"
+    }
+  },
+  "statistics": {
+    "method": "family_descriptive",
+    "estimand": "full_task_success_difference",
+    "weighting": "equal_family",
+    "repeat_aggregation": "question_mean",
+    "failures": "zero",
+    "quantile": "nearest_rank",
+    "seed": 20260920
+  },
+  "gates": {
+    "max_p95_latency_ms": null,
+    "max_mean_cost_per_request": null,
+    "max_b1_latency_ratio": null,
+    "max_b1_cost_ratio": null
+  },
+  "pricing": {
+    "currency": "CNY",
+    "date": null,
+    "price_table": {}
+  },
+  "decision_rule": "exploratory_no_adoption",
+  "runtime_bindings": {
+    "real-law-01": {
+      "space_id": "a8c307aa-333c-48a6-b181-3d26f38c8afc",
+      "scope_snapshot_id": "718ab0071933f8288152bd94279afad2538a01c32bb05b3c66dc35724de43a01",
+      "expected_scope_version": 0,
+      "expected_bindings": [
+        {
+          "material_id": "1ca160c1-8469-4aee-9e38-227f0e78db5d",
+          "material_version_id": "04666855-d3aa-4361-9040-1b6ed51c8e0e",
+          "graph_version": 1
+        }
+      ],
+      "expected_manifest_ids": [
+        "f2bfc17135440d07add827a58e67a121cee7363786bb3e8f112d8aa43c509559"
+      ],
+      "expected_retrieval_versions": [
+        "e5697bf9244d38e278a459a07d6e928becaf1fccf8e52258079ba981e0557356"
+      ],
+      "manifest_configuration_hashes": {
+        "f2bfc17135440d07add827a58e67a121cee7363786bb3e8f112d8aa43c509559": "34d54ef79e1d2ba99485635de2bb2f47e60cf1c83d0f04e086880ad9b81c9575"
+      }
+    },
+    "real-law-02": {
+      "space_id": "a8c307aa-333c-48a6-b181-3d26f38c8afc",
+      "scope_snapshot_id": "718ab0071933f8288152bd94279afad2538a01c32bb05b3c66dc35724de43a01",
+      "expected_scope_version": 0,
+      "expected_bindings": [
+        {
+          "material_id": "1ca160c1-8469-4aee-9e38-227f0e78db5d",
+          "material_version_id": "04666855-d3aa-4361-9040-1b6ed51c8e0e",
+          "graph_version": 1
+        }
+      ],
+      "expected_manifest_ids": [
+        "f2bfc17135440d07add827a58e67a121cee7363786bb3e8f112d8aa43c509559"
+      ],
+      "expected_retrieval_versions": [
+        "e5697bf9244d38e278a459a07d6e928becaf1fccf8e52258079ba981e0557356"
+      ],
+      "manifest_configuration_hashes": {
+        "f2bfc17135440d07add827a58e67a121cee7363786bb3e8f112d8aa43c509559": "34d54ef79e1d2ba99485635de2bb2f47e60cf1c83d0f04e086880ad9b81c9575"
+      }
+    },
+    "real-law-03": {
+      "space_id": "a8c307aa-333c-48a6-b181-3d26f38c8afc",
+      "scope_snapshot_id": "718ab0071933f8288152bd94279afad2538a01c32bb05b3c66dc35724de43a01",
+      "expected_scope_version": 0,
+      "expected_bindings": [
+        {
+          "material_id": "1ca160c1-8469-4aee-9e38-227f0e78db5d",
+          "material_version_id": "04666855-d3aa-4361-9040-1b6ed51c8e0e",
+          "graph_version": 1
+        }
+      ],
+      "expected_manifest_ids": [
+        "f2bfc17135440d07add827a58e67a121cee7363786bb3e8f112d8aa43c509559"
+      ],
+      "expected_retrieval_versions": [
+        "e5697bf9244d38e278a459a07d6e928becaf1fccf8e52258079ba981e0557356"
+      ],
+      "manifest_configuration_hashes": {
+        "f2bfc17135440d07add827a58e67a121cee7363786bb3e8f112d8aa43c509559": "34d54ef79e1d2ba99485635de2bb2f47e60cf1c83d0f04e086880ad9b81c9575"
+      }
+    },
+    "real-law-04": {
+      "space_id": "a8c307aa-333c-48a6-b181-3d26f38c8afc",
+      "scope_snapshot_id": "718ab0071933f8288152bd94279afad2538a01c32bb05b3c66dc35724de43a01",
+      "expected_scope_version": 0,
+      "expected_bindings": [
+        {
+          "material_id": "1ca160c1-8469-4aee-9e38-227f0e78db5d",
+          "material_version_id": "04666855-d3aa-4361-9040-1b6ed51c8e0e",
+          "graph_version": 1
+        }
+      ],
+      "expected_manifest_ids": [
+        "f2bfc17135440d07add827a58e67a121cee7363786bb3e8f112d8aa43c509559"
+      ],
+      "expected_retrieval_versions": [
+        "e5697bf9244d38e278a459a07d6e928becaf1fccf8e52258079ba981e0557356"
+      ],
+      "manifest_configuration_hashes": {
+        "f2bfc17135440d07add827a58e67a121cee7363786bb3e8f112d8aa43c509559": "34d54ef79e1d2ba99485635de2bb2f47e60cf1c83d0f04e086880ad9b81c9575"
+      }
+    },
+    "real-law-05": {
+      "space_id": "a8c307aa-333c-48a6-b181-3d26f38c8afc",
+      "scope_snapshot_id": "718ab0071933f8288152bd94279afad2538a01c32bb05b3c66dc35724de43a01",
+      "expected_scope_version": 0,
+      "expected_bindings": [
+        {
+          "material_id": "1ca160c1-8469-4aee-9e38-227f0e78db5d",
+          "material_version_id": "04666855-d3aa-4361-9040-1b6ed51c8e0e",
+          "graph_version": 1
+        }
+      ],
+      "expected_manifest_ids": [
+        "f2bfc17135440d07add827a58e67a121cee7363786bb3e8f112d8aa43c509559"
+      ],
+      "expected_retrieval_versions": [
+        "e5697bf9244d38e278a459a07d6e928becaf1fccf8e52258079ba981e0557356"
+      ],
+      "manifest_configuration_hashes": {
+        "f2bfc17135440d07add827a58e67a121cee7363786bb3e8f112d8aa43c509559": "34d54ef79e1d2ba99485635de2bb2f47e60cf1c83d0f04e086880ad9b81c9575"
+      }
+    },
+    "real-law-06": {
+      "space_id": "a8c307aa-333c-48a6-b181-3d26f38c8afc",
+      "scope_snapshot_id": "718ab0071933f8288152bd94279afad2538a01c32bb05b3c66dc35724de43a01",
+      "expected_scope_version": 0,
+      "expected_bindings": [
+        {
+          "material_id": "1ca160c1-8469-4aee-9e38-227f0e78db5d",
+          "material_version_id": "04666855-d3aa-4361-9040-1b6ed51c8e0e",
+          "graph_version": 1
+        }
+      ],
+      "expected_manifest_ids": [
+        "f2bfc17135440d07add827a58e67a121cee7363786bb3e8f112d8aa43c509559"
+      ],
+      "expected_retrieval_versions": [
+        "e5697bf9244d38e278a459a07d6e928becaf1fccf8e52258079ba981e0557356"
+      ],
+      "manifest_configuration_hashes": {
+        "f2bfc17135440d07add827a58e67a121cee7363786bb3e8f112d8aa43c509559": "34d54ef79e1d2ba99485635de2bb2f47e60cf1c83d0f04e086880ad9b81c9575"
+      }
+    },
+    "real-law-07": {
+      "space_id": "a8c307aa-333c-48a6-b181-3d26f38c8afc",
+      "scope_snapshot_id": "718ab0071933f8288152bd94279afad2538a01c32bb05b3c66dc35724de43a01",
+      "expected_scope_version": 0,
+      "expected_bindings": [
+        {
+          "material_id": "1ca160c1-8469-4aee-9e38-227f0e78db5d",
+          "material_version_id": "04666855-d3aa-4361-9040-1b6ed51c8e0e",
+          "graph_version": 1
+        }
+      ],
+      "expected_manifest_ids": [
+        "f2bfc17135440d07add827a58e67a121cee7363786bb3e8f112d8aa43c509559"
+      ],
+      "expected_retrieval_versions": [
+        "e5697bf9244d38e278a459a07d6e928becaf1fccf8e52258079ba981e0557356"
+      ],
+      "manifest_configuration_hashes": {
+        "f2bfc17135440d07add827a58e67a121cee7363786bb3e8f112d8aa43c509559": "34d54ef79e1d2ba99485635de2bb2f47e60cf1c83d0f04e086880ad9b81c9575"
+      }
+    },
+    "real-law-08": {
+      "space_id": "a8c307aa-333c-48a6-b181-3d26f38c8afc",
+      "scope_snapshot_id": "718ab0071933f8288152bd94279afad2538a01c32bb05b3c66dc35724de43a01",
+      "expected_scope_version": 0,
+      "expected_bindings": [
+        {
+          "material_id": "1ca160c1-8469-4aee-9e38-227f0e78db5d",
+          "material_version_id": "04666855-d3aa-4361-9040-1b6ed51c8e0e",
+          "graph_version": 1
+        }
+      ],
+      "expected_manifest_ids": [
+        "f2bfc17135440d07add827a58e67a121cee7363786bb3e8f112d8aa43c509559"
+      ],
+      "expected_retrieval_versions": [
+        "e5697bf9244d38e278a459a07d6e928becaf1fccf8e52258079ba981e0557356"
+      ],
+      "manifest_configuration_hashes": {
+        "f2bfc17135440d07add827a58e67a121cee7363786bb3e8f112d8aa43c509559": "34d54ef79e1d2ba99485635de2bb2f47e60cf1c83d0f04e086880ad9b81c9575"
+      }
+    },
+    "real-law-09": {
+      "space_id": "a8c307aa-333c-48a6-b181-3d26f38c8afc",
+      "scope_snapshot_id": "718ab0071933f8288152bd94279afad2538a01c32bb05b3c66dc35724de43a01",
+      "expected_scope_version": 0,
+      "expected_bindings": [
+        {
+          "material_id": "1ca160c1-8469-4aee-9e38-227f0e78db5d",
+          "material_version_id": "04666855-d3aa-4361-9040-1b6ed51c8e0e",
+          "graph_version": 1
+        }
+      ],
+      "expected_manifest_ids": [
+        "f2bfc17135440d07add827a58e67a121cee7363786bb3e8f112d8aa43c509559"
+      ],
+      "expected_retrieval_versions": [
+        "e5697bf9244d38e278a459a07d6e928becaf1fccf8e52258079ba981e0557356"
+      ],
+      "manifest_configuration_hashes": {
+        "f2bfc17135440d07add827a58e67a121cee7363786bb3e8f112d8aa43c509559": "34d54ef79e1d2ba99485635de2bb2f47e60cf1c83d0f04e086880ad9b81c9575"
+      }
+    },
+    "real-law-10": {
+      "space_id": "a8c307aa-333c-48a6-b181-3d26f38c8afc",
+      "scope_snapshot_id": "718ab0071933f8288152bd94279afad2538a01c32bb05b3c66dc35724de43a01",
+      "expected_scope_version": 0,
+      "expected_bindings": [
+        {
+          "material_id": "1ca160c1-8469-4aee-9e38-227f0e78db5d",
+          "material_version_id": "04666855-d3aa-4361-9040-1b6ed51c8e0e",
+          "graph_version": 1
+        }
+      ],
+      "expected_manifest_ids": [
+        "f2bfc17135440d07add827a58e67a121cee7363786bb3e8f112d8aa43c509559"
+      ],
+      "expected_retrieval_versions": [
+        "e5697bf9244d38e278a459a07d6e928becaf1fccf8e52258079ba981e0557356"
+      ],
+      "manifest_configuration_hashes": {
+        "f2bfc17135440d07add827a58e67a121cee7363786bb3e8f112d8aa43c509559": "34d54ef79e1d2ba99485635de2bb2f47e60cf1c83d0f04e086880ad9b81c9575"
+      }
+    },
+    "real-law-11": {
+      "space_id": "a8c307aa-333c-48a6-b181-3d26f38c8afc",
+      "scope_snapshot_id": "718ab0071933f8288152bd94279afad2538a01c32bb05b3c66dc35724de43a01",
+      "expected_scope_version": 0,
+      "expected_bindings": [
+        {
+          "material_id": "1ca160c1-8469-4aee-9e38-227f0e78db5d",
+          "material_version_id": "04666855-d3aa-4361-9040-1b6ed51c8e0e",
+          "graph_version": 1
+        }
+      ],
+      "expected_manifest_ids": [
+        "f2bfc17135440d07add827a58e67a121cee7363786bb3e8f112d8aa43c509559"
+      ],
+      "expected_retrieval_versions": [
+        "e5697bf9244d38e278a459a07d6e928becaf1fccf8e52258079ba981e0557356"
+      ],
+      "manifest_configuration_hashes": {
+        "f2bfc17135440d07add827a58e67a121cee7363786bb3e8f112d8aa43c509559": "34d54ef79e1d2ba99485635de2bb2f47e60cf1c83d0f04e086880ad9b81c9575"
+      }
+    },
+    "real-law-12": {
+      "space_id": "a8c307aa-333c-48a6-b181-3d26f38c8afc",
+      "scope_snapshot_id": "718ab0071933f8288152bd94279afad2538a01c32bb05b3c66dc35724de43a01",
+      "expected_scope_version": 0,
+      "expected_bindings": [
+        {
+          "material_id": "1ca160c1-8469-4aee-9e38-227f0e78db5d",
+          "material_version_id": "04666855-d3aa-4361-9040-1b6ed51c8e0e",
+          "graph_version": 1
+        }
+      ],
+      "expected_manifest_ids": [
+        "f2bfc17135440d07add827a58e67a121cee7363786bb3e8f112d8aa43c509559"
+      ],
+      "expected_retrieval_versions": [
+        "e5697bf9244d38e278a459a07d6e928becaf1fccf8e52258079ba981e0557356"
+      ],
+      "manifest_configuration_hashes": {
+        "f2bfc17135440d07add827a58e67a121cee7363786bb3e8f112d8aa43c509559": "34d54ef79e1d2ba99485635de2bb2f47e60cf1c83d0f04e086880ad9b81c9575"
+      }
+    },
+    "real-law-13": {
+      "space_id": "a8c307aa-333c-48a6-b181-3d26f38c8afc",
+      "scope_snapshot_id": "718ab0071933f8288152bd94279afad2538a01c32bb05b3c66dc35724de43a01",
+      "expected_scope_version": 0,
+      "expected_bindings": [
+        {
+          "material_id": "1ca160c1-8469-4aee-9e38-227f0e78db5d",
+          "material_version_id": "04666855-d3aa-4361-9040-1b6ed51c8e0e",
+          "graph_version": 1
+        }
+      ],
+      "expected_manifest_ids": [
+        "f2bfc17135440d07add827a58e67a121cee7363786bb3e8f112d8aa43c509559"
+      ],
+      "expected_retrieval_versions": [
+        "e5697bf9244d38e278a459a07d6e928becaf1fccf8e52258079ba981e0557356"
+      ],
+      "manifest_configuration_hashes": {
+        "f2bfc17135440d07add827a58e67a121cee7363786bb3e8f112d8aa43c509559": "34d54ef79e1d2ba99485635de2bb2f47e60cf1c83d0f04e086880ad9b81c9575"
+      }
+    },
+    "real-law-14": {
+      "space_id": "a8c307aa-333c-48a6-b181-3d26f38c8afc",
+      "scope_snapshot_id": "718ab0071933f8288152bd94279afad2538a01c32bb05b3c66dc35724de43a01",
+      "expected_scope_version": 0,
+      "expected_bindings": [
+        {
+          "material_id": "1ca160c1-8469-4aee-9e38-227f0e78db5d",
+          "material_version_id": "04666855-d3aa-4361-9040-1b6ed51c8e0e",
+          "graph_version": 1
+        }
+      ],
+      "expected_manifest_ids": [
+        "f2bfc17135440d07add827a58e67a121cee7363786bb3e8f112d8aa43c509559"
+      ],
+      "expected_retrieval_versions": [
+        "e5697bf9244d38e278a459a07d6e928becaf1fccf8e52258079ba981e0557356"
+      ],
+      "manifest_configuration_hashes": {
+        "f2bfc17135440d07add827a58e67a121cee7363786bb3e8f112d8aa43c509559": "34d54ef79e1d2ba99485635de2bb2f47e60cf1c83d0f04e086880ad9b81c9575"
+      }
+    },
+    "real-law-15": {
+      "space_id": "a8c307aa-333c-48a6-b181-3d26f38c8afc",
+      "scope_snapshot_id": "718ab0071933f8288152bd94279afad2538a01c32bb05b3c66dc35724de43a01",
+      "expected_scope_version": 0,
+      "expected_bindings": [
+        {
+          "material_id": "1ca160c1-8469-4aee-9e38-227f0e78db5d",
+          "material_version_id": "04666855-d3aa-4361-9040-1b6ed51c8e0e",
+          "graph_version": 1
+        }
+      ],
+      "expected_manifest_ids": [
+        "f2bfc17135440d07add827a58e67a121cee7363786bb3e8f112d8aa43c509559"
+      ],
+      "expected_retrieval_versions": [
+        "e5697bf9244d38e278a459a07d6e928becaf1fccf8e52258079ba981e0557356"
+      ],
+      "manifest_configuration_hashes": {
+        "f2bfc17135440d07add827a58e67a121cee7363786bb3e8f112d8aa43c509559": "34d54ef79e1d2ba99485635de2bb2f47e60cf1c83d0f04e086880ad9b81c9575"
+      }
+    },
+    "real-law-16": {
+      "space_id": "a8c307aa-333c-48a6-b181-3d26f38c8afc",
+      "scope_snapshot_id": "718ab0071933f8288152bd94279afad2538a01c32bb05b3c66dc35724de43a01",
+      "expected_scope_version": 0,
+      "expected_bindings": [
+        {
+          "material_id": "1ca160c1-8469-4aee-9e38-227f0e78db5d",
+          "material_version_id": "04666855-d3aa-4361-9040-1b6ed51c8e0e",
+          "graph_version": 1
+        }
+      ],
+      "expected_manifest_ids": [
+        "f2bfc17135440d07add827a58e67a121cee7363786bb3e8f112d8aa43c509559"
+      ],
+      "expected_retrieval_versions": [
+        "e5697bf9244d38e278a459a07d6e928becaf1fccf8e52258079ba981e0557356"
+      ],
+      "manifest_configuration_hashes": {
+        "f2bfc17135440d07add827a58e67a121cee7363786bb3e8f112d8aa43c509559": "34d54ef79e1d2ba99485635de2bb2f47e60cf1c83d0f04e086880ad9b81c9575"
+      }
+    },
+    "real-law-17": {
+      "space_id": "a8c307aa-333c-48a6-b181-3d26f38c8afc",
+      "scope_snapshot_id": "718ab0071933f8288152bd94279afad2538a01c32bb05b3c66dc35724de43a01",
+      "expected_scope_version": 0,
+      "expected_bindings": [
+        {
+          "material_id": "1ca160c1-8469-4aee-9e38-227f0e78db5d",
+          "material_version_id": "04666855-d3aa-4361-9040-1b6ed51c8e0e",
+          "graph_version": 1
+        }
+      ],
+      "expected_manifest_ids": [
+        "f2bfc17135440d07add827a58e67a121cee7363786bb3e8f112d8aa43c509559"
+      ],
+      "expected_retrieval_versions": [
+        "e5697bf9244d38e278a459a07d6e928becaf1fccf8e52258079ba981e0557356"
+      ],
+      "manifest_configuration_hashes": {
+        "f2bfc17135440d07add827a58e67a121cee7363786bb3e8f112d8aa43c509559": "34d54ef79e1d2ba99485635de2bb2f47e60cf1c83d0f04e086880ad9b81c9575"
+      }
+    },
+    "real-law-18": {
+      "space_id": "a8c307aa-333c-48a6-b181-3d26f38c8afc",
+      "scope_snapshot_id": "718ab0071933f8288152bd94279afad2538a01c32bb05b3c66dc35724de43a01",
+      "expected_scope_version": 0,
+      "expected_bindings": [
+        {
+          "material_id": "1ca160c1-8469-4aee-9e38-227f0e78db5d",
+          "material_version_id": "04666855-d3aa-4361-9040-1b6ed51c8e0e",
+          "graph_version": 1
+        }
+      ],
+      "expected_manifest_ids": [
+        "f2bfc17135440d07add827a58e67a121cee7363786bb3e8f112d8aa43c509559"
+      ],
+      "expected_retrieval_versions": [
+        "e5697bf9244d38e278a459a07d6e928becaf1fccf8e52258079ba981e0557356"
+      ],
+      "manifest_configuration_hashes": {
+        "f2bfc17135440d07add827a58e67a121cee7363786bb3e8f112d8aa43c509559": "34d54ef79e1d2ba99485635de2bb2f47e60cf1c83d0f04e086880ad9b81c9575"
+      }
+    },
+    "real-law-19": {
+      "space_id": "a8c307aa-333c-48a6-b181-3d26f38c8afc",
+      "scope_snapshot_id": "718ab0071933f8288152bd94279afad2538a01c32bb05b3c66dc35724de43a01",
+      "expected_scope_version": 0,
+      "expected_bindings": [
+        {
+          "material_id": "1ca160c1-8469-4aee-9e38-227f0e78db5d",
+          "material_version_id": "04666855-d3aa-4361-9040-1b6ed51c8e0e",
+          "graph_version": 1
+        }
+      ],
+      "expected_manifest_ids": [
+        "f2bfc17135440d07add827a58e67a121cee7363786bb3e8f112d8aa43c509559"
+      ],
+      "expected_retrieval_versions": [
+        "e5697bf9244d38e278a459a07d6e928becaf1fccf8e52258079ba981e0557356"
+      ],
+      "manifest_configuration_hashes": {
+        "f2bfc17135440d07add827a58e67a121cee7363786bb3e8f112d8aa43c509559": "34d54ef79e1d2ba99485635de2bb2f47e60cf1c83d0f04e086880ad9b81c9575"
+      }
+    },
+    "real-law-20": {
+      "space_id": "a8c307aa-333c-48a6-b181-3d26f38c8afc",
+      "scope_snapshot_id": "718ab0071933f8288152bd94279afad2538a01c32bb05b3c66dc35724de43a01",
+      "expected_scope_version": 0,
+      "expected_bindings": [
+        {
+          "material_id": "1ca160c1-8469-4aee-9e38-227f0e78db5d",
+          "material_version_id": "04666855-d3aa-4361-9040-1b6ed51c8e0e",
+          "graph_version": 1
+        }
+      ],
+      "expected_manifest_ids": [
+        "f2bfc17135440d07add827a58e67a121cee7363786bb3e8f112d8aa43c509559"
+      ],
+      "expected_retrieval_versions": [
+        "e5697bf9244d38e278a459a07d6e928becaf1fccf8e52258079ba981e0557356"
+      ],
+      "manifest_configuration_hashes": {
+        "f2bfc17135440d07add827a58e67a121cee7363786bb3e8f112d8aa43c509559": "34d54ef79e1d2ba99485635de2bb2f47e60cf1c83d0f04e086880ad9b81c9575"
+      }
+    },
+    "real-math-01": {
+      "space_id": "8a9c9ed9-f837-49d9-89df-b0eb936020df",
+      "scope_snapshot_id": "e1017b61167abaa5814b9745297dda6c974c4a0ea275f3dacada4699a53b9d9d",
+      "expected_scope_version": 0,
+      "expected_bindings": [
+        {
+          "material_id": "393680f9-33a8-4b9a-bb73-75ec3498e5e1",
+          "material_version_id": "67da8cba-1582-47ba-a420-526e7ca5a000",
+          "graph_version": 1
+        }
+      ],
+      "expected_manifest_ids": [
+        "c5bc2fff279c183dab58034f850c7d7086c5fc3f275e6926d4b21a774f3e855a"
+      ],
+      "expected_retrieval_versions": [
+        "8e70066e64f43c71ab5d97de1711735cf84ebb48e85f25a2168918bc4bff9acd"
+      ],
+      "manifest_configuration_hashes": {
+        "c5bc2fff279c183dab58034f850c7d7086c5fc3f275e6926d4b21a774f3e855a": "e5f5c5a70f9b3ab9b63826a3322bb8ff1ff511a225118798cb0321a9ffe05d37"
+      }
+    },
+    "real-math-02": {
+      "space_id": "8a9c9ed9-f837-49d9-89df-b0eb936020df",
+      "scope_snapshot_id": "e1017b61167abaa5814b9745297dda6c974c4a0ea275f3dacada4699a53b9d9d",
+      "expected_scope_version": 0,
+      "expected_bindings": [
+        {
+          "material_id": "393680f9-33a8-4b9a-bb73-75ec3498e5e1",
+          "material_version_id": "67da8cba-1582-47ba-a420-526e7ca5a000",
+          "graph_version": 1
+        }
+      ],
+      "expected_manifest_ids": [
+        "c5bc2fff279c183dab58034f850c7d7086c5fc3f275e6926d4b21a774f3e855a"
+      ],
+      "expected_retrieval_versions": [
+        "8e70066e64f43c71ab5d97de1711735cf84ebb48e85f25a2168918bc4bff9acd"
+      ],
+      "manifest_configuration_hashes": {
+        "c5bc2fff279c183dab58034f850c7d7086c5fc3f275e6926d4b21a774f3e855a": "e5f5c5a70f9b3ab9b63826a3322bb8ff1ff511a225118798cb0321a9ffe05d37"
+      }
+    },
+    "real-math-03": {
+      "space_id": "8a9c9ed9-f837-49d9-89df-b0eb936020df",
+      "scope_snapshot_id": "e1017b61167abaa5814b9745297dda6c974c4a0ea275f3dacada4699a53b9d9d",
+      "expected_scope_version": 0,
+      "expected_bindings": [
+        {
+          "material_id": "393680f9-33a8-4b9a-bb73-75ec3498e5e1",
+          "material_version_id": "67da8cba-1582-47ba-a420-526e7ca5a000",
+          "graph_version": 1
+        }
+      ],
+      "expected_manifest_ids": [
+        "c5bc2fff279c183dab58034f850c7d7086c5fc3f275e6926d4b21a774f3e855a"
+      ],
+      "expected_retrieval_versions": [
+        "8e70066e64f43c71ab5d97de1711735cf84ebb48e85f25a2168918bc4bff9acd"
+      ],
+      "manifest_configuration_hashes": {
+        "c5bc2fff279c183dab58034f850c7d7086c5fc3f275e6926d4b21a774f3e855a": "e5f5c5a70f9b3ab9b63826a3322bb8ff1ff511a225118798cb0321a9ffe05d37"
+      }
+    },
+    "real-math-04": {
+      "space_id": "8a9c9ed9-f837-49d9-89df-b0eb936020df",
+      "scope_snapshot_id": "e1017b61167abaa5814b9745297dda6c974c4a0ea275f3dacada4699a53b9d9d",
+      "expected_scope_version": 0,
+      "expected_bindings": [
+        {
+          "material_id": "393680f9-33a8-4b9a-bb73-75ec3498e5e1",
+          "material_version_id": "67da8cba-1582-47ba-a420-526e7ca5a000",
+          "graph_version": 1
+        }
+      ],
+      "expected_manifest_ids": [
+        "c5bc2fff279c183dab58034f850c7d7086c5fc3f275e6926d4b21a774f3e855a"
+      ],
+      "expected_retrieval_versions": [
+        "8e70066e64f43c71ab5d97de1711735cf84ebb48e85f25a2168918bc4bff9acd"
+      ],
+      "manifest_configuration_hashes": {
+        "c5bc2fff279c183dab58034f850c7d7086c5fc3f275e6926d4b21a774f3e855a": "e5f5c5a70f9b3ab9b63826a3322bb8ff1ff511a225118798cb0321a9ffe05d37"
+      }
+    },
+    "real-math-05": {
+      "space_id": "8a9c9ed9-f837-49d9-89df-b0eb936020df",
+      "scope_snapshot_id": "e1017b61167abaa5814b9745297dda6c974c4a0ea275f3dacada4699a53b9d9d",
+      "expected_scope_version": 0,
+      "expected_bindings": [
+        {
+          "material_id": "393680f9-33a8-4b9a-bb73-75ec3498e5e1",
+          "material_version_id": "67da8cba-1582-47ba-a420-526e7ca5a000",
+          "graph_version": 1
+        }
+      ],
+      "expected_manifest_ids": [
+        "c5bc2fff279c183dab58034f850c7d7086c5fc3f275e6926d4b21a774f3e855a"
+      ],
+      "expected_retrieval_versions": [
+        "8e70066e64f43c71ab5d97de1711735cf84ebb48e85f25a2168918bc4bff9acd"
+      ],
+      "manifest_configuration_hashes": {
+        "c5bc2fff279c183dab58034f850c7d7086c5fc3f275e6926d4b21a774f3e855a": "e5f5c5a70f9b3ab9b63826a3322bb8ff1ff511a225118798cb0321a9ffe05d37"
+      }
+    },
+    "real-math-06": {
+      "space_id": "8a9c9ed9-f837-49d9-89df-b0eb936020df",
+      "scope_snapshot_id": "e1017b61167abaa5814b9745297dda6c974c4a0ea275f3dacada4699a53b9d9d",
+      "expected_scope_version": 0,
+      "expected_bindings": [
+        {
+          "material_id": "393680f9-33a8-4b9a-bb73-75ec3498e5e1",
+          "material_version_id": "67da8cba-1582-47ba-a420-526e7ca5a000",
+          "graph_version": 1
+        }
+      ],
+      "expected_manifest_ids": [
+        "c5bc2fff279c183dab58034f850c7d7086c5fc3f275e6926d4b21a774f3e855a"
+      ],
+      "expected_retrieval_versions": [
+        "8e70066e64f43c71ab5d97de1711735cf84ebb48e85f25a2168918bc4bff9acd"
+      ],
+      "manifest_configuration_hashes": {
+        "c5bc2fff279c183dab58034f850c7d7086c5fc3f275e6926d4b21a774f3e855a": "e5f5c5a70f9b3ab9b63826a3322bb8ff1ff511a225118798cb0321a9ffe05d37"
+      }
+    },
+    "real-math-07": {
+      "space_id": "8a9c9ed9-f837-49d9-89df-b0eb936020df",
+      "scope_snapshot_id": "e1017b61167abaa5814b9745297dda6c974c4a0ea275f3dacada4699a53b9d9d",
+      "expected_scope_version": 0,
+      "expected_bindings": [
+        {
+          "material_id": "393680f9-33a8-4b9a-bb73-75ec3498e5e1",
+          "material_version_id": "67da8cba-1582-47ba-a420-526e7ca5a000",
+          "graph_version": 1
+        }
+      ],
+      "expected_manifest_ids": [
+        "c5bc2fff279c183dab58034f850c7d7086c5fc3f275e6926d4b21a774f3e855a"
+      ],
+      "expected_retrieval_versions": [
+        "8e70066e64f43c71ab5d97de1711735cf84ebb48e85f25a2168918bc4bff9acd"
+      ],
+      "manifest_configuration_hashes": {
+        "c5bc2fff279c183dab58034f850c7d7086c5fc3f275e6926d4b21a774f3e855a": "e5f5c5a70f9b3ab9b63826a3322bb8ff1ff511a225118798cb0321a9ffe05d37"
+      }
+    },
+    "real-math-08": {
+      "space_id": "8a9c9ed9-f837-49d9-89df-b0eb936020df",
+      "scope_snapshot_id": "e1017b61167abaa5814b9745297dda6c974c4a0ea275f3dacada4699a53b9d9d",
+      "expected_scope_version": 0,
+      "expected_bindings": [
+        {
+          "material_id": "393680f9-33a8-4b9a-bb73-75ec3498e5e1",
+          "material_version_id": "67da8cba-1582-47ba-a420-526e7ca5a000",
+          "graph_version": 1
+        }
+      ],
+      "expected_manifest_ids": [
+        "c5bc2fff279c183dab58034f850c7d7086c5fc3f275e6926d4b21a774f3e855a"
+      ],
+      "expected_retrieval_versions": [
+        "8e70066e64f43c71ab5d97de1711735cf84ebb48e85f25a2168918bc4bff9acd"
+      ],
+      "manifest_configuration_hashes": {
+        "c5bc2fff279c183dab58034f850c7d7086c5fc3f275e6926d4b21a774f3e855a": "e5f5c5a70f9b3ab9b63826a3322bb8ff1ff511a225118798cb0321a9ffe05d37"
+      }
+    },
+    "real-math-09": {
+      "space_id": "8a9c9ed9-f837-49d9-89df-b0eb936020df",
+      "scope_snapshot_id": "e1017b61167abaa5814b9745297dda6c974c4a0ea275f3dacada4699a53b9d9d",
+      "expected_scope_version": 0,
+      "expected_bindings": [
+        {
+          "material_id": "393680f9-33a8-4b9a-bb73-75ec3498e5e1",
+          "material_version_id": "67da8cba-1582-47ba-a420-526e7ca5a000",
+          "graph_version": 1
+        }
+      ],
+      "expected_manifest_ids": [
+        "c5bc2fff279c183dab58034f850c7d7086c5fc3f275e6926d4b21a774f3e855a"
+      ],
+      "expected_retrieval_versions": [
+        "8e70066e64f43c71ab5d97de1711735cf84ebb48e85f25a2168918bc4bff9acd"
+      ],
+      "manifest_configuration_hashes": {
+        "c5bc2fff279c183dab58034f850c7d7086c5fc3f275e6926d4b21a774f3e855a": "e5f5c5a70f9b3ab9b63826a3322bb8ff1ff511a225118798cb0321a9ffe05d37"
+      }
+    },
+    "real-math-10": {
+      "space_id": "8a9c9ed9-f837-49d9-89df-b0eb936020df",
+      "scope_snapshot_id": "e1017b61167abaa5814b9745297dda6c974c4a0ea275f3dacada4699a53b9d9d",
+      "expected_scope_version": 0,
+      "expected_bindings": [
+        {
+          "material_id": "393680f9-33a8-4b9a-bb73-75ec3498e5e1",
+          "material_version_id": "67da8cba-1582-47ba-a420-526e7ca5a000",
+          "graph_version": 1
+        }
+      ],
+      "expected_manifest_ids": [
+        "c5bc2fff279c183dab58034f850c7d7086c5fc3f275e6926d4b21a774f3e855a"
+      ],
+      "expected_retrieval_versions": [
+        "8e70066e64f43c71ab5d97de1711735cf84ebb48e85f25a2168918bc4bff9acd"
+      ],
+      "manifest_configuration_hashes": {
+        "c5bc2fff279c183dab58034f850c7d7086c5fc3f275e6926d4b21a774f3e855a": "e5f5c5a70f9b3ab9b63826a3322bb8ff1ff511a225118798cb0321a9ffe05d37"
+      }
+    },
+    "real-math-11": {
+      "space_id": "8a9c9ed9-f837-49d9-89df-b0eb936020df",
+      "scope_snapshot_id": "e1017b61167abaa5814b9745297dda6c974c4a0ea275f3dacada4699a53b9d9d",
+      "expected_scope_version": 0,
+      "expected_bindings": [
+        {
+          "material_id": "393680f9-33a8-4b9a-bb73-75ec3498e5e1",
+          "material_version_id": "67da8cba-1582-47ba-a420-526e7ca5a000",
+          "graph_version": 1
+        }
+      ],
+      "expected_manifest_ids": [
+        "c5bc2fff279c183dab58034f850c7d7086c5fc3f275e6926d4b21a774f3e855a"
+      ],
+      "expected_retrieval_versions": [
+        "8e70066e64f43c71ab5d97de1711735cf84ebb48e85f25a2168918bc4bff9acd"
+      ],
+      "manifest_configuration_hashes": {
+        "c5bc2fff279c183dab58034f850c7d7086c5fc3f275e6926d4b21a774f3e855a": "e5f5c5a70f9b3ab9b63826a3322bb8ff1ff511a225118798cb0321a9ffe05d37"
+      }
+    },
+    "real-math-12": {
+      "space_id": "8a9c9ed9-f837-49d9-89df-b0eb936020df",
+      "scope_snapshot_id": "e1017b61167abaa5814b9745297dda6c974c4a0ea275f3dacada4699a53b9d9d",
+      "expected_scope_version": 0,
+      "expected_bindings": [
+        {
+          "material_id": "393680f9-33a8-4b9a-bb73-75ec3498e5e1",
+          "material_version_id": "67da8cba-1582-47ba-a420-526e7ca5a000",
+          "graph_version": 1
+        }
+      ],
+      "expected_manifest_ids": [
+        "c5bc2fff279c183dab58034f850c7d7086c5fc3f275e6926d4b21a774f3e855a"
+      ],
+      "expected_retrieval_versions": [
+        "8e70066e64f43c71ab5d97de1711735cf84ebb48e85f25a2168918bc4bff9acd"
+      ],
+      "manifest_configuration_hashes": {
+        "c5bc2fff279c183dab58034f850c7d7086c5fc3f275e6926d4b21a774f3e855a": "e5f5c5a70f9b3ab9b63826a3322bb8ff1ff511a225118798cb0321a9ffe05d37"
+      }
+    },
+    "real-math-13": {
+      "space_id": "8a9c9ed9-f837-49d9-89df-b0eb936020df",
+      "scope_snapshot_id": "e1017b61167abaa5814b9745297dda6c974c4a0ea275f3dacada4699a53b9d9d",
+      "expected_scope_version": 0,
+      "expected_bindings": [
+        {
+          "material_id": "393680f9-33a8-4b9a-bb73-75ec3498e5e1",
+          "material_version_id": "67da8cba-1582-47ba-a420-526e7ca5a000",
+          "graph_version": 1
+        }
+      ],
+      "expected_manifest_ids": [
+        "c5bc2fff279c183dab58034f850c7d7086c5fc3f275e6926d4b21a774f3e855a"
+      ],
+      "expected_retrieval_versions": [
+        "8e70066e64f43c71ab5d97de1711735cf84ebb48e85f25a2168918bc4bff9acd"
+      ],
+      "manifest_configuration_hashes": {
+        "c5bc2fff279c183dab58034f850c7d7086c5fc3f275e6926d4b21a774f3e855a": "e5f5c5a70f9b3ab9b63826a3322bb8ff1ff511a225118798cb0321a9ffe05d37"
+      }
+    },
+    "real-math-14": {
+      "space_id": "8a9c9ed9-f837-49d9-89df-b0eb936020df",
+      "scope_snapshot_id": "e1017b61167abaa5814b9745297dda6c974c4a0ea275f3dacada4699a53b9d9d",
+      "expected_scope_version": 0,
+      "expected_bindings": [
+        {
+          "material_id": "393680f9-33a8-4b9a-bb73-75ec3498e5e1",
+          "material_version_id": "67da8cba-1582-47ba-a420-526e7ca5a000",
+          "graph_version": 1
+        }
+      ],
+      "expected_manifest_ids": [
+        "c5bc2fff279c183dab58034f850c7d7086c5fc3f275e6926d4b21a774f3e855a"
+      ],
+      "expected_retrieval_versions": [
+        "8e70066e64f43c71ab5d97de1711735cf84ebb48e85f25a2168918bc4bff9acd"
+      ],
+      "manifest_configuration_hashes": {
+        "c5bc2fff279c183dab58034f850c7d7086c5fc3f275e6926d4b21a774f3e855a": "e5f5c5a70f9b3ab9b63826a3322bb8ff1ff511a225118798cb0321a9ffe05d37"
+      }
+    },
+    "real-math-15": {
+      "space_id": "8a9c9ed9-f837-49d9-89df-b0eb936020df",
+      "scope_snapshot_id": "e1017b61167abaa5814b9745297dda6c974c4a0ea275f3dacada4699a53b9d9d",
+      "expected_scope_version": 0,
+      "expected_bindings": [
+        {
+          "material_id": "393680f9-33a8-4b9a-bb73-75ec3498e5e1",
+          "material_version_id": "67da8cba-1582-47ba-a420-526e7ca5a000",
+          "graph_version": 1
+        }
+      ],
+      "expected_manifest_ids": [
+        "c5bc2fff279c183dab58034f850c7d7086c5fc3f275e6926d4b21a774f3e855a"
+      ],
+      "expected_retrieval_versions": [
+        "8e70066e64f43c71ab5d97de1711735cf84ebb48e85f25a2168918bc4bff9acd"
+      ],
+      "manifest_configuration_hashes": {
+        "c5bc2fff279c183dab58034f850c7d7086c5fc3f275e6926d4b21a774f3e855a": "e5f5c5a70f9b3ab9b63826a3322bb8ff1ff511a225118798cb0321a9ffe05d37"
+      }
+    },
+    "real-math-16": {
+      "space_id": "8a9c9ed9-f837-49d9-89df-b0eb936020df",
+      "scope_snapshot_id": "e1017b61167abaa5814b9745297dda6c974c4a0ea275f3dacada4699a53b9d9d",
+      "expected_scope_version": 0,
+      "expected_bindings": [
+        {
+          "material_id": "393680f9-33a8-4b9a-bb73-75ec3498e5e1",
+          "material_version_id": "67da8cba-1582-47ba-a420-526e7ca5a000",
+          "graph_version": 1
+        }
+      ],
+      "expected_manifest_ids": [
+        "c5bc2fff279c183dab58034f850c7d7086c5fc3f275e6926d4b21a774f3e855a"
+      ],
+      "expected_retrieval_versions": [
+        "8e70066e64f43c71ab5d97de1711735cf84ebb48e85f25a2168918bc4bff9acd"
+      ],
+      "manifest_configuration_hashes": {
+        "c5bc2fff279c183dab58034f850c7d7086c5fc3f275e6926d4b21a774f3e855a": "e5f5c5a70f9b3ab9b63826a3322bb8ff1ff511a225118798cb0321a9ffe05d37"
+      }
+    },
+    "real-math-17": {
+      "space_id": "8a9c9ed9-f837-49d9-89df-b0eb936020df",
+      "scope_snapshot_id": "e1017b61167abaa5814b9745297dda6c974c4a0ea275f3dacada4699a53b9d9d",
+      "expected_scope_version": 0,
+      "expected_bindings": [
+        {
+          "material_id": "393680f9-33a8-4b9a-bb73-75ec3498e5e1",
+          "material_version_id": "67da8cba-1582-47ba-a420-526e7ca5a000",
+          "graph_version": 1
+        }
+      ],
+      "expected_manifest_ids": [
+        "c5bc2fff279c183dab58034f850c7d7086c5fc3f275e6926d4b21a774f3e855a"
+      ],
+      "expected_retrieval_versions": [
+        "8e70066e64f43c71ab5d97de1711735cf84ebb48e85f25a2168918bc4bff9acd"
+      ],
+      "manifest_configuration_hashes": {
+        "c5bc2fff279c183dab58034f850c7d7086c5fc3f275e6926d4b21a774f3e855a": "e5f5c5a70f9b3ab9b63826a3322bb8ff1ff511a225118798cb0321a9ffe05d37"
+      }
+    },
+    "real-math-18": {
+      "space_id": "8a9c9ed9-f837-49d9-89df-b0eb936020df",
+      "scope_snapshot_id": "e1017b61167abaa5814b9745297dda6c974c4a0ea275f3dacada4699a53b9d9d",
+      "expected_scope_version": 0,
+      "expected_bindings": [
+        {
+          "material_id": "393680f9-33a8-4b9a-bb73-75ec3498e5e1",
+          "material_version_id": "67da8cba-1582-47ba-a420-526e7ca5a000",
+          "graph_version": 1
+        }
+      ],
+      "expected_manifest_ids": [
+        "c5bc2fff279c183dab58034f850c7d7086c5fc3f275e6926d4b21a774f3e855a"
+      ],
+      "expected_retrieval_versions": [
+        "8e70066e64f43c71ab5d97de1711735cf84ebb48e85f25a2168918bc4bff9acd"
+      ],
+      "manifest_configuration_hashes": {
+        "c5bc2fff279c183dab58034f850c7d7086c5fc3f275e6926d4b21a774f3e855a": "e5f5c5a70f9b3ab9b63826a3322bb8ff1ff511a225118798cb0321a9ffe05d37"
+      }
+    },
+    "real-math-19": {
+      "space_id": "8a9c9ed9-f837-49d9-89df-b0eb936020df",
+      "scope_snapshot_id": "e1017b61167abaa5814b9745297dda6c974c4a0ea275f3dacada4699a53b9d9d",
+      "expected_scope_version": 0,
+      "expected_bindings": [
+        {
+          "material_id": "393680f9-33a8-4b9a-bb73-75ec3498e5e1",
+          "material_version_id": "67da8cba-1582-47ba-a420-526e7ca5a000",
+          "graph_version": 1
+        }
+      ],
+      "expected_manifest_ids": [
+        "c5bc2fff279c183dab58034f850c7d7086c5fc3f275e6926d4b21a774f3e855a"
+      ],
+      "expected_retrieval_versions": [
+        "8e70066e64f43c71ab5d97de1711735cf84ebb48e85f25a2168918bc4bff9acd"
+      ],
+      "manifest_configuration_hashes": {
+        "c5bc2fff279c183dab58034f850c7d7086c5fc3f275e6926d4b21a774f3e855a": "e5f5c5a70f9b3ab9b63826a3322bb8ff1ff511a225118798cb0321a9ffe05d37"
+      }
+    },
+    "real-math-20": {
+      "space_id": "8a9c9ed9-f837-49d9-89df-b0eb936020df",
+      "scope_snapshot_id": "e1017b61167abaa5814b9745297dda6c974c4a0ea275f3dacada4699a53b9d9d",
+      "expected_scope_version": 0,
+      "expected_bindings": [
+        {
+          "material_id": "393680f9-33a8-4b9a-bb73-75ec3498e5e1",
+          "material_version_id": "67da8cba-1582-47ba-a420-526e7ca5a000",
+          "graph_version": 1
+        }
+      ],
+      "expected_manifest_ids": [
+        "c5bc2fff279c183dab58034f850c7d7086c5fc3f275e6926d4b21a774f3e855a"
+      ],
+      "expected_retrieval_versions": [
+        "8e70066e64f43c71ab5d97de1711735cf84ebb48e85f25a2168918bc4bff9acd"
+      ],
+      "manifest_configuration_hashes": {
+        "c5bc2fff279c183dab58034f850c7d7086c5fc3f275e6926d4b21a774f3e855a": "e5f5c5a70f9b3ab9b63826a3322bb8ff1ff511a225118798cb0321a9ffe05d37"
+      }
+    },
+    "real-lunyu-01": {
+      "space_id": "4d97a254-9882-4351-948f-7f51f87e6438",
+      "scope_snapshot_id": "ed152915695616d93581081355b9980d89763deefbcf57786b395bcf38a2f8ec",
+      "expected_scope_version": 0,
+      "expected_bindings": [
+        {
+          "material_id": "10d4c0cc-8afb-437e-8338-975c65823413",
+          "material_version_id": "4fabc985-46de-4980-8ceb-b2183c2b92c8",
+          "graph_version": 1
+        }
+      ],
+      "expected_manifest_ids": [
+        "b44effe61919dfcb9e457bc70471327213a5ca45c5d70ecff346ec0c83b4d91d"
+      ],
+      "expected_retrieval_versions": [
+        "01e911c0d0c3925916ad22bf4deaf957bdf96dbbcc2f6005e774224542eb0149"
+      ],
+      "manifest_configuration_hashes": {
+        "b44effe61919dfcb9e457bc70471327213a5ca45c5d70ecff346ec0c83b4d91d": "b5964cc37cdb94a193928b1eef17c154ef2588a3e8fa244380775032902c8a2a"
+      }
+    },
+    "real-lunyu-02": {
+      "space_id": "4d97a254-9882-4351-948f-7f51f87e6438",
+      "scope_snapshot_id": "ed152915695616d93581081355b9980d89763deefbcf57786b395bcf38a2f8ec",
+      "expected_scope_version": 0,
+      "expected_bindings": [
+        {
+          "material_id": "10d4c0cc-8afb-437e-8338-975c65823413",
+          "material_version_id": "4fabc985-46de-4980-8ceb-b2183c2b92c8",
+          "graph_version": 1
+        }
+      ],
+      "expected_manifest_ids": [
+        "b44effe61919dfcb9e457bc70471327213a5ca45c5d70ecff346ec0c83b4d91d"
+      ],
+      "expected_retrieval_versions": [
+        "01e911c0d0c3925916ad22bf4deaf957bdf96dbbcc2f6005e774224542eb0149"
+      ],
+      "manifest_configuration_hashes": {
+        "b44effe61919dfcb9e457bc70471327213a5ca45c5d70ecff346ec0c83b4d91d": "b5964cc37cdb94a193928b1eef17c154ef2588a3e8fa244380775032902c8a2a"
+      }
+    },
+    "real-lunyu-03": {
+      "space_id": "4d97a254-9882-4351-948f-7f51f87e6438",
+      "scope_snapshot_id": "ed152915695616d93581081355b9980d89763deefbcf57786b395bcf38a2f8ec",
+      "expected_scope_version": 0,
+      "expected_bindings": [
+        {
+          "material_id": "10d4c0cc-8afb-437e-8338-975c65823413",
+          "material_version_id": "4fabc985-46de-4980-8ceb-b2183c2b92c8",
+          "graph_version": 1
+        }
+      ],
+      "expected_manifest_ids": [
+        "b44effe61919dfcb9e457bc70471327213a5ca45c5d70ecff346ec0c83b4d91d"
+      ],
+      "expected_retrieval_versions": [
+        "01e911c0d0c3925916ad22bf4deaf957bdf96dbbcc2f6005e774224542eb0149"
+      ],
+      "manifest_configuration_hashes": {
+        "b44effe61919dfcb9e457bc70471327213a5ca45c5d70ecff346ec0c83b4d91d": "b5964cc37cdb94a193928b1eef17c154ef2588a3e8fa244380775032902c8a2a"
+      }
+    },
+    "real-lunyu-04": {
+      "space_id": "4d97a254-9882-4351-948f-7f51f87e6438",
+      "scope_snapshot_id": "ed152915695616d93581081355b9980d89763deefbcf57786b395bcf38a2f8ec",
+      "expected_scope_version": 0,
+      "expected_bindings": [
+        {
+          "material_id": "10d4c0cc-8afb-437e-8338-975c65823413",
+          "material_version_id": "4fabc985-46de-4980-8ceb-b2183c2b92c8",
+          "graph_version": 1
+        }
+      ],
+      "expected_manifest_ids": [
+        "b44effe61919dfcb9e457bc70471327213a5ca45c5d70ecff346ec0c83b4d91d"
+      ],
+      "expected_retrieval_versions": [
+        "01e911c0d0c3925916ad22bf4deaf957bdf96dbbcc2f6005e774224542eb0149"
+      ],
+      "manifest_configuration_hashes": {
+        "b44effe61919dfcb9e457bc70471327213a5ca45c5d70ecff346ec0c83b4d91d": "b5964cc37cdb94a193928b1eef17c154ef2588a3e8fa244380775032902c8a2a"
+      }
+    },
+    "real-lunyu-05": {
+      "space_id": "4d97a254-9882-4351-948f-7f51f87e6438",
+      "scope_snapshot_id": "ed152915695616d93581081355b9980d89763deefbcf57786b395bcf38a2f8ec",
+      "expected_scope_version": 0,
+      "expected_bindings": [
+        {
+          "material_id": "10d4c0cc-8afb-437e-8338-975c65823413",
+          "material_version_id": "4fabc985-46de-4980-8ceb-b2183c2b92c8",
+          "graph_version": 1
+        }
+      ],
+      "expected_manifest_ids": [
+        "b44effe61919dfcb9e457bc70471327213a5ca45c5d70ecff346ec0c83b4d91d"
+      ],
+      "expected_retrieval_versions": [
+        "01e911c0d0c3925916ad22bf4deaf957bdf96dbbcc2f6005e774224542eb0149"
+      ],
+      "manifest_configuration_hashes": {
+        "b44effe61919dfcb9e457bc70471327213a5ca45c5d70ecff346ec0c83b4d91d": "b5964cc37cdb94a193928b1eef17c154ef2588a3e8fa244380775032902c8a2a"
+      }
+    },
+    "real-lunyu-06": {
+      "space_id": "4d97a254-9882-4351-948f-7f51f87e6438",
+      "scope_snapshot_id": "ed152915695616d93581081355b9980d89763deefbcf57786b395bcf38a2f8ec",
+      "expected_scope_version": 0,
+      "expected_bindings": [
+        {
+          "material_id": "10d4c0cc-8afb-437e-8338-975c65823413",
+          "material_version_id": "4fabc985-46de-4980-8ceb-b2183c2b92c8",
+          "graph_version": 1
+        }
+      ],
+      "expected_manifest_ids": [
+        "b44effe61919dfcb9e457bc70471327213a5ca45c5d70ecff346ec0c83b4d91d"
+      ],
+      "expected_retrieval_versions": [
+        "01e911c0d0c3925916ad22bf4deaf957bdf96dbbcc2f6005e774224542eb0149"
+      ],
+      "manifest_configuration_hashes": {
+        "b44effe61919dfcb9e457bc70471327213a5ca45c5d70ecff346ec0c83b4d91d": "b5964cc37cdb94a193928b1eef17c154ef2588a3e8fa244380775032902c8a2a"
+      }
+    },
+    "real-lunyu-07": {
+      "space_id": "4d97a254-9882-4351-948f-7f51f87e6438",
+      "scope_snapshot_id": "ed152915695616d93581081355b9980d89763deefbcf57786b395bcf38a2f8ec",
+      "expected_scope_version": 0,
+      "expected_bindings": [
+        {
+          "material_id": "10d4c0cc-8afb-437e-8338-975c65823413",
+          "material_version_id": "4fabc985-46de-4980-8ceb-b2183c2b92c8",
+          "graph_version": 1
+        }
+      ],
+      "expected_manifest_ids": [
+        "b44effe61919dfcb9e457bc70471327213a5ca45c5d70ecff346ec0c83b4d91d"
+      ],
+      "expected_retrieval_versions": [
+        "01e911c0d0c3925916ad22bf4deaf957bdf96dbbcc2f6005e774224542eb0149"
+      ],
+      "manifest_configuration_hashes": {
+        "b44effe61919dfcb9e457bc70471327213a5ca45c5d70ecff346ec0c83b4d91d": "b5964cc37cdb94a193928b1eef17c154ef2588a3e8fa244380775032902c8a2a"
+      }
+    },
+    "real-lunyu-08": {
+      "space_id": "4d97a254-9882-4351-948f-7f51f87e6438",
+      "scope_snapshot_id": "ed152915695616d93581081355b9980d89763deefbcf57786b395bcf38a2f8ec",
+      "expected_scope_version": 0,
+      "expected_bindings": [
+        {
+          "material_id": "10d4c0cc-8afb-437e-8338-975c65823413",
+          "material_version_id": "4fabc985-46de-4980-8ceb-b2183c2b92c8",
+          "graph_version": 1
+        }
+      ],
+      "expected_manifest_ids": [
+        "b44effe61919dfcb9e457bc70471327213a5ca45c5d70ecff346ec0c83b4d91d"
+      ],
+      "expected_retrieval_versions": [
+        "01e911c0d0c3925916ad22bf4deaf957bdf96dbbcc2f6005e774224542eb0149"
+      ],
+      "manifest_configuration_hashes": {
+        "b44effe61919dfcb9e457bc70471327213a5ca45c5d70ecff346ec0c83b4d91d": "b5964cc37cdb94a193928b1eef17c154ef2588a3e8fa244380775032902c8a2a"
+      }
+    },
+    "real-lunyu-09": {
+      "space_id": "4d97a254-9882-4351-948f-7f51f87e6438",
+      "scope_snapshot_id": "ed152915695616d93581081355b9980d89763deefbcf57786b395bcf38a2f8ec",
+      "expected_scope_version": 0,
+      "expected_bindings": [
+        {
+          "material_id": "10d4c0cc-8afb-437e-8338-975c65823413",
+          "material_version_id": "4fabc985-46de-4980-8ceb-b2183c2b92c8",
+          "graph_version": 1
+        }
+      ],
+      "expected_manifest_ids": [
+        "b44effe61919dfcb9e457bc70471327213a5ca45c5d70ecff346ec0c83b4d91d"
+      ],
+      "expected_retrieval_versions": [
+        "01e911c0d0c3925916ad22bf4deaf957bdf96dbbcc2f6005e774224542eb0149"
+      ],
+      "manifest_configuration_hashes": {
+        "b44effe61919dfcb9e457bc70471327213a5ca45c5d70ecff346ec0c83b4d91d": "b5964cc37cdb94a193928b1eef17c154ef2588a3e8fa244380775032902c8a2a"
+      }
+    },
+    "real-lunyu-10": {
+      "space_id": "4d97a254-9882-4351-948f-7f51f87e6438",
+      "scope_snapshot_id": "ed152915695616d93581081355b9980d89763deefbcf57786b395bcf38a2f8ec",
+      "expected_scope_version": 0,
+      "expected_bindings": [
+        {
+          "material_id": "10d4c0cc-8afb-437e-8338-975c65823413",
+          "material_version_id": "4fabc985-46de-4980-8ceb-b2183c2b92c8",
+          "graph_version": 1
+        }
+      ],
+      "expected_manifest_ids": [
+        "b44effe61919dfcb9e457bc70471327213a5ca45c5d70ecff346ec0c83b4d91d"
+      ],
+      "expected_retrieval_versions": [
+        "01e911c0d0c3925916ad22bf4deaf957bdf96dbbcc2f6005e774224542eb0149"
+      ],
+      "manifest_configuration_hashes": {
+        "b44effe61919dfcb9e457bc70471327213a5ca45c5d70ecff346ec0c83b4d91d": "b5964cc37cdb94a193928b1eef17c154ef2588a3e8fa244380775032902c8a2a"
+      }
+    },
+    "real-lunyu-11": {
+      "space_id": "4d97a254-9882-4351-948f-7f51f87e6438",
+      "scope_snapshot_id": "ed152915695616d93581081355b9980d89763deefbcf57786b395bcf38a2f8ec",
+      "expected_scope_version": 0,
+      "expected_bindings": [
+        {
+          "material_id": "10d4c0cc-8afb-437e-8338-975c65823413",
+          "material_version_id": "4fabc985-46de-4980-8ceb-b2183c2b92c8",
+          "graph_version": 1
+        }
+      ],
+      "expected_manifest_ids": [
+        "b44effe61919dfcb9e457bc70471327213a5ca45c5d70ecff346ec0c83b4d91d"
+      ],
+      "expected_retrieval_versions": [
+        "01e911c0d0c3925916ad22bf4deaf957bdf96dbbcc2f6005e774224542eb0149"
+      ],
+      "manifest_configuration_hashes": {
+        "b44effe61919dfcb9e457bc70471327213a5ca45c5d70ecff346ec0c83b4d91d": "b5964cc37cdb94a193928b1eef17c154ef2588a3e8fa244380775032902c8a2a"
+      }
+    },
+    "real-lunyu-12": {
+      "space_id": "4d97a254-9882-4351-948f-7f51f87e6438",
+      "scope_snapshot_id": "ed152915695616d93581081355b9980d89763deefbcf57786b395bcf38a2f8ec",
+      "expected_scope_version": 0,
+      "expected_bindings": [
+        {
+          "material_id": "10d4c0cc-8afb-437e-8338-975c65823413",
+          "material_version_id": "4fabc985-46de-4980-8ceb-b2183c2b92c8",
+          "graph_version": 1
+        }
+      ],
+      "expected_manifest_ids": [
+        "b44effe61919dfcb9e457bc70471327213a5ca45c5d70ecff346ec0c83b4d91d"
+      ],
+      "expected_retrieval_versions": [
+        "01e911c0d0c3925916ad22bf4deaf957bdf96dbbcc2f6005e774224542eb0149"
+      ],
+      "manifest_configuration_hashes": {
+        "b44effe61919dfcb9e457bc70471327213a5ca45c5d70ecff346ec0c83b4d91d": "b5964cc37cdb94a193928b1eef17c154ef2588a3e8fa244380775032902c8a2a"
+      }
+    },
+    "real-lunyu-13": {
+      "space_id": "4d97a254-9882-4351-948f-7f51f87e6438",
+      "scope_snapshot_id": "ed152915695616d93581081355b9980d89763deefbcf57786b395bcf38a2f8ec",
+      "expected_scope_version": 0,
+      "expected_bindings": [
+        {
+          "material_id": "10d4c0cc-8afb-437e-8338-975c65823413",
+          "material_version_id": "4fabc985-46de-4980-8ceb-b2183c2b92c8",
+          "graph_version": 1
+        }
+      ],
+      "expected_manifest_ids": [
+        "b44effe61919dfcb9e457bc70471327213a5ca45c5d70ecff346ec0c83b4d91d"
+      ],
+      "expected_retrieval_versions": [
+        "01e911c0d0c3925916ad22bf4deaf957bdf96dbbcc2f6005e774224542eb0149"
+      ],
+      "manifest_configuration_hashes": {
+        "b44effe61919dfcb9e457bc70471327213a5ca45c5d70ecff346ec0c83b4d91d": "b5964cc37cdb94a193928b1eef17c154ef2588a3e8fa244380775032902c8a2a"
+      }
+    },
+    "real-lunyu-14": {
+      "space_id": "4d97a254-9882-4351-948f-7f51f87e6438",
+      "scope_snapshot_id": "ed152915695616d93581081355b9980d89763deefbcf57786b395bcf38a2f8ec",
+      "expected_scope_version": 0,
+      "expected_bindings": [
+        {
+          "material_id": "10d4c0cc-8afb-437e-8338-975c65823413",
+          "material_version_id": "4fabc985-46de-4980-8ceb-b2183c2b92c8",
+          "graph_version": 1
+        }
+      ],
+      "expected_manifest_ids": [
+        "b44effe61919dfcb9e457bc70471327213a5ca45c5d70ecff346ec0c83b4d91d"
+      ],
+      "expected_retrieval_versions": [
+        "01e911c0d0c3925916ad22bf4deaf957bdf96dbbcc2f6005e774224542eb0149"
+      ],
+      "manifest_configuration_hashes": {
+        "b44effe61919dfcb9e457bc70471327213a5ca45c5d70ecff346ec0c83b4d91d": "b5964cc37cdb94a193928b1eef17c154ef2588a3e8fa244380775032902c8a2a"
+      }
+    },
+    "real-lunyu-15": {
+      "space_id": "4d97a254-9882-4351-948f-7f51f87e6438",
+      "scope_snapshot_id": "ed152915695616d93581081355b9980d89763deefbcf57786b395bcf38a2f8ec",
+      "expected_scope_version": 0,
+      "expected_bindings": [
+        {
+          "material_id": "10d4c0cc-8afb-437e-8338-975c65823413",
+          "material_version_id": "4fabc985-46de-4980-8ceb-b2183c2b92c8",
+          "graph_version": 1
+        }
+      ],
+      "expected_manifest_ids": [
+        "b44effe61919dfcb9e457bc70471327213a5ca45c5d70ecff346ec0c83b4d91d"
+      ],
+      "expected_retrieval_versions": [
+        "01e911c0d0c3925916ad22bf4deaf957bdf96dbbcc2f6005e774224542eb0149"
+      ],
+      "manifest_configuration_hashes": {
+        "b44effe61919dfcb9e457bc70471327213a5ca45c5d70ecff346ec0c83b4d91d": "b5964cc37cdb94a193928b1eef17c154ef2588a3e8fa244380775032902c8a2a"
+      }
+    },
+    "real-lunyu-16": {
+      "space_id": "4d97a254-9882-4351-948f-7f51f87e6438",
+      "scope_snapshot_id": "ed152915695616d93581081355b9980d89763deefbcf57786b395bcf38a2f8ec",
+      "expected_scope_version": 0,
+      "expected_bindings": [
+        {
+          "material_id": "10d4c0cc-8afb-437e-8338-975c65823413",
+          "material_version_id": "4fabc985-46de-4980-8ceb-b2183c2b92c8",
+          "graph_version": 1
+        }
+      ],
+      "expected_manifest_ids": [
+        "b44effe61919dfcb9e457bc70471327213a5ca45c5d70ecff346ec0c83b4d91d"
+      ],
+      "expected_retrieval_versions": [
+        "01e911c0d0c3925916ad22bf4deaf957bdf96dbbcc2f6005e774224542eb0149"
+      ],
+      "manifest_configuration_hashes": {
+        "b44effe61919dfcb9e457bc70471327213a5ca45c5d70ecff346ec0c83b4d91d": "b5964cc37cdb94a193928b1eef17c154ef2588a3e8fa244380775032902c8a2a"
+      }
+    },
+    "real-lunyu-17": {
+      "space_id": "4d97a254-9882-4351-948f-7f51f87e6438",
+      "scope_snapshot_id": "ed152915695616d93581081355b9980d89763deefbcf57786b395bcf38a2f8ec",
+      "expected_scope_version": 0,
+      "expected_bindings": [
+        {
+          "material_id": "10d4c0cc-8afb-437e-8338-975c65823413",
+          "material_version_id": "4fabc985-46de-4980-8ceb-b2183c2b92c8",
+          "graph_version": 1
+        }
+      ],
+      "expected_manifest_ids": [
+        "b44effe61919dfcb9e457bc70471327213a5ca45c5d70ecff346ec0c83b4d91d"
+      ],
+      "expected_retrieval_versions": [
+        "01e911c0d0c3925916ad22bf4deaf957bdf96dbbcc2f6005e774224542eb0149"
+      ],
+      "manifest_configuration_hashes": {
+        "b44effe61919dfcb9e457bc70471327213a5ca45c5d70ecff346ec0c83b4d91d": "b5964cc37cdb94a193928b1eef17c154ef2588a3e8fa244380775032902c8a2a"
+      }
+    },
+    "real-lunyu-18": {
+      "space_id": "4d97a254-9882-4351-948f-7f51f87e6438",
+      "scope_snapshot_id": "ed152915695616d93581081355b9980d89763deefbcf57786b395bcf38a2f8ec",
+      "expected_scope_version": 0,
+      "expected_bindings": [
+        {
+          "material_id": "10d4c0cc-8afb-437e-8338-975c65823413",
+          "material_version_id": "4fabc985-46de-4980-8ceb-b2183c2b92c8",
+          "graph_version": 1
+        }
+      ],
+      "expected_manifest_ids": [
+        "b44effe61919dfcb9e457bc70471327213a5ca45c5d70ecff346ec0c83b4d91d"
+      ],
+      "expected_retrieval_versions": [
+        "01e911c0d0c3925916ad22bf4deaf957bdf96dbbcc2f6005e774224542eb0149"
+      ],
+      "manifest_configuration_hashes": {
+        "b44effe61919dfcb9e457bc70471327213a5ca45c5d70ecff346ec0c83b4d91d": "b5964cc37cdb94a193928b1eef17c154ef2588a3e8fa244380775032902c8a2a"
+      }
+    },
+    "real-lunyu-19": {
+      "space_id": "4d97a254-9882-4351-948f-7f51f87e6438",
+      "scope_snapshot_id": "ed152915695616d93581081355b9980d89763deefbcf57786b395bcf38a2f8ec",
+      "expected_scope_version": 0,
+      "expected_bindings": [
+        {
+          "material_id": "10d4c0cc-8afb-437e-8338-975c65823413",
+          "material_version_id": "4fabc985-46de-4980-8ceb-b2183c2b92c8",
+          "graph_version": 1
+        }
+      ],
+      "expected_manifest_ids": [
+        "b44effe61919dfcb9e457bc70471327213a5ca45c5d70ecff346ec0c83b4d91d"
+      ],
+      "expected_retrieval_versions": [
+        "01e911c0d0c3925916ad22bf4deaf957bdf96dbbcc2f6005e774224542eb0149"
+      ],
+      "manifest_configuration_hashes": {
+        "b44effe61919dfcb9e457bc70471327213a5ca45c5d70ecff346ec0c83b4d91d": "b5964cc37cdb94a193928b1eef17c154ef2588a3e8fa244380775032902c8a2a"
+      }
+    },
+    "real-lunyu-20": {
+      "space_id": "4d97a254-9882-4351-948f-7f51f87e6438",
+      "scope_snapshot_id": "ed152915695616d93581081355b9980d89763deefbcf57786b395bcf38a2f8ec",
+      "expected_scope_version": 0,
+      "expected_bindings": [
+        {
+          "material_id": "10d4c0cc-8afb-437e-8338-975c65823413",
+          "material_version_id": "4fabc985-46de-4980-8ceb-b2183c2b92c8",
+          "graph_version": 1
+        }
+      ],
+      "expected_manifest_ids": [
+        "b44effe61919dfcb9e457bc70471327213a5ca45c5d70ecff346ec0c83b4d91d"
+      ],
+      "expected_retrieval_versions": [
+        "01e911c0d0c3925916ad22bf4deaf957bdf96dbbcc2f6005e774224542eb0149"
+      ],
+      "manifest_configuration_hashes": {
+        "b44effe61919dfcb9e457bc70471327213a5ca45c5d70ecff346ec0c83b4d91d": "b5964cc37cdb94a193928b1eef17c154ef2588a3e8fa244380775032902c8a2a"
+      }
+    }
+  }
+}
