@@ -11,13 +11,16 @@ from uuid import uuid4
 from .contracts import Candidate, RetrievalResult
 from .plugins import OrdinaryPlugin
 from .tree import TreePlugin
+from .continuation import ContinuationClosurePlugin
 from .retrieval import RetrievalError
 from .verification import VerificationError
 
 
-REGISTRY = {"a": OrdinaryPlugin, "b1": TreePlugin}
+REGISTRY = {"a": OrdinaryPlugin, "b1": TreePlugin, "b2_r1": ContinuationClosurePlugin}
 TRACE_FIELDS = {"plugin", "keyword_count", "vector_count", "bm25_cache_hit", "budgets", "fused_count",
-                "seeds", "extensions", "fill", "rejected", "extra_read_count", "embedding_calls", "embedding_usage"}
+                "seeds", "extensions", "fill", "rejected", "extra_read_count", "embedding_calls", "embedding_usage",
+                "closures", "skipped_closures", "replacements", "structure_version_ids",
+                "structural_additions", "a_retention_at_40", "structure_unavailable"}
 SAFE_ERRORS = {"VECTOR_INDEX_NOT_READY", "VECTOR_PROFILE_MISMATCH", "VECTOR_UNAVAILABLE", "VECTOR_INVALID_RESPONSE",
                "EMBEDDING_INPUT_INVALID", "EMBEDDING_UNAVAILABLE", "EMBEDDING_INVALID_RESPONSE", "RATE_LIMITED",
                "RETRIEVAL_DEADLINE_EXCEEDED", "RETRIEVAL_SCOPE_INVALID", "RETRIEVAL_INVALID_RESPONSE",
@@ -68,7 +71,7 @@ class ManagedPlugin:
             self.builder._current(snapshot)
             manifest = self.builder.build(snapshot.space_id, task_context["material_version_id"],
                                           max_tokens=max_tokens, retry=retry)
-            if self.name == "b1":
+            if self.name in {"b1", "b2_r1"}:
                 manifest = self.builder.build_tree(manifest, retry=retry)
             self.builder._current(snapshot)
             if (manifest["scope_snapshot_id"] != snapshot.scope_snapshot_id
@@ -166,3 +169,4 @@ def create_plugin(name, embedder, dense, *, bm25_profile=None, cache_size=8,
     adapter_options.setdefault("runtime_validator", runtime_validator)
     adapter_options.setdefault("source_validator", lambda request, rows: dense.verify(rows))
     return ManagedPlugin(name, implementation, **adapter_options)
+
