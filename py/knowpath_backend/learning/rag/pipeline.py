@@ -77,7 +77,8 @@ class RagPipeline:
                 text = "\n".join(parts)
                 if row["source_text"] != text:
                     raise VerificationError("RAG_SOURCE_INVALID")
-                rows.append({**copy.deepcopy(row), "material_id": version.material_id, 'citation_schema_version': 2,
+                rows.append({**copy.deepcopy(row), "material_id": version.material_id,
+                             "tree_version_id": manifest.get("tree_version_id"), 'citation_schema_version': 2,
                              "source_text": text, "text": text,
                              "evidence_group": row.get("continuation_of") or row["chunk_id"],
                              "requires": sorted(set(row.get("requires", [])) | (
@@ -104,7 +105,9 @@ class RagPipeline:
         plugin = self.plugin
         if isinstance(plugin, OrdinaryPlugin):
             implementation = plugin
-            plugin = create_plugin('b1' if self.require_b1 else 'a', plugin.embedder, plugin.dense,
+            plugin_name = getattr(plugin, 'name', None)
+            mode = plugin_name if plugin_name in {'a', 'b1', 'b2_r1'} else ('b1' if self.require_b1 else 'a')
+            plugin = create_plugin(mode, plugin.embedder, plugin.dense,
                 bm25_profile=plugin.bm25_profile)
             plugin.implementation = implementation
         if hasattr(plugin, 'validate_runtime'):

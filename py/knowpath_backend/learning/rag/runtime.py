@@ -337,7 +337,7 @@ class ConfiguredPipeline:
                 verifier.revision_admission = capacity.admit_revision
                 instance = RagPipeline(self.repo, self.materials, self.spaces, plugin, reranker,
                     verifier, budget=RetrievalBudget(),
-                    timeout_seconds=max(.001, deadline-time.monotonic()), require_b1=self.mode == 'b1')
+                    timeout_seconds=max(.001, deadline-time.monotonic()), require_b1=self.mode in {'b1', 'b2_r1'})
                 result = instance.answer(question, **kwargs)
                 result['trace']['spending_budget'] = spending.trace()
                 return result
@@ -350,8 +350,8 @@ class ConfiguredPipeline:
 
 def configured_pipeline(materials, spaces, settings=None):
     mode = os.getenv('LEARNING_RAG_PLUGIN', 'legacy').strip().lower()
-    if mode not in {'legacy', 'a', 'b1'}:
-        raise ValueError('LEARNING_RAG_PLUGIN must be legacy, a, or b1')
+    if mode not in {'legacy', 'a', 'b1', 'b2_r1'}:
+        raise ValueError('LEARNING_RAG_PLUGIN must be legacy, a, b1, or b2_r1')
     if mode == 'legacy':
         return None
     if not getattr(materials, 'unit_of_work', None):

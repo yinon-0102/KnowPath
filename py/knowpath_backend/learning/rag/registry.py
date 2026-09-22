@@ -169,4 +169,3 @@ def create_plugin(name, embedder, dense, *, bm25_profile=None, cache_size=8,
     adapter_options.setdefault("runtime_validator", runtime_validator)
     adapter_options.setdefault("source_validator", lambda request, rows: dense.verify(rows))
     return ManagedPlugin(name, implementation, **adapter_options)
-

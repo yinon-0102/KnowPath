@@ -5,6 +5,7 @@ import time
 import pytest
 
 from knowpath_backend.learning.rag.contracts import RetrievalBudget, RetrievalRequest
+from knowpath_backend.test.test_rag_building import build_workspace
 
 
 def row(identifier, text="alpha", *, unit=None, version="m1", retrieval="r1", parent="p1",
@@ -129,3 +130,13 @@ def test_continuation_closure_skips_unit_that_exceeds_context_budget(monkeypatch
 
     assert ids(result) == ["u1"]
     assert result["trace"]["skipped_closures"] == [{"unit_id": "u1", "reason": "context_budget"}]
+
+
+def test_runtime_accepts_explicit_b2_r1_without_changing_default(build_workspace, monkeypatch):
+    from knowpath_backend.learning.rag.runtime import configured_pipeline
+
+    state, *_ = build_workspace
+    monkeypatch.delenv("LEARNING_RAG_PLUGIN", raising=False)
+    assert configured_pipeline(state.material_repository, state.space_service) is None
+    monkeypatch.setenv("LEARNING_RAG_PLUGIN", "b2_r1")
+    assert configured_pipeline(state.material_repository, state.space_service).mode == "b2_r1"
