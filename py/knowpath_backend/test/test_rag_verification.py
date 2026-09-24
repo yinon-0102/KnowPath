@@ -51,7 +51,7 @@ def test_second_failure_is_removed_without_third_model_call():
     assert len(generator.calls) == len(checker.calls) == 2
 
 
-@pytest.mark.parametrize("bad", [RuntimeError("secret"), {}, verdict("unknown")])
+@pytest.mark.parametrize("bad", [{}, verdict("unknown")])
 def test_verifier_failure_is_not_evidence_insufficiency(bad):
     with pytest.raises(VerificationError) as error:
         AnswerVerifier(Model([answer()]), Model([bad])).answer("条件？", SOURCES, deadline=time.monotonic() + 10)

@@ -92,13 +92,46 @@ class OrdinaryPlugin:
         except (TypeError, ValueError):
             raise RetrievalError("RETRIEVAL_INVALID_RESPONSE") from None
 
+    def _hybrid_rankings(self, request, rows, *, query_vector=None, total_limit=None):
+        """Return the two ranked channels and their RRF result for one scope.
+
+        ``query_vector`` lets a structural plugin reuse the request embedding
+        while re-running retrieval over a smaller, already-authorized scope.
+        No source row is loaded by identifier here; callers provide the full
+        allowed subset explicitly.
+        """
+        keyword_limit = request.budget.keyword_candidates
+        vector_limit = request.budget.vector_candidates
+        validate_limit(keyword_limit)
+        validate_limit(vector_limit)
+        total_limit = min(40, request.budget.rerank_candidates) if total_limit is None else total_limit
+        validate_limit(total_limit)
+        by_id = {row["chunk_id"]: row for row in rows}
+        index, cache_hit = self._index(rows)
+        check_deadline(request)
+        keyword = self._check_ranking(index.search(request.query, set(by_id), keyword_limit), by_id, keyword_limit)
+        check_deadline(request)
+        embedding_calls = 0
+        if query_vector is None:
+            vectors = self.embedder.embed([request.query], query=True)
+            embedding_calls = 1
+            check_deadline(request)
+            if not isinstance(vectors, (list, tuple)) or len(vectors) != 1:
+                raise RetrievalError("EMBEDDING_INVALID_RESPONSE")
+            query_vector = vectors[0]
+        check_deadline(request)
+        dense = self._check_ranking(self.dense.search(query_vector, rows, vector_limit), by_id, vector_limit)
+        check_deadline(request)
+        fused = reciprocal_rank_fusion([keyword, dense], total_limit)
+        return {"keyword": keyword, "dense": dense, "fused": fused,
+                "query_vector": query_vector, "embedding_calls": embedding_calls,
+                "bm25_cache_hit": cache_hit}
+
     def retrieve(self, request, chunks):
         check_deadline(request)
         rows = validate_chunks(chunks)
         keyword_limit = request.budget.keyword_candidates
         vector_limit = request.budget.vector_candidates
-        validate_limit(keyword_limit)
-        validate_limit(vector_limit)
         total_limit = min(40, request.budget.rerank_candidates)
         trace = {"plugin": self.name, "keyword_count": 0, "vector_count": 0, "bm25_cache_hit": False,
                  'embedding_calls': 0,
@@ -106,23 +139,11 @@ class OrdinaryPlugin:
         if not rows:
             return {"candidates": [], "trace": trace}
         by_id = {row["chunk_id"]: row for row in rows}
-        index, trace["bm25_cache_hit"] = self._index(rows)
-        check_deadline(request)
-        keyword = index.search(request.query, set(by_id), keyword_limit)
-        check_deadline(request)
-        keyword = self._check_ranking(keyword, by_id, keyword_limit)
-        check_deadline(request)
-        vectors = self.embedder.embed([request.query], query=True)
-        trace['embedding_calls'] = 1
+        ranked = self._hybrid_rankings(request, rows, total_limit=total_limit)
+        keyword, dense, fused = ranked["keyword"], ranked["dense"], ranked["fused"]
+        trace["bm25_cache_hit"] = ranked["bm25_cache_hit"]
+        trace['embedding_calls'] = ranked["embedding_calls"]
         trace['embedding_usage'] = getattr(self.embedder, 'last_usage', None)
-        check_deadline(request)
-        if not isinstance(vectors, (list, tuple)) or len(vectors) != 1:
-            raise RetrievalError("EMBEDDING_INVALID_RESPONSE")
-        check_deadline(request)
-        dense = self.dense.search(vectors[0], rows, vector_limit)
-        check_deadline(request)
-        dense = self._check_ranking(dense, by_id, vector_limit)
-        fused = reciprocal_rank_fusion([keyword, dense], total_limit)
         candidates = [Candidate(chunk_id=identifier, retrieval_version_id=by_id[identifier]["retrieval_version_id"],
             material_version_id=by_id[identifier]["material_version_id"], parent_id=by_id[identifier].get("parent_id"),
             channel="hybrid", rank=rank, score=score).model_dump() for rank, (identifier, score) in enumerate(fused, 1)]

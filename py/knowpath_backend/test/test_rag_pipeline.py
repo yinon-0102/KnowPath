@@ -194,3 +194,178 @@ def test_damaged_source_is_omitted_before_retrieval_rerank_and_answer(build_work
     assert not damaged.intersection(row["chunk_id"] for row in reranker.calls[-1])
     assert not damaged.intersection(row["chunk_id"] for row in result["sources"])
     assert not damaged.intersection(row["chunk_id"] for row in result["citations"])
+
+
+class PackingCapacity:
+    """Use the production atomic packer with fixed offline protocol budgets."""
+    def __init__(self):
+        self.calls = []
+        self.results = []
+        self.last_trace = None
+
+    def select_context(self, question, rows, *, max_evidence_tokens):
+        from knowpath_backend.learning.rag.token_budget import (
+            ConservativeByteProfile, ModelBudget, StageRequest, TokenBudgetExceeded, pack_evidence_groups)
+        self.calls.append((question, copy.deepcopy(rows), max_evidence_tokens))
+        def requests(selected):
+            text = "\n".join(row["source_text"] for row in selected)
+            if len(text.encode()) > max_evidence_tokens:
+                raise TokenBudgetExceeded("evidence_context_limit")
+            return [StageRequest(stage, {"model": "offline", "messages": [{"role": "user", "content": text}],
+                                        "max_tokens": 10}) for stage in ("generation", "verification")]
+        packed = pack_evidence_groups(rows, build_requests=requests,
+            profile=ConservativeByteProfile(provider="offline", model="offline"),
+            budgets={stage: ModelBudget(100000, 100010, 10) for stage in ("generation", "verification")})
+        self.last_trace = {"omitted_chunk_ids": list(packed.omitted_chunk_ids),
+                           "invalid_chunk_ids": list(packed.invalid_chunk_ids),
+                           "planned_inputs": {key: value.value for key, value in packed.stage_counts.items()}}
+        self.results.append((packed.rows, self.last_trace))
+        return packed.rows, self.last_trace
+
+
+def _packing_rows():
+    return [dict(chunk_id="primary", source_text="p" * 10),
+            dict(chunk_id="d1", source_text="d" * 10, evidence_group="definition"),
+            dict(chunk_id="d2", source_text="d" * 10, evidence_group="definition"),
+            dict(chunk_id="anchor", source_text="第74条" + "a" * 10)]
+
+
+def _select_with_anchors(capacity, question, rows, *, budget=32):
+    from knowpath_backend.learning.rag import pipeline as module
+    assert hasattr(module, "select_context_with_anchors"), "shared anchor rescue must expose its guarded packing path"
+    return module.select_context_with_anchors(capacity, question, rows, max_evidence_tokens=budget)
+
+
+def test_anchor_repacking_recovers_named_article_instead_of_last_two_leaf_definition():
+    rows = _packing_rows()
+    original = copy.deepcopy(rows)
+    capacity = PackingCapacity()
+    context, trace, decision = _select_with_anchors(capacity, "结合第74条", rows)
+    assert [row["chunk_id"] for row in context] == ["primary", "anchor"]
+    assert decision["reason"] == "accepted"
+    assert decision["protected_chunk_ids"] == ["primary"]
+    assert decision["added_anchor_ids"] == ["anchor"]
+    assert trace is capacity.results[1][1]
+    assert len(capacity.calls) == 2
+    assert [call[2] for call in capacity.calls] == [32, 32]
+    assert rows == original
+
+
+@pytest.mark.parametrize("case,reason,calls", [
+    ("unnamed", "no_missing_anchor", 1),
+    ("selected", "no_missing_anchor", 1),
+    ("indivisible", "no_preservable_prefix", 1),
+    ("invalid", "invalid_dependency", 1),
+    ("oversized", "capacity_rejected", 2),
+])
+def test_anchor_repacking_noops_keep_original_context_and_capacity_trace(case, reason, calls):
+    rows = _packing_rows()
+    question, budget = "第74条", 32
+    if case == "unnamed":
+        question = "说明条件"
+    elif case == "selected":
+        budget = 100
+    elif case == "indivisible":
+        rows[0]["evidence_group"] = "definition"
+    elif case == "invalid":
+        rows[-1]["requires"] = ["missing"]
+    elif case == "oversized":
+        rows[-1]["source_text"] += "x" * 100
+    capacity = PackingCapacity()
+    context, trace, decision = _select_with_anchors(capacity, question, rows, budget=budget)
+    assert context is capacity.results[0][0]
+    assert trace is capacity.results[0][1]
+    assert capacity.last_trace is trace
+    assert decision["reason"] == reason
+    assert decision["attempted"] is (calls == 2)
+    assert len(capacity.calls) == calls
+
+
+def test_anchor_repacking_can_add_multiple_valid_anchors_and_skip_invalid_one():
+    rows = _packing_rows()
+    rows[1]["source_text"] *= 4
+    rows[2]["source_text"] *= 4
+    rows += [dict(chunk_id="second", source_text="第75条"),
+             dict(chunk_id="invalid", source_text="第76条", requires=["missing"])]
+    capacity = PackingCapacity()
+    context, _, decision = _select_with_anchors(capacity, "第74条、第75条、第76条", rows, budget=92)
+    assert [row["chunk_id"] for row in context] == ["primary", "anchor", "second"]
+    assert decision["added_anchor_ids"] == ["anchor", "second"]
+    assert decision["invalid_anchor_ids"] == ["invalid"]
+    assert len(capacity.calls) == 2
+
+
+class ChangedSecondPassCapacity(PackingCapacity):
+    def __init__(self, change):
+        super().__init__()
+        self.change = change
+
+    def select_context(self, question, rows, *, max_evidence_tokens):
+        if self.calls:
+            self.calls.append((question, copy.deepcopy(rows), max_evidence_tokens))
+            self.last_trace = {"omitted_chunk_ids": [], "invalid_chunk_ids": [], "planned_inputs": {"test": 1}}
+            return self.change(rows), self.last_trace
+        return super().select_context(question, rows, max_evidence_tokens=max_evidence_tokens)
+
+
+@pytest.mark.parametrize("change,reason", [
+    (lambda rows: [rows[1], rows[0]], "protected_context_not_retained"),
+    (lambda rows: [rows[1]], "protected_context_not_retained"),
+    (lambda rows: [rows[0], rows[1]], "existing_anchor_not_retained"),
+    (lambda rows: [rows[0], rows[2], rows[3]], "capacity_rejected"),
+])
+def test_candidate_context_is_adopted_only_after_all_preservation_checks(change, reason):
+    rows = _packing_rows()
+    rows[2]["retrieval_text"] = "第75条"
+    capacity = ChangedSecondPassCapacity(change)
+    context, trace, decision = _select_with_anchors(capacity, "第74条、第75条", rows)
+    assert decision["reason"] == reason
+    assert context is capacity.results[0][0]
+    assert trace is capacity.results[0][1]
+    assert capacity.last_trace is trace
+    assert len(capacity.calls) == 2
+
+
+@pytest.mark.parametrize("error,reason", [
+    (VerificationError("MODEL_TOKEN_BUDGET_EXCEEDED"), "capacity_rejected"),
+    (VerificationError("RAG_CANCELLED"), None),
+    (RuntimeError("internal defect"), None),
+])
+def test_repacking_only_handles_capacity_rejection_and_propagates_other_failures(error, reason):
+    def fail(rows):
+        raise error
+    capacity = ChangedSecondPassCapacity(fail)
+    if reason is None:
+        with pytest.raises(type(error), match=str(error)):
+            _select_with_anchors(capacity, "第74条", _packing_rows())
+    else:
+        context, trace, decision = _select_with_anchors(capacity, "第74条", _packing_rows())
+        assert decision["reason"] == reason
+        assert context is capacity.results[0][0]
+        assert trace is capacity.results[0][1]
+        assert capacity.last_trace is trace
+
+
+def test_only_original_capacity_omissions_are_eligible_for_anchor_rescue():
+    class UnreportedOmission(PackingCapacity):
+        def select_context(self, *args, **kwargs):
+            context, trace = super().select_context(*args, **kwargs)
+            trace["omitted_chunk_ids"] = []
+            return context, trace
+    capacity = UnreportedOmission()
+    context, trace, decision = _select_with_anchors(capacity, "第74条", _packing_rows())
+    assert decision["reason"] == "no_missing_anchor"
+    assert len(capacity.calls) == 1
+    assert context is capacity.results[0][0]
+    assert trace is capacity.results[0][1]
+
+
+def test_pipeline_exposes_noop_anchor_decision_with_original_protocol_trace(build_workspace):
+    service, _ = pipeline(build_workspace)
+    capacity = PackingCapacity()
+    capacity.admit_initial = lambda *args, **kwargs: None
+    service.verifier.capacity = capacity
+    result = service.answer("学校应该告知谁？", space_id=build_workspace[2]["id"])
+    assert result["trace"]["anchor_repacking"]["reason"] == "no_missing_anchor"
+    assert result["trace"]["protocol_capacity"] == capacity.results[0][1]
+    assert len(capacity.calls) == 1

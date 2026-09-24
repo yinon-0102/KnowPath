@@ -6,6 +6,7 @@ import os
 from datetime import datetime
 
 from sqlalchemy import JSON, Boolean, DateTime, Float, ForeignKey, Integer, LargeBinary, String, Text, UniqueConstraint, create_engine
+from sqlalchemy.engine import make_url
 from sqlalchemy.dialects.mysql import LONGBLOB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -363,6 +364,26 @@ class DatabaseSettings:
             url=os.getenv("DATABASE_URL", "mysql+pymysql://keel:keel@127.0.0.1:3306/keel_learning"),
             echo=os.getenv("DATABASE_ECHO", "false").lower() == "true",
         )
+
+
+def database_identity(url: str | None = None) -> dict:
+    """Return a credential-free identity suitable for a frozen evaluation.
+
+    Credentials and query parameters are deliberately omitted.  The identity
+    still distinguishes the database engine and target so a freeze cannot be
+    accidentally run against the business database instead of its isolated
+    evaluation store.
+    """
+    value = make_url(url or DatabaseSettings.from_env().url)
+    database = value.database
+    if value.get_backend_name() == "sqlite" and database:
+        database = database.replace("\\", "/")
+    return {
+        "scheme": value.drivername,
+        "host": value.host,
+        "port": value.port,
+        "database": database,
+    }
 
 
 def create_db_engine(settings: DatabaseSettings | None = None):

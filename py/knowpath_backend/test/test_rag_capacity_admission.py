@@ -43,6 +43,47 @@ def test_context_packing_reserves_checker_draft_before_first_model_call():
     assert trace['draft_reserve_bytes'] == 4000
 
 
+def test_anchor_rescue_uses_real_capacity_protocol_under_unchanged_evidence_limit():
+    from types import SimpleNamespace
+    from knowpath_backend.learning.rag.capacity import AnswerCapacity
+    from knowpath_backend.learning.rag.pipeline import select_context_with_anchors
+    from knowpath_backend.learning.rag.token_budget import ConservativeByteProfile
+
+    class OfflineModel:
+        max_input_tokens = 20000
+        max_output_tokens = 100
+        max_draft_bytes = 1000
+        settings = SimpleNamespace(context_budget_tokens=30000)
+        counting_profile = ConservativeByteProfile(provider="offline", model="offline")
+
+        def request_body(self, messages, schema):
+            return {"model": "offline", "messages": messages, "max_tokens": self.max_output_tokens,
+                    "response_format": {"type": "json_schema", "schema": schema}}
+
+    class OfflineVerifier:
+        generator = OfflineModel()
+        checker = OfflineModel()
+
+        def initial_messages(self, question, rows):
+            messages = [{"role": "user", "content": question + "\n" + "\n".join(
+                row["source_text"] for row in rows)}]
+            return messages, messages
+
+    capacity = AnswerCapacity(OfflineVerifier(), generation_seconds=1, verification_seconds=1)
+    rows = [dict(chunk_id="primary", source_text="p" * 10),
+            dict(chunk_id="d1", source_text="d" * 10, evidence_group="definition"),
+            dict(chunk_id="d2", source_text="d" * 10, evidence_group="definition"),
+            dict(chunk_id="anchor", source_text="第74条" + "a" * 10)]
+    context, trace, decision = select_context_with_anchors(capacity, "第74条", rows, max_evidence_tokens=32)
+    assert [row["chunk_id"] for row in context] == ["primary", "anchor"]
+    assert decision["reason"] == "accepted"
+    assert trace["omitted_chunk_ids"] == ["d1", "d2"]
+    assert trace["invalid_chunk_ids"] == []
+    assert trace["draft_reserve_bytes"] == 1000
+    assert set(trace["planned_inputs"]) == {"generation", "verification"}
+    assert max(trace["planned_inputs"].values()) + 2000 <= 20000
+
+
 def test_revision_admission_reserves_a_new_draft_and_recheck_time():
     from knowpath_backend.learning.rag.capacity import AnswerCapacity
     generator = BudgetedJsonModel(LearningSettings(), max_input_tokens=12000)

@@ -316,10 +316,8 @@ def pack_evidence_groups(rows, *, build_requests: Callable, profile: CountingPro
         return counts
 
     counts = measure([])  # Fixed-protocol overflow is an error even with no evidence.
-    groups = {}
-    for row in rows:
-        if row.get("evidence_group"):
-            groups.setdefault(row["evidence_group"], set()).add(row["chunk_id"])
+    from .context import evidence_memberships
+    groups = evidence_memberships(rows)
     selected, seen, invalid, capacity_omitted = [], set(), set(), False
     for row in rows:
         if row["chunk_id"] in seen:
@@ -335,7 +333,7 @@ def pack_evidence_groups(rows, *, build_requests: Callable, profile: CountingPro
                 missing = True
                 break
             pending.extend(item.get("requires", []))
-            pending.extend(groups.get(item.get("evidence_group"), set()) - closure)
+            pending.extend(groups.get(identifier, set()) - closure)
         if missing:
             invalid.add(row["chunk_id"])
             continue

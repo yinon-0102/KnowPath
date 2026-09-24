@@ -1,4 +1,38 @@
 """Closed diagnostic vocabulary; no input values or arbitrary field names."""
+import re
+
+
+def sanitize_local_validation(value):
+    """Sensitive opt-in local artifacts only; never public error metadata.
+
+    Preserve model objects/invalid references for replay, but omit credential
+    fields at every depth and redact recognizable authentication in text.
+    This intentionally does not copy transport objects, headers or exceptions.
+    """
+    if isinstance(value, dict):
+        return {key: sanitize_local_validation(item) for key, item in value.items()
+                if isinstance(key, str) and not re.search(
+                    r'authorization|api[_-]?key|access[_-]?token|refresh[_-]?token|password|secret|cookie|headers',
+                    key, re.I)}
+    if isinstance(value, (list, tuple)):
+        return [sanitize_local_validation(item) for item in value]
+    if isinstance(value, str):
+        # Model text can contain nested JSON or multi-value cookie/header
+        # strings. Once explicitly credential-bearing, redact the entire
+        # string rather than preserve a tail that may itself be a secret.
+        credential = (r'\b(?:authorization|api[_-]?key|access[_-]?token|refresh[_-]?token|'
+                      r'password|secret|cookies?|headers?)["\']?\s*[:=]|'
+                      r'\b(?:Bearer|Basic)\s+\S+')
+        return '[REDACTED]' if re.search(credential, value, re.I) else value
+    if value is None or type(value) in (bool, int, float):
+        return value
+    return '[UNSERIALIZABLE]'
+
+SCHEMA_SUBCATEGORIES = frozenset({
+    'check_set_mismatch', 'check_sources_out_of_scope', 'supported_without_citation',
+    'supported_citations_differ_from_draft', 'requirement_set_mismatch',
+    'requirement_reference_invalid',
+})
 
 SCHEMA_ERROR_TYPES = frozenset({
     'missing', 'extra_forbidden', 'literal_error', 'string_type', 'string_too_short',

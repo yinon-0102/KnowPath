@@ -107,3 +107,45 @@ def test_legacy_error_shape_and_successful_protocol_requests_remain_unchanged():
     assert result['status'] == 'answered'
     assert len(generator.calls) == len(checker.calls) == 1
     assert 'schema_error' not in json.dumps(generator.calls + checker.calls)
+
+
+@pytest.mark.parametrize('case,subcategory', [
+    ('check_set', 'check_set_mismatch'),
+    ('foreign_check', 'check_sources_out_of_scope'),
+    ('empty_supported', 'supported_without_citation'),
+    ('different_supported', 'supported_citations_differ_from_draft'),
+    ('requirement_set', 'requirement_set_mismatch'),
+    ('requirement_reference', 'requirement_reference_invalid'),
+])
+def test_contract_invariants_have_fixed_fine_diagnostics(case, subcategory):
+    import time
+    from knowpath_backend.learning.rag.verification import AnswerVerifier
+    from knowpath_backend.test.test_rag_verification_v2 import SOURCE
+    raw = verdict()
+    # Exercise local reference checks without wire citation hydration and
+    # verify the new scalar survives both sanitization boundaries.
+    raw['checks'][0]['citation_ids'] = [SOURCE['chunk_id']]
+    raw['checks'][0]['evidence_spans'] = []
+    raw['requirement_checks'][0].update(text='必要申请条件及例外', reason='checked',
+        citation_ids=[SOURCE['chunk_id']])
+    raw['checks'][0]['reason'] = 'checked'
+    if case == 'check_set': raw['checks'][0]['claim_id'] = 'c2'
+    if case == 'foreign_check': raw['checks'][0]['citation_ids'] = ['private-foreign']
+    if case == 'empty_supported': raw['checks'][0]['citation_ids'] = []
+    if case == 'different_supported': raw['checks'][0]['citation_ids'] = ['other']
+    if case == 'requirement_set': raw['requirement_checks'][0]['point_id'] = 'p9'
+    if case == 'requirement_reference': raw['requirement_checks'][0]['claim_ids'] = ['private-claim']
+    checker = LegacyModel([raw])
+    generated = draft()
+    generated['claims'][0]['citation_ids'] = [SOURCE['chunk_id']]
+    with pytest.raises(VerificationError) as caught:
+        AnswerVerifier(LegacyModel([generated]), checker).answer('问题',
+            [SOURCE, dict(SOURCE, chunk_id='other')], deadline=time.monotonic()+30)
+    assert caught.value.details['schema_subcategory'] == subcategory
+    assert safe_metadata(caught.value.details)['schema_subcategory'] == subcategory
+    assert 'private' not in json.dumps(caught.value.details)
+
+
+def test_fine_diagnostic_allowlist_rejects_arbitrary_values():
+    unsafe = {'schema_subcategory': 'private-diagnostic'}
+    assert VerificationError('FAILED', details=unsafe).details == safe_metadata(unsafe) == {}

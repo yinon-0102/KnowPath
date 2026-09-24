@@ -8,9 +8,9 @@ import zlib
 
 import httpx
 
-from .schema_diagnostics import SCHEMA_ERROR_TYPES, SCHEMA_ERROR_PATHS
+from .schema_diagnostics import SCHEMA_ERROR_TYPES, SCHEMA_ERROR_PATHS, SCHEMA_SUBCATEGORIES
 
-STAGES = {'queue', 'initialization', 'retrieval', 'embedding', 'reranking', 'generation', 'verification'}
+STAGES = {'queue', 'initialization', 'retrieval', 'embedding', 'reranking', 'generation', 'verification', 'navigation'}
 FAILURES = {'connect_timeout', 'read_timeout', 'write_timeout', 'pool_timeout', 'network_error',
     'authentication', 'rate_limited', 'server_error', 'http_error', 'deadline', 'stage_budget', 'internal_error',
     'input_budget', 'context_budget', 'output_budget', 'finish_reason', 'response_json',
@@ -30,6 +30,7 @@ def safe_metadata(value):
         'validation': {'content_passed', 'passed', 'failed'},
         'schema_error_type': SCHEMA_ERROR_TYPES,
         'schema_error_path': SCHEMA_ERROR_PATHS,
+        'schema_subcategory': SCHEMA_SUBCATEGORIES,
         'schema_rule': {'schema_fields', 'citation_identity', 'citation_relationship', 'required_points',
                         'span_not_found', 'span_ambiguous', 'span_coverage'},
     }.items():

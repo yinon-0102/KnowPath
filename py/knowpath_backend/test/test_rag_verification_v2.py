@@ -70,11 +70,266 @@ def test_generator_nonanswer_still_requires_valid_checker():
 def test_terminal_generator_exception_keeps_provider_error_when_retry_is_enabled():
     generator, checker = Model([RuntimeError('transport failed'), RuntimeError('transport failed')]), Model([])
     generator.allows_contract_retry = True
-    with pytest.raises(VerificationError, match='GENERATION_INVALID_RESPONSE') as error:
+    with pytest.raises(RuntimeError, match='transport failed'):
         run(generator, checker)
-    assert error.value.details['failure_kind'] == 'response_schema'
-    assert len(generator.calls) == 2
+    assert len(generator.calls) == 1
     assert checker.calls == []
+
+
+def partial_round():
+    first = draft()
+    first['required_points'].append(dict(point_id='p2', text='尚未完成的补充要点'))
+    checked = verdict('answer_incomplete')
+    checked['missing_points'] = ['p2']
+    checked['requirement_checks'].append(dict(point_id='p2', status='undetermined',
+        citation_ids=[], claim_ids=[]))
+    return first, checked
+
+
+@pytest.mark.parametrize('stage', ['generation', 'verification'])
+def test_terminal_contract_error_preserves_only_previous_verified_partial(stage):
+    first, good = partial_round()
+    second = copy.deepcopy(first)
+    second['claims'][0]['text'] = '本轮失败内容不得替换旧结论。'
+    bad = copy.deepcopy(good)
+    if stage == 'generation':
+        second['missing_points'] = [{'point_id': 'p2'}]
+    else:
+        bad['missing_points'] = [{'point_id': 'p2'}]
+    generator = RealLikeModel([first, second])
+    checker = RealLikeModel([good, bad])
+    result = run(generator, checker)
+    assert result['status'] == 'partial'
+    assert result['claims'] == list(result['trace']['drafts'][0]['claims'])
+    assert result['citation_ids'] == [SOURCE['chunk_id']]
+    assert result['text'].startswith('以下为已核验的部分内容，其余部分暂未完成可靠核验')
+    assert '本轮失败内容' not in result['text']
+    assert result['trace']['delivery'] == dict(reason=f'{stage}_contract_failed', recovered=True,
+        recovery_decision='restored', snapshot_draft_index=0, snapshot_verdict_index=0, retained_claim_count=1)
+    assert len(generator.calls) == 2
+    assert len(checker.calls) == (1 if stage == 'generation' else 2)
+
+
+def test_new_valid_requirement_prevents_restoring_stale_partial():
+    first, good = partial_round()
+    second = copy.deepcopy(first)
+    second['required_points'].append(dict(point_id='p3', text='合法新增要求'))
+    bad = copy.deepcopy(good)
+    bad['missing_points'] = [{'point_id': 'p2'}]
+    result = run(RealLikeModel([first, second]), RealLikeModel([good, bad]))
+    assert result['status'] == 'insufficient' and result['claims'] == []
+    assert result['text'] == '本次回答未完成可靠核验，请重试'
+    assert result['trace']['delivery']['recovery_decision'] == 'requirements_changed'
+
+
+@pytest.mark.parametrize('defect', ['numeric', 'qualifier', 'dependency'])
+def test_contract_fallback_never_resurrects_locally_pruned_claims(defect):
+    first, good = partial_round()
+    if defect == 'numeric':
+        first['claims'][0]['text'] = '年满99岁可申请。'
+    else:
+        good['checks'][0]['qualifier_checks']['conditions'] = 'violated'
+        if defect == 'dependency':
+            first['claims'].append(dict(first['claims'][0], claim_id='c2', depends_on=['c1']))
+            good['checks'].append(dict(verdict()['checks'][0], claim_id='c2'))
+    bad = copy.deepcopy(good)
+    bad['missing_points'] = [{'point_id': 'p2'}]
+    result = run(RealLikeModel([first, first]), RealLikeModel([good, bad]))
+    assert result['claims'] == []
+    assert result['trace']['delivery']['recovery_decision'] == 'no_verified_snapshot'
+    assert result['trace']['delivery']['recovered'] is False
+
+
+@pytest.mark.parametrize('later', ['denied', 'undetermined', 'nonanswer', 'changed_text'])
+def test_later_valid_semantic_result_always_wins(later):
+    first, good = partial_round()
+    second, checked = copy.deepcopy(first), copy.deepcopy(good)
+    if later in {'denied', 'undetermined'}:
+        checked['checks'][0]['status'] = 'unsupported' if later == 'denied' else 'undetermined'
+    elif later == 'nonanswer':
+        second.update(status='insufficient', claims=[])
+        checked.update(checks=[], reason_code='evidence_missing')
+        checked['requirement_checks'][0].update(status='undetermined', citation_ids=[], claim_ids=[])
+    else:
+        second['claims'][0]['text'] = '培训合格是申请条件。'
+    result = run(RealLikeModel([first, second]), RealLikeModel([good, checked]))
+    assert result['trace']['delivery']['reason'] == 'semantic_result'
+    assert result['trace']['delivery']['recovered'] is False
+    if later == 'changed_text':
+        assert result['claims'][0]['text'] == second['claims'][0]['text']
+    else:
+        assert result['claims'] == []
+
+
+@pytest.mark.parametrize('stage', ['generation', 'verification'])
+@pytest.mark.parametrize('error', [RuntimeError('internal bug'),
+    VerificationError('RAG_CANCELLED'), VerificationError('MODEL_TOKEN_BUDGET_EXCEEDED'),
+    VerificationError('MODEL_UNAVAILABLE', details={'failure_kind':'authentication'}),
+    VerificationError('MODEL_UNAVAILABLE', details={'failure_kind':'network_error'}),
+    VerificationError('RAG_DEADLINE_EXCEEDED')])
+def test_noncontract_terminal_errors_propagate_despite_trusted_snapshot(stage, error):
+    first, good = partial_round()
+    generator = RealLikeModel([first, error if stage == 'generation' else first])
+    checker = RealLikeModel([good, error])
+    with pytest.raises(type(error), match=str(error)):
+        run(generator, checker)
+
+
+def test_restoration_rechecks_deadline_after_malformed_checker_response(monkeypatch):
+    from knowpath_backend.learning.rag import verification
+    first, good = partial_round()
+    bad = copy.deepcopy(good)
+    bad['missing_points'] = [{}]
+    class ExpiringModel(RealLikeModel):
+        def generate_json(self, *args, **kwargs):
+            output = super().generate_json(*args, **kwargs)
+            if len(self.calls) == 2:
+                monkeypatch.setattr(verification.time, 'monotonic', lambda: 100)
+            return output
+    monkeypatch.setattr(verification.time, 'monotonic', lambda: 0)
+    with pytest.raises(VerificationError, match='RAG_DEADLINE_EXCEEDED'):
+        AnswerVerifier(RealLikeModel([first, first]), ExpiringModel([good, bad])).answer(
+            '问题', [SOURCE], deadline=30)
+
+
+def test_snapshot_never_crosses_answer_calls():
+    first, good = partial_round()
+    bad = copy.deepcopy(good)
+    bad['missing_points'] = [{}]
+    verifier = AnswerVerifier(RealLikeModel([first] * 4), RealLikeModel([good, bad, bad, bad]))
+    restored = verifier.answer('问题', [SOURCE], deadline=time.monotonic()+30)
+    empty = verifier.answer('问题', [SOURCE], deadline=time.monotonic()+30)
+    assert restored['trace']['delivery']['recovered'] is True
+    assert empty['claims'] == []
+    assert empty['trace']['delivery']['recovery_decision'] == 'no_verified_snapshot'
+
+
+def test_invalid_draft_citation_does_not_commit_its_requirement_list():
+    from knowpath_backend.test.test_rag_verification import Model as LegacyModel
+    class RetryLegacyModel(LegacyModel):
+        allows_contract_retry = True
+    bad = draft()
+    bad['claims'][0]['citation_ids'] = ['invalid-source']
+    bad['required_points'].append(dict(point_id='poison', text='不得进入清单'))
+    valid = draft()
+    valid['claims'][0]['citation_ids'] = [SOURCE['chunk_id']]
+    result = run(RetryLegacyModel([bad, valid]), Model([verdict()]))
+    assert result['status'] == 'answered'
+    assert [p['point_id'] for p in result['trace']['drafts'][0]['required_points']] == ['p1']
+
+
+def test_fallback_preserves_failed_journal_and_previous_checked_verdict():
+    from knowpath_backend.learning.rag.diagnostics import RequestJournal
+    first, good = partial_round()
+    bad = copy.deepcopy(good)
+    bad['missing_points'] = [{}]
+    journal = RequestJournal()
+    generator, checker = JournalModel([first, first], journal, 'generation'), JournalModel([good, bad], journal, 'verification')
+    generator.allows_contract_retry = checker.allows_contract_retry = True
+    result = run(generator, checker)
+    assert result['trace']['delivery']['recovered'] is True
+    assert len(result['trace']['verdicts']) == 1
+    assert result['trace']['verdicts'][0]['requirement_checks'][1]['status'] == 'undetermined'
+    assert journal.snapshot()['calls'][-1]['validation'] == 'failed'
+    assert journal.snapshot()['failure_kind'] == 'response_schema'
+
+
+def test_recovery_snapshot_contains_only_post_pruning_claims_and_demoted_requirements():
+    first, good = partial_round()
+    first['claims'].append(dict(first['claims'][0], claim_id='c2', text='年龄99岁。'))
+    first['claims'].append(dict(first['claims'][0], claim_id='c3', depends_on=['c2']))
+    good['checks'] += [dict(copy.deepcopy(good['checks'][0]), claim_id=identifier) for identifier in ('c2', 'c3')]
+    good['requirement_checks'][1].update(status='supported', citation_ids=['s1'], claim_ids=['c3'])
+    bad = copy.deepcopy(good)
+    bad['missing_points'] = [{}]
+    result = run(RealLikeModel([first, first]), RealLikeModel([good, bad]))
+    assert [claim['claim_id'] for claim in result['claims']] == ['c1']
+    assert result['trace']['verdicts'][0]['requirement_checks'][1]['status'] == 'unsupported'
+    assert result['trace']['delivery']['retained_claim_count'] == 1
+
+
+def test_source_identity_mutation_prevents_snapshot_recovery():
+    first, good = partial_round()
+    bad = copy.deepcopy(good)
+    bad['missing_points'] = [{}]
+    source = copy.deepcopy(SOURCE)
+    class MutatingChecker(RealLikeModel):
+        def generate_json(self, *args, **kwargs):
+            output = super().generate_json(*args, **kwargs)
+            if len(self.calls) == 2:
+                source['source_text'] = '已改变的原文'
+            return output
+    result = AnswerVerifier(RealLikeModel([first, first]), MutatingChecker([good, bad])).answer(
+        '问题', [source], deadline=time.monotonic()+30)
+    assert result['claims'] == []
+    assert result['trace']['delivery']['recovery_decision'] == 'input_identity_changed'
+
+
+def test_malformed_new_requirement_does_not_block_old_snapshot_recovery():
+    first, good = partial_round()
+    invalid = copy.deepcopy(first)
+    invalid['required_points'].append(dict(point_id='p3', text={'bad': 'shape'}))
+    result = run(RealLikeModel([first, invalid]), RealLikeModel([good]))
+    assert result['trace']['delivery']['recovery_decision'] == 'restored'
+    assert len(result['claims']) == 1
+
+
+def test_terminal_normalized_nonanswer_cannot_drop_canonical_requirements():
+    first, good = partial_round()
+    invalid = draft()
+    invalid['status'] = 'insufficient'
+    # This terminal nonanswer is eligible for existing drop-claims repair,
+    # but repairing claims must not waive checklist identity validation.
+    result = run(RealLikeModel([first, invalid]), RealLikeModel([good]))
+    assert result['trace']['delivery']['reason'] == 'generation_contract_failed'
+    assert result['trace']['delivery']['recovered'] is True
+    assert result['claims'][0]['text'] == first['claims'][0]['text']
+
+
+def test_contradictory_completion_reason_is_explicit_contract_failure():
+    first, good = partial_round()
+    bad = copy.deepcopy(good)
+    bad['complete'] = True
+    result = run(RealLikeModel([first, first]), RealLikeModel([good, bad]))
+    assert result['trace']['delivery']['recovered'] is True
+
+
+@pytest.mark.parametrize('stage', ['generation', 'verification'])
+def test_internal_exceptions_keep_internal_journal_classification(stage):
+    from knowpath_backend.learning.rag.diagnostics import RequestJournal
+    journal = RequestJournal()
+    generator = JournalModel([RuntimeError('private-error') if stage == 'generation' else draft()], journal, 'generation')
+    checker = JournalModel([RuntimeError('private-error')], journal, 'verification')
+    generator.allows_contract_retry = checker.allows_contract_retry = True
+    with pytest.raises(RuntimeError):
+        run(generator, checker)
+    row = journal.snapshot()['calls'][-1]
+    assert row['failure_kind'] == 'internal_error'
+    assert 'schema_rule' not in row
+    assert 'private' not in json.dumps(journal.snapshot())
+
+
+def test_fine_contract_subcategory_survives_failed_physical_call_journal():
+    from knowpath_backend.learning.rag.diagnostics import RequestJournal, safe_journal_snapshot
+    journal = RequestJournal()
+    bad = verdict()
+    bad['checks'][0]['claim_id'] = 'c2'
+    with pytest.raises(VerificationError) as error:
+        run(JournalModel([draft()], journal, 'generation'), JournalModel([bad], journal, 'verification'))
+    assert error.value.details['schema_subcategory'] == 'check_set_mismatch'
+    assert safe_journal_snapshot(journal.snapshot())['calls'][-1]['schema_subcategory'] == 'check_set_mismatch'
+
+
+def test_real_provider_terminal_generation_schema_failure_degrades_to_safe_nonanswer():
+    bad = draft()
+    bad['claims'][0]['citation_ids'] = []
+    generator = Model([bad, bad])
+    generator.allows_contract_retry = True
+    result = run(generator, Model([]))
+    assert result['status'] == 'insufficient'
+    assert result['claims'] == []
+    assert result['trace']['contract_repairs'] == [
+        {'stage': 'generation', 'kind': 'safe_nonanswer_fallback'}]
 
 
 def test_wire_ids_restore_exact_identity_and_checklist_text_is_not_repeated():
@@ -145,6 +400,15 @@ def test_real_provider_contract_failure_degrades_to_safe_nonanswer():
     assert result['claims'] == []
 
 
+def test_real_provider_terminal_verification_span_failure_degrades_to_safe_nonanswer():
+    checked = verdict()
+    checked['checks'][0]['evidence_spans'] = []
+    result = AnswerVerifier(Model([draft(), draft()]), RealLikeModel([checked, checked])).answer(
+        '申请有哪些条件？', [SOURCE], deadline=time.monotonic() + 30)
+    assert result['status'] == 'insufficient'
+    assert result['claims'] == []
+
+
 @pytest.mark.parametrize('field', ['subject','conditions','exceptions','negation','quantifiers'])
 def test_failed_qualifier_cannot_publish_supported_claim(field):
     checked = verdict('evidence_missing')
@@ -204,9 +468,8 @@ def test_unresolved_second_draft_never_causes_a_third_call():
 def test_failed_second_checker_never_publishes_new_draft():
     generator = Model([draft(), draft(text='未经核验的新内容')])
     checker = Model([verdict('answer_incomplete'), RuntimeError('private service payload')])
-    with pytest.raises(VerificationError, match='VERIFICATION_UNAVAILABLE') as error:
+    with pytest.raises(RuntimeError, match='private service payload'):
         run(generator, checker)
-    assert 'private' not in str(error.value)
 
 
 def test_real_adapter_retries_one_rejected_generation_contract_with_budgeted_pair():
@@ -335,7 +598,9 @@ def test_json_object_fallback_prompts_contain_complete_parseable_examples():
     assert set(generated) == set(draft())
     assert set(generated['claims'][0]) == set(draft()['claims'][0])
     assert set(checked) == set(verdict())
-    assert set(checked['checks'][0]) >= set(verdict()['checks'][0])
+    assert set(checked['checks'][0]) >= set(verdict()['checks'][0]) - {'citation_ids'}
+    assert 'citation_ids' not in checked['checks'][0]
+    assert 'citation_ids' not in checked['requirement_checks'][0]
 
 
 def test_explicit_wire_byte_capacity_rejects_draft_without_truncation_or_check_call():
