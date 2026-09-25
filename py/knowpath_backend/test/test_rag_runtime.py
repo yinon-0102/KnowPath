@@ -11,6 +11,10 @@ def test_configuration_selects_v2_and_rejects_invalid_modes(build_workspace, mon
     assert configured_pipeline(state.material_repository, state.space_service) is None
     monkeypatch.setenv('LEARNING_RAG_PLUGIN', 'a')
     assert configured_pipeline(state.material_repository, state.space_service).mode == 'a'
+    monkeypatch.setenv('LEARNING_RAG_PLUGIN', 'b15')
+    assert configured_pipeline(state.material_repository, state.space_service).mode == 'b15'
+    monkeypatch.setenv('LEARNING_RAG_PLUGIN', 'a_large')
+    assert configured_pipeline(state.material_repository, state.space_service).mode == 'a_large'
     monkeypatch.setenv('LEARNING_RAG_PLUGIN', 'unknown')
     with pytest.raises(ValueError):
         configured_pipeline(state.material_repository, state.space_service)

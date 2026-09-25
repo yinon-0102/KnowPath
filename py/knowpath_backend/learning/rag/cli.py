@@ -17,7 +17,7 @@ class BuildConfiguration(BaseModel):
     material_version_id: str = Field(min_length=1)
     max_tokens: int = Field(default=1800, ge=128, le=6000, strict=True)
     retry: bool = False
-    plugin: Literal['a', 'b1'] = 'a'
+    plugin: Literal['a', 'b1', 'b15'] = 'a'
     collection_prefix: str = Field(default="knowpath_rag_content", pattern=r"^[a-zA-Z0-9_-]{1,70}$")
 
 

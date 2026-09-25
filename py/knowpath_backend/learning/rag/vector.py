@@ -6,11 +6,32 @@ import json
 import math
 import re
 from uuid import UUID
+from contextlib import contextmanager
+from contextvars import ContextVar
 
 from qdrant_client import models
 
 from .bm25 import validate_limit
 from .retrieval import RetrievalError, content_hash, normalized, valid_vector
+
+_DENSE_SEARCH_DEADLINE = ContextVar('rag_dense_search_deadline', default=None)
+
+
+def current_dense_search_deadline():
+    return _DENSE_SEARCH_DEADLINE.get()
+
+
+@contextmanager
+def dense_search_deadline(deadline):
+    """Bind all synchronous focused-retrieval HTTP exchanges to one local limit."""
+    if type(deadline) not in (int, float) or not math.isfinite(deadline):
+        raise ValueError('DENSE_DEADLINE_INVALID')
+    previous = _DENSE_SEARCH_DEADLINE.get()
+    token = _DENSE_SEARCH_DEADLINE.set(min(deadline, previous) if previous is not None else deadline)
+    try:
+        yield
+    finally:
+        _DENSE_SEARCH_DEADLINE.reset(token)
 
 
 def point_id(chunk):
@@ -50,6 +71,21 @@ class QdrantContentIndex:
             raise ValueError("content identities must be nonempty strings")
         payload.update(content_hash=content_hash(chunk["retrieval_text"]), embedding_profile=self.profile,
                        embedding_provenance=self.embedding_profile, embedding_dimension=self.dimension)
+        # Unit text alone cannot bind the citation map: identical text may be
+        # assigned different leaves/coordinates. Legacy leaf payloads remain
+        # unchanged; semantic-unit indexes require explicit structural identity.
+        if any(key in chunk for key in ("source_map_hash", "leaf_ids", "anchor_id")):
+            leaves = chunk.get("leaf_ids")
+            source_map = chunk.get("source_map_hash")
+            tree = chunk.get("tree_version_id")
+            if (not isinstance(leaves, (list, tuple)) or not leaves
+                    or any(not isinstance(identifier, str) or not identifier for identifier in leaves)
+                    or len(set(leaves)) != len(leaves) or chunk.get("anchor_id") != leaves[0]
+                    or not isinstance(tree, str) or not tree
+                    or not isinstance(source_map, str) or not re.fullmatch(r"[a-f0-9]{64}", source_map)):
+                raise ValueError("invalid semantic unit identity")
+            payload["semantic_unit"] = dict(schema_version=1, tree_version_id=tree,
+                source_map_hash=source_map, leaf_ids=list(leaves), anchor_id=chunk["anchor_id"])
         return payload
 
     def _expected(self, chunks):

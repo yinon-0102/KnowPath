@@ -46,7 +46,7 @@ def test_adapter_rejects_outside_scope_and_candidate_text_without_leaking_except
 
 def test_registry_modes_runtime_validation_and_close_are_explicit():
     from knowpath_backend.learning.rag.registry import ManagedPlugin, create_plugin
-    for name in ("a", "b1"):
+    for name in ("a", "b1", "b15"):
         plugin = create_plugin(name, SimpleNamespace(model_version="model", dimension=4),
             SimpleNamespace(collection="collection", verify=lambda r: {"verified": True}))
         assert isinstance(plugin, ManagedPlugin)

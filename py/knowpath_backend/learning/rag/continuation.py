@@ -23,7 +23,12 @@ def _token_cost(row):
 def validate_units(rows):
     """Build deterministic continuation units from already-authorized rows."""
     groups = OrderedDict()
-    identities = {}
+    # Keep chunk identities separate from unit identities. A continuation may
+    # appear before its root when rows are ordered by chunk_id; treating the
+    # unit key as an already-seen chunk then incorrectly rejects that valid
+    # unit as a duplicate.
+    chunk_versions = {}
+    unit_versions = {}
     for row in validate_chunks(rows):
         try:
             identifier = row["chunk_id"]
@@ -35,10 +40,13 @@ def validate_units(rows):
                 raise ValueError()
             if not isinstance(tree_version, str) or not tree_version:
                 raise ValueError()
-            if identifier in identities or key in identities and identities[key] != version:
+            if identifier in chunk_versions or (
+                    key in unit_versions and unit_versions[key] != version):
                 raise ValueError()
-            identities[identifier] = version
-            identities.setdefault(key, version)
+            if key in chunk_versions and chunk_versions[key] != version:
+                raise ValueError()
+            chunk_versions[identifier] = version
+            unit_versions.setdefault(key, version)
             groups.setdefault(key, []).append(row)
         except (KeyError, TypeError, ValueError):
             raise RetrievalError("STRUCTURE_UNAVAILABLE") from None

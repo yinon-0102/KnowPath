@@ -13,7 +13,7 @@ from knowpath_backend.test.test_rag_building import build_workspace
 from knowpath_backend.test.test_rag_external_cleanup import cleaner, erase, worker
 
 
-@pytest.mark.parametrize("mode", ["a", "b1"])
+@pytest.mark.parametrize("mode", ["a", "b1", "b15"])
 def test_cli_build_uses_protocol_prepare_with_real_builder(build_workspace, monkeypatch, tmp_path, mode):
     import dotenv
     import qdrant_client
@@ -48,7 +48,7 @@ def test_cli_build_uses_protocol_prepare_with_real_builder(build_workspace, monk
     assert main(["build", "--config", str(config), "--output", str(output)]) == 0
     manifest = json.loads(output.read_text(encoding="utf-8"))
     assert manifest["status"] == "ready" and manifest["a_ready"]
-    assert manifest["b1_ready"] is (mode == "b1")
+    assert manifest["b1_ready"] is (mode in {"b1", "b15"})
     assert repo.get_manifest(manifest["retrieval_version_id"], manifest["manifest_id"]) == manifest
     assert calls == [(mode, state.space_service.rag_scope_snapshot(space["id"]).scope_snapshot_id,
                       {"max_tokens": 500}, {"material_version_id": uploaded.version.id, "retry": False})]

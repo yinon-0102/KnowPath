@@ -112,6 +112,18 @@ def test_continuation_closure_deduplicates_repeated_seed_units(monkeypatch):
     assert len(ids(result)) == len(set(ids(result)))
 
 
+def test_continuation_closure_accepts_continuation_before_root(monkeypatch):
+    """Chunk-id ordering must not turn a valid continuation unit unavailable."""
+    rows = [row("u2", "alpha second", unit="u1", ordinal=1),
+            row("u1", "alpha first", ordinal=0),
+            row("other", "alpha unrelated", ordinal=2)]
+    result = plugin(monkeypatch, fused=[("u1", 1.0), ("other", .5)]).retrieve(
+        request(rerank_candidates=3, context_tokens=20), rows)
+
+    assert ids(result) == ["u1", "u2", "other"]
+    assert [entry["chunk_id"] for entry in result["trace"]["closures"]] == ["u2"]
+
+
 def test_continuation_closure_rejects_cross_version_unit(monkeypatch):
     rows = [row("u1", "alpha first", ordinal=0),
             row("u2", "alpha second", unit="u1", ordinal=1, version="m2")]

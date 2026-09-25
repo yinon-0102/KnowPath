@@ -6,6 +6,7 @@ from queue import Queue, Empty, Full
 import os
 import math
 import time
+from copy import deepcopy
 
 import httpx
 from qdrant_client import QdrantClient
@@ -18,7 +19,7 @@ from .model_services import BudgetedJsonModel
 from .pipeline import RagPipeline
 from .registry import create_plugin
 from .reranking import DashScopeReranker
-from .vector import QdrantContentIndex
+from .vector import QdrantContentIndex, current_dense_search_deadline
 from .verification import AnswerVerifier, VerificationError
 from .spending import RequestSpending, spending_configuration
 from .diagnostics import RequestJournal, JournalStream, failure_kind
@@ -90,6 +91,15 @@ def model_budget_configuration(settings):
         # Configuration errors must not echo accidental secrets or arbitrary
         # environment strings into API or evaluation output.
         raise ValueError('RAG_MODEL_BUDGET_INVALID') from None
+
+
+def retrieval_budget_for_mode(mode):
+    """Return the frozen retrieval budget for a named evaluation mode."""
+    if mode == 'a_large':
+        return RetrievalBudget(keyword_candidates=60, vector_candidates=60)
+    if mode in {'a', 'a0', 'f', 'b4', 'b1', 'b15', 'b2_r1', 'b3_unit'}:
+        return RetrievalBudget()
+    raise ValueError('RAG_PLUGIN_MODE_INVALID')
 
 
 class DeadlineTransport(httpx.BaseTransport):
@@ -182,6 +192,11 @@ class DeadlineTransport(httpx.BaseTransport):
         if type(stage_deadline) not in (int, float) or not math.isfinite(stage_deadline):
             raise VerificationError('RAG_DEADLINE_INVALID')
         deadline = min(self.deadline, stage_deadline)
+        focused_deadline = current_dense_search_deadline()
+        if focused_deadline is not None:
+            # Capture the caller context before handing work to the I/O owner;
+            # both socket phases and the exchange wait share the same limit.
+            deadline = min(deadline, focused_deadline)
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             raise VerificationError('RAG_DEADLINE_EXCEEDED')
@@ -260,8 +275,13 @@ class ConfiguredPipeline:
     def __init__(self, materials, spaces, settings, mode):
         self.materials, self.spaces, self.settings, self.mode = materials, spaces, settings, mode
         self.repo = SqlRagRepository(materials.unit_of_work.engine)
+        self.navigation_index = None
+        self.last_retrieval_snapshot = None
+        self.retrieval_snapshot_callback = None
+        self.diagnostic_callback = None
 
     def answer(self, question, **kwargs):
+        self.last_retrieval_snapshot = None
         timeout = float(os.getenv('RAG_DEADLINE_SECONDS', '120'))
         if not 0 < timeout <= 600:
             raise ValueError('invalid RAG deadline')
@@ -321,23 +341,38 @@ class ConfiguredPipeline:
                     'dimension': embedder.dimension, 'endpoint': self.settings.embedding_base_url}
                 dense = QdrantContentIndex(dense_client, os.getenv('RAG_COLLECTION_PREFIX', 'knowpath_rag_content'),
                     embedder.dimension, profile)
+                unit_dense = None
+                if self.mode == 'b3_unit':
+                    unit_dense = QdrantContentIndex(
+                        dense_client, os.getenv('RAG_COLLECTION_PREFIX', 'knowpath_rag_content') + '_units',
+                        embedder.dimension, profile)
                 # Keep tokenized material request-local: deletion must not leave
                 # a cross-request cache in another worker process.
-                plugin = create_plugin(self.mode, embedder, dense)
+                from .navigation import BoundedNavigator
+                navigator = (BoundedNavigator(BudgetedJsonModel(self.settings, client=http, journal=journal,
+                    stage='navigation', max_input_tokens=4000, max_output_tokens=512)) if self.mode in {'f','b4'} else None)
+                plugin = create_plugin(self.mode, embedder, dense, unit_dense=unit_dense,
+                    navigation_index=getattr(self, 'navigation_index', None), navigator=navigator)
                 model_options = dict(max_input_tokens=model_budget['model_input_tokens'],
                                      max_output_tokens=model_budget['model_output_tokens'])
                 generator = BudgetedJsonModel(self.settings, client=http, journal=journal, stage='generation', **model_options)
                 checker = BudgetedJsonModel(self.settings, client=http, journal=journal, stage='verification', **model_options)
                 reranker = DashScopeReranker(self.settings, client=http, max_input_tokens=90000)
                 from .capacity import AnswerCapacity
-                verifier = AnswerVerifier(generator, checker)
+                verifier = AnswerVerifier(generator, checker, diagnostic_callback=getattr(self, 'diagnostic_callback', None))
                 capacity = AnswerCapacity(verifier, generation_seconds=protocol['revision_generation_seconds'],
                     verification_seconds=protocol['revision_verification_seconds'], spending=spending)
                 verifier.capacity = capacity
                 verifier.revision_admission = capacity.admit_revision
                 instance = RagPipeline(self.repo, self.materials, self.spaces, plugin, reranker,
-                    verifier, budget=RetrievalBudget(),
-                    timeout_seconds=max(.001, deadline-time.monotonic()), require_b1=self.mode in {'b1', 'b2_r1'})
+                    verifier, budget=retrieval_budget_for_mode(self.mode),
+                    timeout_seconds=max(.001, deadline-time.monotonic()),
+                    require_b1=self.mode in {'b1', 'b15', 'b2_r1', 'b3_unit', 'f', 'b4'})
+                def snapshot(value):
+                    self.last_retrieval_snapshot = deepcopy(value)
+                    if self.retrieval_snapshot_callback is not None:
+                        self.retrieval_snapshot_callback(deepcopy(value))
+                instance.retrieval_snapshot_callback = snapshot
                 result = instance.answer(question, **kwargs)
                 result['trace']['spending_budget'] = spending.trace()
                 return result
@@ -350,8 +385,8 @@ class ConfiguredPipeline:
 
 def configured_pipeline(materials, spaces, settings=None):
     mode = os.getenv('LEARNING_RAG_PLUGIN', 'legacy').strip().lower()
-    if mode not in {'legacy', 'a', 'b1', 'b2_r1'}:
-        raise ValueError('LEARNING_RAG_PLUGIN must be legacy, a, b1, or b2_r1')
+    if mode not in {'legacy', 'a', 'a0', 'f', 'b4', 'a_large', 'b1', 'b15', 'b2_r1', 'b3_unit'}:
+        raise ValueError('LEARNING_RAG_PLUGIN must be legacy, a, a_large, b1, b15, b2_r1, or b3_unit')
     if mode == 'legacy':
         return None
     if not getattr(materials, 'unit_of_work', None):

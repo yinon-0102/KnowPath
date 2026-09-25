@@ -11,16 +11,28 @@ from uuid import uuid4
 from .contracts import Candidate, RetrievalResult
 from .plugins import OrdinaryPlugin
 from .tree import TreePlugin
+from .section import SectionPlugin
 from .continuation import ContinuationClosurePlugin
+from .unit_first import UnitFirstPlugin
+from .tree_navigation import TreeNavigationPlugin
+from .flat_navigation import FlatNavigationPlugin
 from .retrieval import RetrievalError
 from .verification import VerificationError
 
 
-REGISTRY = {"a": OrdinaryPlugin, "b1": TreePlugin, "b2_r1": ContinuationClosurePlugin}
+REGISTRY = {"a": OrdinaryPlugin, "a_large": OrdinaryPlugin, "b1": TreePlugin, "b15": SectionPlugin,
+            "b2_r1": ContinuationClosurePlugin, "b3_unit": UnitFirstPlugin,
+            'a0': OrdinaryPlugin, 'f': FlatNavigationPlugin, 'b4': TreeNavigationPlugin}
 TRACE_FIELDS = {"plugin", "keyword_count", "vector_count", "bm25_cache_hit", "budgets", "fused_count",
                 "seeds", "extensions", "fill", "rejected", "extra_read_count", "embedding_calls", "embedding_usage",
+                "fallback", "fallback_reason", "section_candidates", "selected_sections", "focused_children",
+                "focused_keyword_count", "focused_vector_count", "focused_bm25_cache_hit", "navigation_error",
                 "closures", "skipped_closures", "replacements", "structure_version_ids",
-                "structural_additions", "a_retention_at_40", "structure_unavailable"}
+                "structural_additions", "a_retention_at_40", "structure_unavailable",
+                "rerank_mode", "rerank_groups", "unit_hits", "unit_expansions", "skipped_units", "fallback_reason",
+                "baseline_candidate_ids", "baseline_candidate_sources", "unit_decisions", "generation_source",
+                'navigation', 'selected_node_ids', 'selected_packet_ids', 'selected_flat_unit_ids',
+                'frontier_omitted_ids', 'skipped_packets', 'a_top20_retained'}
 SAFE_ERRORS = {"VECTOR_INDEX_NOT_READY", "VECTOR_PROFILE_MISMATCH", "VECTOR_UNAVAILABLE", "VECTOR_INVALID_RESPONSE",
                "EMBEDDING_INPUT_INVALID", "EMBEDDING_UNAVAILABLE", "EMBEDDING_INVALID_RESPONSE", "RATE_LIMITED",
                "RETRIEVAL_DEADLINE_EXCEEDED", "RETRIEVAL_SCOPE_INVALID", "RETRIEVAL_INVALID_RESPONSE",
@@ -71,7 +83,7 @@ class ManagedPlugin:
             self.builder._current(snapshot)
             manifest = self.builder.build(snapshot.space_id, task_context["material_version_id"],
                                           max_tokens=max_tokens, retry=retry)
-            if self.name in {"b1", "b2_r1"}:
+            if self.name in {"b1", "b15", "b2_r1", "b3_unit"}:
                 manifest = self.builder.build_tree(manifest, retry=retry)
             self.builder._current(snapshot)
             if (manifest["scope_snapshot_id"] != snapshot.scope_snapshot_id
@@ -156,8 +168,16 @@ def create_plugin(name, embedder, dense, *, bm25_profile=None, cache_size=8,
         plugin_type = REGISTRY[name]
     except KeyError:
         raise ValueError("PLUGIN_UNKNOWN") from None
-    implementation = plugin_type(embedder, dense, bm25_profile=bm25_profile, cache_size=cache_size,
+    unit_dense = adapter_options.pop("unit_dense", None)
+    navigation_index = adapter_options.pop('navigation_index', None)
+    navigator = adapter_options.pop('navigator', None)
+    implementation_kwargs = dict(bm25_profile=bm25_profile, cache_size=cache_size,
                                  shared_cache=shared_cache, cache_lock=cache_lock)
+    if name == "b3_unit":
+        implementation_kwargs["unit_dense"] = unit_dense
+    if name in {'b4', 'f'}:
+        implementation_kwargs.update(navigation_index=navigation_index, navigator=navigator)
+    implementation = plugin_type(embedder, dense, **implementation_kwargs)
     def runtime_validator(manifests):
         for manifest in manifests:
             config = manifest["configuration"]
