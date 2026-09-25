@@ -26,6 +26,17 @@ def test_tree_ranking_metrics_score_multi_gold_and_no_hit():
     assert _rank_metrics([], gold)["mrr"] == 0.0
 
 
+def test_tree_ranking_ndcg_uses_fixed_gold_ideal_not_retrieved_hits():
+    from knowpath_backend.rag_eval.scoring import _rank_metrics
+    gold = [_rank_source("first")["source_spans"][0],
+            _rank_source("second", 20, 30)["source_spans"][0]]
+    metrics = _rank_metrics([_rank_source("first"), _rank_source("noise", 100, 110)], gold)
+    expected = (1 / __import__("math").log2(2)) / (
+        1 / __import__("math").log2(2) + 1 / __import__("math").log2(3))
+    assert metrics["ndcg_at"]["10"] == pytest.approx(expected)
+    assert metrics["ndcg_at"]["10"] < 1.0
+
+
 def test_tree_attribution_counts_only_extension_hits():
     from knowpath_backend.rag_eval.scoring import _tree_attribution
     gold = [{"material_version_id": "mv", "artifact_hash": "hash", "page": 1,
@@ -228,6 +239,83 @@ def test_runtime_models_and_budgets_enforced_before_opening_database(evaluation)
         configured_runtime(value)
 
 
+def test_runtime_configuration_records_only_nonsecret_database_identity(monkeypatch):
+    from knowpath_backend.learning.config import LearningSettings
+    from knowpath_backend.rag_eval.cli import runtime_configuration
+
+    monkeypatch.setenv("DATABASE_URL", "mysql+pymysql://eval_user:super-secret@db.example:3307/knowledge?ssl=true")
+    configuration = runtime_configuration(LearningSettings())
+    assert configuration["database_identity"] == {
+        "scheme": "mysql+pymysql", "host": "db.example", "port": 3307, "database": "knowledge"
+    }
+    assert "super-secret" not in json.dumps(configuration)
+    assert "eval_user" not in json.dumps(configuration)
+    assert "ssl=true" not in json.dumps(configuration)
+
+
+def test_freeze_marks_missing_database_identity_as_legacy(evaluation):
+    from knowpath_backend.rag_eval.dataset import freeze
+
+    result = freeze(evaluation[0], evaluation[0].parent / "legacy.freeze.json")
+    assert result["freeze_compatibility"] == "legacy_without_database_identity"
+
+
+def test_database_identity_mismatch_is_rejected_before_database_open(monkeypatch):
+    from knowpath_backend.learning.config import LearningSettings
+    from knowpath_backend.learning.persistence import db
+    from knowpath_backend.rag_eval import cli
+
+    settings = LearningSettings()
+    monkeypatch.setattr(LearningSettings, "from_env", classmethod(lambda cls: settings))
+    monkeypatch.setenv("DATABASE_URL", "sqlite:///eval-a.db")
+    configuration = cli.runtime_configuration(settings)
+    configuration.update(profile={"manifest_configuration_hashes": {}}, runtime_bindings={})
+    monkeypatch.setenv("DATABASE_URL", "sqlite:///eval-b.db")
+    monkeypatch.setattr(db, "create_db_engine", lambda: pytest.fail("database opened before identity check"))
+    with pytest.raises(ValueError, match="frozen models/prompts/budgets/environment"):
+        cli.configured_runtime({"config": configuration})
+
+
+def test_legacy_freeze_is_rejected_before_database_open(monkeypatch):
+    from knowpath_backend.learning.config import LearningSettings
+    from knowpath_backend.learning.persistence import db
+    from knowpath_backend.rag_eval import cli
+
+    settings = LearningSettings()
+    monkeypatch.setattr(LearningSettings, "from_env", classmethod(lambda cls: settings))
+    monkeypatch.setenv("DATABASE_URL", "sqlite:///eval-legacy.db")
+    configuration = cli.runtime_configuration(settings)
+    configuration.pop("database_identity")
+    configuration.update(profile={"manifest_configuration_hashes": {}}, runtime_bindings={})
+    monkeypatch.setattr(db, "create_db_engine", lambda: pytest.fail("legacy freeze opened database"))
+    with pytest.raises(ValueError, match="legacy freeze missing database identity"):
+        cli.configured_runtime({"config": configuration})
+
+
+def test_report_exposes_usage_and_call_observability(evaluation):
+    from knowpath_backend.rag_eval.runner import run
+    from knowpath_backend.rag_eval.scoring import report
+
+    def response():
+        value = answer()
+        value["trace"].update(generation_calls=1, verification_calls=1,
+            usage=[], rerank_calls=1, rerank_usage=None,
+            retrieval={"embedding_calls": 1}, embedding_usage=None)
+        return value
+
+    path = frozen(evaluation)
+    output = evaluation[0].parent / "observability-runs.jsonl"
+    run(path, output, pipeline_factory=lambda mode: SimpleNamespace(answer=lambda *a, **k: response()),
+        scope_resolver=resolver)
+    result = report(path, output)
+    metrics = result["plugins"]["a"]
+    assert metrics["usage_known_rate"] == 0
+    assert metrics["cost_unknown_reason"] == {"missing_provider_usage": 14}
+    assert metrics["call_counts"] == {
+        "generation": 14, "verification": 14, "embedding": 14, "rerank": 14
+    }
+
+
 def test_failed_calls_keep_full_pair_and_service_subset_denominators(evaluation):
     from knowpath_backend.rag_eval.runner import run
     from knowpath_backend.rag_eval.scoring import report
@@ -311,3 +399,204 @@ def test_candidate_and_rerank_coverage_use_offline_trace_with_missing_separate()
     assert evidence_coverage(response,gold,'candidate_sources') == 1
     assert evidence_coverage(response,gold,'reranked_sources') == 0
     assert evidence_coverage({},gold,'candidate_sources') is None
+
+
+def test_frozen_modes_default_and_allowlist(evaluation):
+    from knowpath_backend.rag_eval.dataset import EVALUATION_MODES, freeze
+    config, configuration = evaluation
+    destination = config.parent / "freeze-default.json"
+    frozen = freeze(config, destination)
+    assert frozen["config"]["modes"] == ["a", "b1"]
+    for value in (["a", "a"], ["b1", "b15"], ["a", "unknown"]):
+        configuration["modes"] = value
+        config.write_text(json.dumps(configuration), encoding="utf-8")
+        with pytest.raises(ValueError, match="modes"):
+            freeze(config, config.parent / ("freeze-" + str(len(value)) + ".json"))
+    assert set(EVALUATION_MODES) == {"a", "a_large", "b1", "b15", "b2_r1", "b3_unit", "parent_merge", "typed_edge", "a0", "f", "b4"}
+
+
+def test_b2_r1_is_a_runtime_mode_with_fixed_budget_metadata():
+    from knowpath_backend.rag_eval.dataset import mode_spec
+    spec = mode_spec("b2_r1")
+    assert spec["execution"] == "runtime"
+    assert spec["budget"]["closure"] == "continuation_only"
+
+
+def test_b3_unit_is_a_runtime_mode_with_fixed_budget_metadata():
+    from knowpath_backend.rag_eval.dataset import mode_spec
+    spec = mode_spec("b3_unit")
+    assert spec["execution"] == "runtime"
+    assert spec["budget"] == {"unit_admission": "rank_and_provenance", "candidate_limit": 40}
+
+
+def test_b3_attribution_reports_unit_expansion_and_leaf_evidence():
+    from knowpath_backend.rag_eval.scoring import _b3_attribution
+    first = _rank_source("first")
+    added = _rank_source("added", 20, 30)
+    response = {"sources": [first, added], "trace": {"plugin": "b3_unit", "retrieval": {
+        "unit_hits": ["first"],
+        "unit_expansions": [{"anchor_id": "first", "leaf_ids": ["first", "added"]}],
+        "rerank_groups": [{"group_id": "first", "leaf_ids": ["first", "added"],
+                            "retrieval_text": "unit text"}],
+        "structural_additions": 1,
+        "a_retention_at_40": 1.0,
+        "skipped_units": [],
+        "fallback_reason": None,
+    }, "candidate_sources": [first, added], "reranked_sources": [first, added]}}
+    result = _b3_attribution(response, [added["source_spans"][0]], relation_type="continuation")
+    assert result["unit_hit_count"] == 1
+    assert result["unit_expansion_count"] == 1
+    assert result["atomic_leaf_additions"] == 1
+    assert result["added_evidence_recall"] is None
+    assert result["added_evidence_recall_status"] == "missing_baseline"
+    assert result["context_evidence_recall"] == 1.0
+    assert result["structural_additions"] == 1
+    assert result["a_retention_at_40"] == 1.0
+    assert result["negative_control"] is False
+
+
+def test_b3_attribution_marks_negative_control_expansion():
+    from knowpath_backend.rag_eval.scoring import _b3_attribution
+    first = _rank_source("first")
+    added = _rank_source("added", 20, 30)
+    response = {"trace": {"plugin": "b3_unit", "retrieval": {
+        "unit_hits": ["first"],
+        "unit_expansions": [{"anchor_id": "first", "leaf_ids": ["first", "added"]}],
+        "structural_additions": 1, "a_retention_at_40": 1.0,
+        "rerank_groups": [], "skipped_units": [], "fallback_reason": None,
+    }, "candidate_sources": [first, added], "reranked_sources": [first, added]}}
+    result = _b3_attribution(response, [added["source_spans"][0]], relation_type="single_leaf")
+    assert result["negative_control"] is True
+    assert result["negative_control_expansion"] is True
+
+
+def test_b2_trace_attribution_reports_closure_and_negative_control_metrics():
+    from knowpath_backend.rag_eval.scoring import _b2_attribution
+    first = _rank_source("first")
+    continuation = _rank_source("continuation", 20, 30)
+    response = {"trace": {"retrieval": {
+        "closures": [{"unit_id": "unit-1", "chunk_id": "continuation", "edge_type": "continuation"}],
+        "structural_additions": 1, "a_retention_at_40": 0.9,
+        "replacements": [{"chunk_id": "replaced"}],
+        "skipped_closures": [{"unit_id": "unit-2", "reason": "context_budget"}],
+        "extensions": [{"unit_id": "unit-1", "chunk_id": "continuation", "edge_type": "continuation"}],
+    }, "reranked_sources": [first, continuation]}}
+    result = _b2_attribution(response, [continuation["source_spans"][0]],
+                              relation_type="single_leaf")
+    assert result["continuation_unit_recall"] == 1.0
+    assert result["continuation_unit_complete_recall"] == 1.0
+    assert result["structural_additions"] == 1
+    assert result["a_retention_at_40"] == 0.9
+    assert result["replacement_count"] == 1
+    assert result["skipped_closure_count"] == 1
+    assert result["negative_control_expansion"] is True
+
+
+def test_runner_rotates_four_modes_and_report_compares_to_a(evaluation):
+    from knowpath_backend.rag_eval.runner import run
+    from knowpath_backend.rag_eval.scoring import report
+    config, configuration = evaluation
+    configuration["modes"] = ["a", "a_large", "b1", "b15"]
+    config.write_text(json.dumps(configuration), encoding="utf-8")
+    freeze_path = frozen(evaluation)
+    output = config.parent / "four-mode-runs.jsonl"
+    calls = []
+    class Pipeline:
+        def __init__(self, mode): self.mode = mode
+        def answer(self, *args, **kwargs):
+            calls.append(self.mode)
+            return answer()
+    rows = run(freeze_path, output, pipeline_factory=Pipeline, scope_resolver=resolver)
+    assert len(rows) == 7 * 2 * 4
+    assert calls[:8] == ["a", "a_large", "b1", "b15", "a_large", "b1", "b15", "a"]
+    reviews = [dict(question_id=r["question_id"], plugin=r["plugin"], repeat=r["repeat"],
+                    success=r["plugin"] == "a", partial=False, error_type="context") for r in rows]
+    review_path = config.parent / "four-mode-reviews.json"
+    review_path.write_text(json.dumps(reviews), encoding="utf-8")
+    result = report(freeze_path, output, review_path)
+    assert set(result["plugins"]) == {"a", "a_large", "b1", "b15"}
+    assert result["plugins"]["b15"]["b15_attribution"] is not None
+    assert result["comparisons"]["a_large"]["success_rate_minus_a"] == -1
+    assert result["comparisons"]["b15"]["success_rate_minus_a"] == -1
+
+
+def test_b15_attribution_uses_only_explicit_extension_trace():
+    from knowpath_backend.rag_eval.scoring import _tree_attribution
+    span = {"material_version_id": "mv", "artifact_hash": "hash", "page": 1,
+            "block": "block", "start": 0, "end": 10}
+    response = {"trace": {"extensions": [{"chunk_id": "ext", "source_spans": [span]}],
+                           "candidate_sources": [{"chunk_id": "noise", "source_spans": [span]}]}}
+    result = _tree_attribution(response, [span])
+    assert result["extension_count"] == 1
+    assert result["extension_only_recall"] == 1.0
+
+
+def test_ablation_modes_are_injected_only_with_frozen_budgets():
+    from knowpath_backend.rag_eval.dataset import ablation_fallback, mode_spec
+    parent = mode_spec("parent_merge")
+    typed = mode_spec("typed_edge")
+    assert parent["execution"] == "injected_offline"
+    assert parent["budget"]["sibling_candidate_limit"] == 0
+    assert typed["execution"] == "injected_offline"
+    assert typed["budget"]["typed_edge_hops"] == 1
+    assert not ablation_fallback("parent_merge", "parent_context")
+    assert ablation_fallback("parent_merge", "same_section")
+    assert not ablation_fallback("typed_edge", "typed_cross_reference")
+    assert ablation_fallback("typed_edge", "single_leaf")
+
+
+def test_offline_ablation_trace_requires_parent_or_provenance_relation():
+    from knowpath_backend.rag_eval.scoring import _ablation_attribution
+    parent = _ablation_attribution(
+        {"trace": {"ablation": {"mode": "parent_merge", "trace_status": "complete",
+            "parent_context_ids": ["parent"], "sibling_candidate_ids": []}}},
+        "parent_merge", {"relation_type": "parent_context"})
+    assert parent["eligible"] is True and parent["fallback"] is False
+    assert parent["parent_context_count"] == 1 and parent["sibling_candidate_count"] == 0
+    typed = _ablation_attribution(
+        {"trace": {"ablation": {"mode": "typed_edge", "trace_status": "complete", "edges": [
+            {"edge_type": "typed_cross_reference", "provenance": {"source": "review"}},
+            {"edge_type": "typed_cross_reference"},
+            {"edge_type": "same_section", "provenance": {"source": "review"}},
+        ]}}}, "typed_edge", {"relation_type": "typed_cross_reference"})
+    assert typed["typed_edge_count"] == 2
+    assert typed["provenance_edge_count"] == 1
+    fallback = _ablation_attribution({"trace": {}}, "typed_edge", {"relation_type": "single_leaf"})
+    assert fallback["eligible"] is False and fallback["fallback"] is True
+
+
+def test_real_runtime_refuses_offline_ablation_modes_without_model_calls(evaluation):
+    from knowpath_backend.rag_eval.runner import run
+    config, configuration = evaluation
+    configuration["modes"] = ["a", "parent_merge"]
+    config.write_text(json.dumps(configuration), encoding="utf-8")
+    output = config.parent / "offline-ablation-runtime.jsonl"
+    class RealFactory:
+        real_runtime = True
+        def __call__(self, mode):
+            raise AssertionError("offline ablation must not call the live factory")
+    rows = run(frozen(evaluation), output, pipeline_factory=RealFactory(), scope_resolver=resolver)
+    assert len(rows) == 7 * 2 * 2
+    assert all(row["error_code"] == "EVALUATION_MODE_OFFLINE_ONLY"
+               for row in rows if row["plugin"] == "parent_merge")
+
+
+def test_cli_rejects_offline_ablation_before_runtime_setup():
+    from knowpath_backend.rag_eval.cli import configured_runtime
+    with pytest.raises(ValueError, match="injected offline"):
+        configured_runtime({"config": {"modes": ["a", "typed_edge"]}})
+
+
+def test_report_accepts_valid_mode_set_without_b1(evaluation):
+    from knowpath_backend.rag_eval.runner import run
+    from knowpath_backend.rag_eval.scoring import report
+    config, configuration = evaluation
+    configuration["modes"] = ["a", "a_large"]
+    config.write_text(json.dumps(configuration), encoding="utf-8")
+    freeze_path = frozen(evaluation)
+    output = config.parent / "a-large-runs.jsonl"
+    run(freeze_path, output, pipeline_factory=lambda mode: SimpleNamespace(answer=lambda *a, **k: answer()),
+        scope_resolver=resolver)
+    result = report(freeze_path, output)
+    assert set(result["plugins"]) == {"a", "a_large"}
+    assert result["comparisons"]["a_large"]["success_rate_minus_a"] is None

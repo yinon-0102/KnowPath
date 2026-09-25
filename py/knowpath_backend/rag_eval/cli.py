@@ -5,7 +5,7 @@ import os
 from pathlib import Path
 import sys
 
-from .dataset import freeze, verify_freeze
+from .dataset import freeze, mode_spec, verify_freeze
 from .runner import run
 from .scoring import report
 
@@ -17,6 +17,7 @@ def runtime_configuration(settings):
     from knowpath_backend.learning.rag.spending import spending_configuration
     from knowpath_backend.learning.rag.runtime import model_budget_configuration
     from knowpath_backend.learning.rag.protocol_config import protocol_configuration
+    from knowpath_backend.learning.persistence.db import database_identity
     models = {name: getattr(settings, name) for name in ("chat_provider", "chat_model", "chat_base_url",
         "embedding_provider", "embedding_model", "embedding_dimension", "embedding_base_url")}
     models.update(rerank_model=os.getenv("RAG_RERANK_MODEL") or DEFAULT_RERANK_MODEL,
@@ -25,13 +26,17 @@ def runtime_configuration(settings):
         chat_timeout_seconds=settings.chat_timeout_seconds, model_context_tokens=settings.context_budget_tokens,
         **model_budget_configuration(settings), rerank_input_tokens=90000,
         rerank_candidates=40, transport_retries=0, spending=spending_configuration())
-    return dict(models=models, budgets=budgets, prompts={"implementation": "frozen_python_sources",
+    return dict(database_identity=database_identity(), models=models, budgets=budgets, prompts={"implementation": "frozen_python_sources",
                 'protocol':protocol_configuration(settings)},
                 environment={"qdrant_url": os.getenv("QDRANT_URL", "http://127.0.0.1:6333"),
                              "collection_prefix": os.getenv("RAG_COLLECTION_PREFIX", "knowpath_rag_content")})
 
 
 def configured_runtime(frozen):
+    config = frozen["config"]
+    if any(mode_spec(mode, config)["execution"] == "injected_offline"
+           for mode in config.get("modes", ("a", "b1"))):
+        raise ValueError("parent_merge and typed_edge require injected offline evaluation")
     from knowpath_backend.learning.config import LearningSettings
     from knowpath_backend.learning.persistence.db import create_db_engine
     from knowpath_backend.learning.persistence.material_repository import SqlAlchemyMaterialRepository
@@ -41,8 +46,12 @@ def configured_runtime(frozen):
     from knowpath_backend.learning.state import LearningState
     settings = LearningSettings.from_env()
     actual = runtime_configuration(settings)
-    config = frozen["config"]
-    if any(config.get(key) != value for key, value in actual.items()):
+    non_database_keys = tuple(key for key in actual if key != "database_identity")
+    if any(config.get(key) != actual[key] for key in non_database_keys):
+        raise ValueError("frozen models/prompts/budgets/environment do not match the configured runtime")
+    if not isinstance(config.get("database_identity"), dict):
+        raise ValueError("legacy freeze missing database identity")
+    if config["database_identity"] != actual["database_identity"]:
         raise ValueError("frozen models/prompts/budgets/environment do not match the configured runtime")
     configurations = {}
     for binding in config["runtime_bindings"].values():

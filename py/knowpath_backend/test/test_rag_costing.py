@@ -76,3 +76,63 @@ def test_token_only_embedding_price_does_not_require_batch_count():
     trace = {'retrieval': {'embedding_calls': 1}, 'embedding_usage': {
         'model': 'model', 'input_tokens': 100, 'complete': True}}
     assert estimate(trace, pricing)['amount'] == pytest.approx(.0002)
+
+
+def test_cost_includes_navigation_physical_calls_and_usage():
+    pricing = {'currency': 'CNY', 'date': '2026-09-20', 'price_table': {
+        'chat': {'input_per_million': 1, 'output_per_million': 1},
+        'nav': {'input_per_million': 1, 'output_per_million': 1},
+    }}
+    trace = {'generation_calls': 1, 'verification_calls': 1,
+        'usage': [{'model': 'chat', 'input_tokens': 100, 'output_tokens': 10},
+                  {'model': 'chat', 'input_tokens': 100, 'output_tokens': 10}],
+        'retrieval': {'navigation': {'calls': [{'usage': {'model': 'nav', 'input_tokens': 900,
+                                  'output_tokens': 30}, 'elapsed_seconds': 1.5}]}}}
+    assert estimate(trace, pricing)['amount'] == pytest.approx(.00115)
+
+
+def test_cost_with_paid_navigation_missing_usage_is_unknown():
+    pricing = {'currency': 'CNY', 'date': '2026-09-20', 'price_table': {
+        'chat': {'input_per_million': 2, 'output_per_million': 4},
+        'nav': {'input_per_million': 1, 'output_per_million': 3},
+    }}
+    trace = {'generation_calls': 1, 'usage': [{'model': 'chat', 'input_tokens': 100, 'output_tokens': 10}],
+             'retrieval': {'navigation': {'calls': [{'usage': None, 'failure': 'provider_failure'}]}}}
+    assert estimate(trace, pricing) is None
+
+
+def test_navigation_fallback_cost_includes_paid_failed_attempt_without_double_counting():
+    pricing = {'currency': 'CNY', 'date': '2026-09-24', 'price_table': {
+        'chat': {'input_per_million': 1, 'output_per_million': 1, 'per_call': .01}}}
+    counters = {'model': 'chat', 'input_tokens': 90, 'output_tokens': 10}
+    trace = {'generation_calls': 1, 'usage': [counters], 'retrieval': {'fallback': True,
+        'navigation': {'calls': [{'usage': counters, 'failure': 'invalid_selection'}]}},
+        'call_journal': {'calls': [{'stage': 'generation', 'usage': counters},
+                                   {'stage': 'navigation', 'usage': counters}]}}
+    assert estimate(trace, pricing)['amount'] == pytest.approx(.0202)
+
+
+def test_navigation_without_trace_but_journal_calls_cannot_be_priced_as_free():
+    pricing = {'currency': 'CNY', 'date': '2026-09-24', 'price_table': {
+        'chat': {'input_per_million': 1, 'output_per_million': 1}}}
+    trace = {'generation_calls': 1, 'usage': [{'model': 'chat', 'input_tokens': 100, 'output_tokens': 10}],
+             'call_journal': {'calls': [{'stage': 'navigation', 'usage': {'input_tokens': 900, 'output_tokens': 30}}]}}
+    assert estimate(trace, pricing) is None
+
+
+def test_navigation_usage_disagreement_cannot_be_reported_complete():
+    pricing = {'currency': 'CNY', 'date': '2026-09-24', 'price_table': {
+        'chat': {'input_per_million': 1, 'output_per_million': 1}}}
+    trace = {'generation_calls': 0, 'retrieval': {'navigation': {'calls': [
+        {'usage': {'model': 'chat', 'input_tokens': 90, 'output_tokens': 10}}]}},
+        'call_journal': {'calls': [{'stage': 'navigation', 'usage': {'input_tokens': 91, 'output_tokens': 10}}]}}
+    assert estimate(trace, pricing) is None
+
+
+def test_navigation_journal_normalized_token_aliases_and_no_model_are_same_call():
+    pricing = {'currency': 'CNY', 'date': '2026-09-24', 'price_table': {
+        'chat': {'input_per_million': 1, 'output_per_million': 1}}}
+    trace = {'retrieval': {'navigation': {'calls': [dict(usage=dict(
+        model='chat', prompt_tokens=90, completion_tokens=10, estimated_input_tokens=200))]}},
+        'call_journal': {'calls': [dict(stage='navigation', usage=dict(input_tokens=90, output_tokens=10))]}}
+    assert estimate(trace, pricing)['amount'] == pytest.approx(.0001)
