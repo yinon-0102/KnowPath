@@ -148,6 +148,69 @@
           }
         }
       }
+    },
+    "/api/v1/learning-spaces/{space_id}/policy-replays": {
+      "post": {
+        "summary": "Replay Policy",
+        "operationId": "replay_policy_api_v1_learning_spaces__space_id__policy_replays_post",
+        "parameters": [
+          {
+            "name": "space_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Space Id"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Idempotency-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReplayRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "schemas": {
@@ -178,6 +241,49 @@
         "budgets_minutes_per_day"
       ],
       "title": "ComparePlans"
+    },
+    "ReplayRequest": {
+      "properties": {
+        "limit": {
+          "type": "integer",
+          "maximum": 1000.0,
+          "minimum": 1.0,
+          "title": "Limit",
+          "default": 200
+        },
+        "minimum_delay_hours": {
+          "type": "integer",
+          "maximum": 8760.0,
+          "minimum": 24.0,
+          "title": "Minimum Delay Hours",
+          "default": 24
+        },
+        "from_time": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "From Time"
+        },
+        "to_time": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "To Time"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "title": "ReplayRequest"
     }
   },
   "adaptive_property": {

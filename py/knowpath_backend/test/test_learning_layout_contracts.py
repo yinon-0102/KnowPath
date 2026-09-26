@@ -69,9 +69,9 @@ def test_full_openapi_matches_pre_refactor_contract():
                 yield from api_routes(included.routes)
 
     routes = list(api_routes(app.routes))
-    assert len(routes) == 56
+    assert len(routes) == 57
     assert all(isinstance(route, ContractRoute) for route in routes)
-    assert len({(route.path, method) for route in routes for method in route.methods}) == 56
+    assert len({(route.path, method) for route in routes for method in route.methods}) == 57
 
 
 def test_mysql_schema_matches_pre_refactor_contract():
