@@ -72,3 +72,27 @@ class ResetState(StrictRequest):
 class GradeReview(StrictRequest):
     question_id: str = Field(min_length=1)
     reason: str = Field(min_length=1, max_length=2000)
+
+
+class QuestionReport(GradeReview):
+    expected_review_version: int = Field(ge=0)
+
+
+class QuestionResolution(StrictRequest):
+    action: Literal["correct", "invalidate", "reject"]
+    expected_review_version: int = Field(ge=0)
+    confirmed: bool
+    reason: str = Field(min_length=1, max_length=2000)
+    source_refs: list[dict] = Field(min_length=1, max_length=100)
+    corrected_answer_key: str | None = Field(default=None, min_length=1, max_length=8000)
+    corrected_rubric: str | None = Field(default=None, min_length=1, max_length=8000)
+
+    @model_validator(mode="after")
+    def explicit_confirmation(self):
+        if self.confirmed is not True:
+            raise ValueError("必须明确确认已核对封存来源和裁决内容")
+        if self.action == "correct" and self.corrected_rubric is None:
+            raise ValueError("更正必须提供完整评分标准")
+        if self.action != "correct" and (self.corrected_answer_key is not None or self.corrected_rubric is not None):
+            raise ValueError("仅更正裁决可修改答案和评分标准")
+        return self

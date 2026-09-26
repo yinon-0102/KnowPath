@@ -47,12 +47,15 @@ def test_full_openapi_matches_pre_refactor_contract():
     actual = app.openapi()
     # Preserve historical contracts; freeze each additive review operation and
     # its request schema separately from the original pre-refactor snapshot.
+    reviews = json.loads((FIXTURES / 'learning_question_reviews_openapi.json').read_text(encoding='utf-8'))
     algorithms = json.loads((FIXTURES / 'learning_algorithms_openapi.json').read_text(encoding='utf-8'))
-    assert set(actual['paths']) - set(expected['paths']) == {'/api/v1/learning-spaces/{space_id}/citations/resolve'} | set(algorithms['paths'])
+    assert set(actual['paths']) - set(expected['paths']) == {'/api/v1/learning-spaces/{space_id}/citations/resolve'} | set(reviews['paths']) | set(algorithms['paths'])
     assert {path: actual['paths'].pop(path) for path in algorithms['paths']} == algorithms['paths']
+    assert {path: actual['paths'].pop(path) for path in reviews['paths']} == reviews['paths']
     actual['paths'].pop('/api/v1/learning-spaces/{space_id}/citations/resolve')
-    assert set(actual['components']['schemas']) - set(expected['components']['schemas']) == {'Citation','SourceSpan'} | set(algorithms['schemas'])
+    assert set(actual['components']['schemas']) - set(expected['components']['schemas']) == {'Citation','SourceSpan'} | set(reviews['schemas']) | set(algorithms['schemas'])
     assert {name: actual['components']['schemas'].pop(name) for name in algorithms['schemas']} == algorithms['schemas']
+    assert {name: actual['components']['schemas'].pop(name) for name in reviews['schemas']} == reviews['schemas']
     for name in ('Citation','SourceSpan'):
         actual['components']['schemas'].pop(name)
     assert actual == expected
@@ -65,9 +68,9 @@ def test_full_openapi_matches_pre_refactor_contract():
                 yield from api_routes(included.routes)
 
     routes = list(api_routes(app.routes))
-    assert len(routes) == 51
+    assert len(routes) == 54
     assert all(isinstance(route, ContractRoute) for route in routes)
-    assert len({(route.path, method) for route in routes for method in route.methods}) == 51
+    assert len({(route.path, method) for route in routes for method in route.methods}) == 54
 
 
 def test_mysql_schema_matches_pre_refactor_contract():

@@ -12,8 +12,9 @@ from knowpath_backend.learning.assessments.schemas import CreateAssessment, Reco
 from knowpath_backend.learning.errors import DomainConflict, DomainNotFound
 from knowpath_backend.learning.assessments.mastery import aggregate, MasteryPolicy
 from knowpath_backend.learning.assessments.review_policy import enrich_observation_times, project_review_state
-from knowpath_backend.learning.assessments.grading import grade_answer
+from knowpath_backend.learning.assessments.grading import grade_answer, effective_question
 from knowpath_backend.learning.assessments.grade_reviews import review_grade
+from knowpath_backend.learning.assessments.question_reviews import report_question, resolve_question_review, question_reviews
 from knowpath_backend.learning.assessments.generation import DashScopeQuestionGenerator, QuestionGenerationError, validate_questions
 from knowpath_backend.learning.spaces.service import SpaceService, now
 from knowpath_backend.learning.materials.source_access import apply_source_assistance
@@ -288,6 +289,15 @@ class AssessmentService:
 
     def review_grade(self, assessment_id, payload, key=None):
         return review_grade(self, assessment_id, payload, key)
+
+    def report_question(self, assessment_id, payload, key=None):
+        return report_question(self, assessment_id, payload, key)
+
+    def resolve_question_review(self, assessment_id, review_id, payload, key=None):
+        return resolve_question_review(self, assessment_id, review_id, payload, key)
+
+    def question_reviews(self, assessment_id):
+        return question_reviews(self, assessment_id)
 
     def result(self, assessment_id):
         assessment = self.repository.get_record("assessments", assessment_id)

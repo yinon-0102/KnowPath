@@ -1,7 +1,23 @@
 """Conservative scoring of frozen questions and immutable submitted answers."""
+from copy import deepcopy
+
+
+def effective_question(assessment, question):
+    """Replay confirmed local revisions; never mutate the generated snapshot."""
+    effective = deepcopy(question)
+    effective["question_review_status"] = "accepted"
+    for event in assessment["snapshot"].get("question_review_events", []):
+        if event["question_id"] != question["id"]:
+            continue
+        if event["action"] == "correct":
+            effective.update(event["correction"])
+        effective["question_review_status"] = event["question_status"]
+    return effective
 
 
 def grade_answer(question, answer):
+    if question.get("question_review_status") in {"pending", "invalid"}:
+        return None, "unverified", "题目已隔离，等待人工确认或已作废，不计入掌握度"
     if answer is None:
         return None, "unverified", "insufficient_evidence: 未作答"
     if question["type"] == "single_choice":

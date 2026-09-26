@@ -8,7 +8,7 @@ from fastapi import APIRouter
 from fastapi import BackgroundTasks, Header
 from fastapi.responses import JSONResponse
 
-from knowpath_backend.learning.assessments.schemas import CreateAssessment, RecordAttempt, FinalizeAssessment, GradeReview
+from knowpath_backend.learning.assessments.schemas import CreateAssessment, RecordAttempt, FinalizeAssessment, GradeReview, QuestionReport, QuestionResolution
 from ...errors import DomainConflict, DomainNotFound
 from ..contract import ContractRoute
 from ..dependencies import LearningStateDep, SettingsDep
@@ -64,5 +64,29 @@ def assessment_result(state: LearningStateDep, assessment_id: str) -> JSONRespon
 def grade_review(state: LearningStateDep, assessment_id: str, payload: GradeReview, idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None) -> JSONResponse:
     try:
         return JSONResponse(status_code=202, content=state.grade_review(assessment_id, payload.model_dump(), idempotency_key=idempotency_key))
+    except (DomainNotFound, DomainConflict) as exc:
+        return _domain_error(exc)
+
+
+@router.get("/api/v1/assessments/{assessment_id}/question-reviews")
+def get_question_reviews(state: LearningStateDep, assessment_id: str) -> JSONResponse:
+    try:
+        return JSONResponse(status_code=200, content=state.assessment_service.question_reviews(assessment_id))
+    except (DomainNotFound, DomainConflict) as exc:
+        return _domain_error(exc)
+
+
+@router.post("/api/v1/assessments/{assessment_id}/question-reviews", status_code=201)
+def report_question(state: LearningStateDep, assessment_id: str, payload: QuestionReport, idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None) -> JSONResponse:
+    try:
+        return JSONResponse(status_code=201, content=state.assessment_service.report_question(assessment_id, payload.model_dump(), idempotency_key))
+    except (DomainNotFound, DomainConflict) as exc:
+        return _domain_error(exc)
+
+
+@router.post("/api/v1/assessments/{assessment_id}/question-reviews/{review_id}/resolve")
+def resolve_question_review(state: LearningStateDep, assessment_id: str, review_id: str, payload: QuestionResolution, idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None) -> JSONResponse:
+    try:
+        return JSONResponse(status_code=200, content=state.assessment_service.resolve_question_review(assessment_id, review_id, payload.model_dump(), idempotency_key))
     except (DomainNotFound, DomainConflict) as exc:
         return _domain_error(exc)
