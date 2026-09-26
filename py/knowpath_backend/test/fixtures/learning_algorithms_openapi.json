@@ -85,9 +85,101 @@
           }
         }
       }
+    },
+    "/api/v1/learning-spaces/{space_id}/plan-comparisons": {
+      "post": {
+        "summary": "Compare Plans",
+        "operationId": "compare_plans_api_v1_learning_spaces__space_id__plan_comparisons_post",
+        "parameters": [
+          {
+            "name": "space_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Space Id"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Idempotency-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ComparePlans"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
-  "schemas": {},
+  "schemas": {
+    "ComparePlans": {
+      "properties": {
+        "budgets_minutes_per_day": {
+          "items": {
+            "type": "integer",
+            "maximum": 480.0,
+            "minimum": 1.0
+          },
+          "type": "array",
+          "maxItems": 5,
+          "minItems": 2,
+          "title": "Budgets Minutes Per Day"
+        },
+        "horizon_days": {
+          "type": "integer",
+          "maximum": 30.0,
+          "minimum": 1.0,
+          "title": "Horizon Days",
+          "default": 7
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "budgets_minutes_per_day"
+      ],
+      "title": "ComparePlans"
+    }
+  },
   "adaptive_property": {
     "type": "boolean",
     "title": "Adaptive",
