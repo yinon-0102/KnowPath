@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from hashlib import sha256
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -10,11 +11,22 @@ from sqlalchemy.orm import Session
 from knowpath_backend.learning.persistence.db import IdempotencyRow, MaterialRawRow, MaterialRow, MaterialVersionRow, SourceChunkRow
 from knowpath_backend.learning.materials.service import IdempotencyConflict, Material, MaterialNotFound, MaterialVersion, SourceChunk, parser_kind
 from knowpath_backend.learning.persistence.unit_of_work import SqlAlchemyUnitOfWork
+from knowpath_backend.learning.materials.raw_storage import RawStorageError, configured_raw_store, raw_object_key
 
 
 class SqlAlchemyMaterialRepository:
-    def __init__(self, engine, *, unit_of_work=None) -> None:
+    def __init__(self, engine, *, unit_of_work=None, raw_store=None) -> None:
         self.unit_of_work = unit_of_work or SqlAlchemyUnitOfWork(engine)
+        self.raw_store = raw_store
+
+    @classmethod
+    def from_env(cls, engine):
+        return cls(engine, raw_store=configured_raw_store())
+
+    def close(self):
+        close = getattr(self.raw_store, 'close', None)
+        if close:
+            close()
 
     def transaction(self):
         return self.unit_of_work.transaction()
@@ -115,13 +127,49 @@ class SqlAlchemyMaterialRepository:
                 MaterialVersionRow.id == version_id).with_for_update())
             if version is None:
                 raise MaterialNotFound(version_id)
+            if sha256(content).hexdigest() != version.content_hash:
+                raise ValueError('raw material content is immutable')
             row = session.scalar(select(MaterialRawRow).where(
                 MaterialRawRow.version_id == version_id).with_for_update())
             if row is not None:
-                if row.content != content:
+                if self._read_raw(row, version) != content:
                     raise ValueError("raw material content is immutable")
                 return
-            session.add(MaterialRawRow(version_id=version_id, content=bytes(content)))
+            if self.raw_store is None:
+                session.add(MaterialRawRow(version_id=version_id, content=bytes(content)))
+            else:
+                key = raw_object_key(version_id)
+                self._compensate_on_rollback(session, version_id, key)
+                etag = self.raw_store.put(key, content, content_type=version.media_type)
+                session.add(MaterialRawRow(version_id=version_id, content=None,
+                    storage_backend=self.raw_store.backend, bucket=self.raw_store.bucket, object_key=key, etag=etag))
+
+    def _compensate_on_rollback(self, session, version_id, key):
+        def cleanup():
+            # 重查已提交引用，不能因提交回执丢失而误删实际已提交的原文件。
+            with self.unit_of_work._sessions.begin() as check:
+                check.scalar(select(MaterialVersionRow).where(MaterialVersionRow.id == version_id).with_for_update())
+                row = check.get(MaterialRawRow, version_id)
+                if row is not None and row.storage_backend == 'minio' and row.object_key == key:
+                    return
+                self.raw_store.delete(key)
+        session.info.setdefault('raw_rollback', []).append(cleanup)
+
+    def _store_for(self, backend, bucket):
+        if self.raw_store is None or self.raw_store.backend != backend or self.raw_store.bucket != bucket:
+            raise RawStorageError('原始资料对象存储配置不匹配')
+        return self.raw_store
+
+    def _read_raw(self, row, version):
+        if row.storage_backend == 'sql':
+            return row.content
+        store = self._store_for(row.storage_backend, row.bucket)
+        if row.object_key != raw_object_key(version.id):
+            raise RawStorageError('原始资料对象引用无效')
+        content = store.get(row.object_key)
+        if content is None or len(content) != version.size_bytes or sha256(content).hexdigest() != version.content_hash:
+            raise RawStorageError('原始资料对象缺失或校验失败')
+        return content
 
     def get_raw(self, version_id: str) -> bytes | None:
         with self.unit_of_work.session() as session:
@@ -129,7 +177,25 @@ class SqlAlchemyMaterialRepository:
             if self.unit_of_work.active:
                 query = query.with_for_update().execution_options(populate_existing=True)
             row = session.scalar(query)
-            return row.content if row is not None else None
+            if row is None:
+                return None
+            version = session.get(MaterialVersionRow, version_id)
+            return self._read_raw(row, version) if version else None
+
+    def raw_objects(self, material_id):
+        with self.unit_of_work.session() as session:
+            rows = session.scalars(select(MaterialRawRow).join(MaterialVersionRow,
+                MaterialRawRow.version_id == MaterialVersionRow.id).where(
+                MaterialVersionRow.material_id == material_id, MaterialRawRow.storage_backend == 'minio')
+                .with_for_update().execution_options(populate_existing=True))
+            return [dict(version_id=row.version_id, storage_backend=row.storage_backend,
+                         bucket=row.bucket, object_key=row.object_key) for row in rows]
+
+    def delete_raw_objects(self, objects):
+        for item in objects:
+            if item['object_key'] != raw_object_key(item['version_id']):
+                raise RawStorageError('原始资料删除目标无效')
+            self._store_for(item['storage_backend'], item['bucket']).delete(item['object_key'])
 
     def update_version(self, version: MaterialVersion) -> None:
         with self.unit_of_work.session() as session:

@@ -186,6 +186,7 @@ class MaterialDeletionService:
             self.graphs.repository.delete_history(material_id, [r['id'] for r in histories])
             self._invalidate_replays(material_id, {s['id'] for s in affected_spaces})
             rag_cleanup = dict(material_version_ids=[], rag_indexes=[], rag_write_ids=[])
+            raw_objects = getattr(self.materials, 'raw_objects', lambda _: [])(material_id)
             if self.uow:
                 from .rag_cleanup import capture_rag_cleanup
                 with self.uow.session() as session:
@@ -195,6 +196,7 @@ class MaterialDeletionService:
             event = {'id': str(uuid4()), 'event_type': 'material.delete', 'aggregate_type': 'material',
                      'aggregate_id': material_id, 'payload': {'material_id': material_id, 'run_id': run['id'],
                          'revision_ids': [r['id'] for r in histories], 'collections': sorted(collections),
+                         **({'raw_objects': raw_objects} if raw_objects else {}),
                          **rag_cleanup}, 'status': 'pending', 'attempts': 0,
                      'lease_token': None, 'lease_until': None, 'available_at': None, 'created_at': now()}
             self.repository.put_record('outbox', event)
@@ -248,6 +250,10 @@ class MaterialDeletionWorker:
                 if intent['event_type'] != 'rag.index.write' or intent['status'] not in {'completed', 'abandoned'}:
                     raise RuntimeError('RAG_WRITE_IN_PROGRESS')
             self.cleaner.delete(claimed['payload'])
+            # 即使元数据已删除，也必须确认原始对象清除后才完成 Run。
+            objects = claimed['payload'].get('raw_objects', [])
+            if objects:
+                self.service.materials.delete_raw_objects(objects)
             succeeded = True
         except Exception:
             pass  # Persist retry metadata, never credentials or source content.

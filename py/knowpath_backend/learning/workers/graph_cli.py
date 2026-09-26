@@ -23,10 +23,11 @@ def main(argv=None):
     if not 0.1 <= args.poll_seconds <= 60:
         parser.error("--poll-seconds must be between 0.1 and 60")
     load_dotenv()
-    engine = preparer = None
+    engine = preparer = state = materials = None
     try:
         engine = create_db_engine()
-        state = LearningState(SqlAlchemyMaterialRepository(engine))
+        materials = SqlAlchemyMaterialRepository.from_env(engine)
+        state = LearningState(materials)
         preparer = configured_graph_preparer(state.material_repository)
         parse_worker = MaterialParseWorker(state.graph_service)
         worker = GraphWorker(state.graph_service, preparer)
@@ -51,10 +52,16 @@ def main(argv=None):
         print("GRAPH_WORKER_START_FAILED", file=sys.stderr)
         return 1
     finally:
-        if preparer is not None:
-            preparer.close()
-        if engine is not None:
-            engine.dispose()
+        try:
+            if preparer is not None:
+                preparer.close()
+        finally:
+            try:
+                if materials is not None:
+                    materials.close()
+            finally:
+                if engine is not None:
+                    engine.dispose()
 
 
 if __name__ == "__main__":

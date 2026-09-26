@@ -42,7 +42,7 @@ def test_migrations_load_backend_dotenv_without_overriding_environment(
     engine = sa.create_engine(expected)
     try:
         with engine.connect() as connection:
-            assert connection.scalar(sa.text("SELECT version_num FROM alembic_version")) == "0014_rag_snapshots"
+            assert connection.scalar(sa.text("SELECT version_num FROM alembic_version")) == "0015_material_object_storage"
     finally:
         engine.dispose()
     assert not (tmp_path / "fallback.db").exists()
@@ -86,7 +86,7 @@ def test_empty_database_upgrade_matches_current_schema(migration_database):
     config, engine = migration_database
     command.upgrade(config, "head")
     with engine.connect() as connection:
-        assert connection.scalar(sa.text("SELECT version_num FROM alembic_version")) == "0014_rag_snapshots"
+        assert connection.scalar(sa.text("SELECT version_num FROM alembic_version")) == "0015_material_object_storage"
         context = MigrationContext.configure(connection, opts={"compare_type": True})
         assert compare_metadata(context, Base.metadata) == []
     assert "run_events" in sa.inspect(engine).get_table_names()

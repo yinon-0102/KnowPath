@@ -94,7 +94,7 @@ def mysql_rag(monkeypatch):
 def test_mysql_real_upgrade_mapping_and_erasure(mysql_rag):
     store, engine = mysql_rag
     with engine.connect() as connection:
-        assert connection.scalar(sa.text("SELECT version_num FROM alembic_version")) == "0014_rag_snapshots"
+        assert connection.scalar(sa.text("SELECT version_num FROM alembic_version")) == "0015_material_object_storage"
         assert connection.scalar(sa.text("SELECT text FROM source_chunks WHERE id='old'")) == "original"
     seed(store)
     store.put_scope_chunk_map(dict(scope_snapshot_id="scope", retrieval_version_id="rv", chunk_id="chunk"))

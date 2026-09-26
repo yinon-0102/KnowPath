@@ -30,10 +30,11 @@ def main(argv=None):
     if not 1 <= args.max_execution_seconds <= 3600:
         parser.error("--max-execution-seconds must be between 1 and 3600")
     load_dotenv()
-    engine = state = None
+    engine = state = materials = None
     try:
         engine = create_db_engine()
-        state = LearningState(SqlAlchemyMaterialRepository(engine))
+        materials = SqlAlchemyMaterialRepository.from_env(engine)
+        state = LearningState(materials)
         worker = ModelTaskWorker(state.assessment_service, state.message_service,
                                  lease_seconds=args.lease_seconds, max_attempts=args.max_attempts,
                                  max_execution_seconds=args.max_execution_seconds)
@@ -64,8 +65,12 @@ def main(argv=None):
                 if close is not None:
                     close()
         finally:
-            if engine is not None:
-                engine.dispose()
+            try:
+                if materials is not None:
+                    materials.close()
+            finally:
+                if engine is not None:
+                    engine.dispose()
 
 
 if __name__ == "__main__":

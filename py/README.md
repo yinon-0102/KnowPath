@@ -33,6 +33,9 @@ Web 模型选择使用 `LEARNING_CHAT_*`、`LEARNING_EMBEDDING_*`；通用 Agent
 
 先启动 Docker Desktop，再从本目录启动基础服务并应用迁移：
 
+首次启动需先按 [基础服务说明](../infra/README.md) 配置 `infra/.env` 的 MinIO 凭据，
+并将访问凭据同步到本目录 `.env`。
+
 ```powershell
 docker compose -f ..\infra\docker-compose.yml up -d
 uv run alembic upgrade head
@@ -52,6 +55,45 @@ Neo4j 节点和 Qdrant 向量由图谱后台进程随资料处理写入，无需
 数据库名、向量集合前缀和 Docker 卷沿用已有配置，包名调整不迁移数据。
 
 ## 启动
+
+### 原始文档与旧文件迁移
+
+使用 `LEARNING_RAW_STORAGE=minio` 时，新上传文档只在 MinIO 保存原始字节；
+MySQL 的 `material_raw_files` 保存后端、桶、对象键和 ETag，资料版本保留大小和 SHA-256。
+API、两个 worker 和 RAG 维护命令使用相同配置，重启后仍能按引用解析原文件。
+对象读取核对长度和 SHA-256；丢失或损坏时报错，不静默回退为另一份内容。
+
+迁移 `0015_material_object_storage` 仅调整表结构，原有 SQL 字节继续可读；
+完成数据库备份、MinIO 私有桶初始化和环境配置后，在本目录执行：
+
+```powershell
+# 默认仅预览数量，不上传或删除文件。
+uv run python -m knowpath_backend.learning.materials.raw_migration
+# 上传并回读校验，切换引用；保留 SQL 字节备份。
+uv run python -m knowpath_backend.learning.materials.raw_migration --apply
+# 验证备份恢复后可选：再次校验对象，清除 SQL 字节，保留全部业务元数据。
+uv run python -m knowpath_backend.learning.materials.raw_migration --apply --prune-sql
+```
+
+每个版本独立事务，重复执行会跳过已完成项，失败后可重跑。
+迁移与删除使用一致的资料锁，删除事务把所有对象引用写入持久化 outbox 后清理 SQL；
+graph worker 重试删除对象及其历史版本，只有外部存储全部确认清除才结束删除 Run。
+必须持续运行 graph worker；对象存储不可用时删除任务保持待重试。
+
+上传阶段存储失败返回 `503 RAW_STORAGE_UNAVAILABLE`；正常异常回滚会尝试删除新对象。
+SQL 与 MinIO 不是同一原子事务：进程被强杀或补偿期间 MinIO 不可用可能留下无引用对象，
+日志标识 `RAW_OBJECT_ROLLBACK_CLEANUP_PENDING`，需核对 SQL 引用及待删除 outbox 后运维清理，
+不可仅按时间批量删除对象。备份与恢复应同时覆盖 MySQL 和 `infra_keel_minio` 卷。
+恢复时暂停 API/worker，恢复相互匹配的数据库、卷和配置，再启动并校验原文件。
+
+已有 MinIO 引用时，不能只改回 `LEARNING_RAW_STORAGE=sql` 或直接降级表结构；
+降级迁移会拒绝对象引用及空 SQL 字节。若需整体回退，使用迁移前的完整备份。
+
+真实存储验收使用 `test_learning_minio_live.py`：显式设置
+`KNOWPATH_TEST_MYSQL_ADMIN_URL`（具备建库权限的测试实例）和 `KNOWPATH_TEST_MINIO=1`，
+以及普通 MinIO 环境变量。测试仅创建并删除随机前缀的专用库和桶。
+
+### 运行进程
 
 在三个终端分别执行，工作目录均为 `KnowPath/py/`：
 

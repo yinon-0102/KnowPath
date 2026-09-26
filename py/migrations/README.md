@@ -11,6 +11,8 @@ uv run alembic current
 Alembic loads `.env` beside `alembic.ini` without overriding process environment
 variables. `PYTHON_DOTENV_DISABLED=1` disables this loading for isolated tests.
 Normal initialization and upgrades use Alembic; the API does not create tables.
+当前迁移头为 `0015_material_object_storage`。该迁移添加原始文档对象引用、允许原字节为空，
+不自动搬运文件。数据迁移及回退要求见 [后端说明](../README.md#原始文档与旧文件迁移)。
 Back up existing databases before upgrading. Regression tests in
 `test_learning_migrations.py` use temporary SQLite databases to verify upgrades,
 downgrades, schema parity, configuration precedence and data preservation.

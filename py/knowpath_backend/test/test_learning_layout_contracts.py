@@ -71,6 +71,8 @@ def test_mysql_schema_matches_pre_refactor_contract():
     expected = json.loads((FIXTURES / "learning_mysql_schema.json").read_text(encoding="utf-8"))
 
     actual = mysql_schema_contract()
+    # 仅替换本次显式迁移的表快照，其他旧表仍逐字匹配历史契约。
+    expected['material_raw_files'] = json.loads((FIXTURES / 'learning_raw_object_schema.json').read_text(encoding='utf-8'))
     from knowpath_backend.learning.persistence.rag_models import TABLES
     assert set(actual) - set(expected) == set(TABLES)
     assert {name:value for name,value in actual.items() if name not in TABLES} == expected

@@ -172,11 +172,12 @@ def test_model_worker_cli_closes_retriever_and_engine(monkeypatch, fails):
             return False
     monkeypatch.setattr(cli, 'load_dotenv', lambda: None)
     monkeypatch.setattr(cli, 'create_db_engine', lambda: engine)
-    monkeypatch.setattr(cli, 'SqlAlchemyMaterialRepository', lambda value: value)
+    materials = SimpleNamespace(close=lambda: calls.append('materials'))
+    monkeypatch.setattr(cli, 'SqlAlchemyMaterialRepository', SimpleNamespace(from_env=lambda value: materials))
     monkeypatch.setattr(cli, 'LearningState', lambda value: state)
     monkeypatch.setattr(cli, 'ModelTaskWorker', Consumer)
     assert cli.main(['--once']) == (1 if fails else 0)
-    assert calls == ['retriever', 'engine']
+    assert calls == ['retriever', 'materials', 'engine']
 
 
 def test_material_delete_cancels_message_from_previous_space_binding(workspace):

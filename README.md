@@ -48,6 +48,8 @@ flowchart TB
     Client[API 客户端 / 未来前端] --> API[FastAPI 请求层<br/>REST · SSE · 鉴权 · 参数校验]
     API --> Domain[学习领域服务<br/>资料 · 图谱 · 空间 · 测评 · 计划 · 对话]
     Domain --> SQL[(MySQL<br/>业务状态 · 快照 · 证据 · Run · Outbox)]
+    Domain --> MinIO[(MinIO<br/>原始文档对象)]
+    GraphWorker --> MinIO
     SQL --> GraphWorker[图谱后台进程<br/>解析 · 准备 · 纠正 · 清理]
     SQL --> ModelWorker[模型后台进程<br/>出题 · 对话 · 重试]
     GraphWorker --> Neo4j[(Neo4j<br/>版本化知识图谱)]
@@ -70,9 +72,10 @@ flowchart TB
 | 后台执行 | `workers/` 消费持久化任务，处理租约、重试、取消与结果发布 |
 | Agent 基座 | 保留模型客户端、上下文、记忆、工具、规划、验证和评测组件；Web 对话复用其中的上下文与记忆能力 |
 
-### 三种存储各自负责什么
+### 四种存储各自负责什么
 
-- **MySQL 是业务事实来源。** 保存资料、原始文件、图谱快照、学习空间、测评证据、计划、消息、导出和任务事件。当前 HTTP 图谱查询读取 MySQL 中的版本快照。
+- **MySQL 是业务事实来源。** 保存资料元数据、对象引用、来源、图谱快照、学习空间、测评证据、计划、消息、导出和任务事件。当前 HTTP 图谱查询读取 MySQL 中的版本快照。
+- **MinIO 保存原始文档。** 新上传文件按资料版本存入私有桶，解析任务从对象存储读取；旧 SQL 文件兼容读取并支持显式迁移。部署配置见 [基础服务说明](infra/README.md#minio-文档存储)。
 - **Neo4j 保存版本化图谱。** 图谱后台进程准备节点与关系，并在发布前验证；不能将其理解为所有 Web 查询都直接访问的数据库。
 - **Qdrant 保存可重建的向量索引。** 负责相似度检索，来源正文和候选边界仍以业务快照为准。
 
@@ -105,7 +108,7 @@ KnowPath/
 │   ├── migrations/               # Alembic 数据库迁移
 │   └── scripts/                  # 初始化与隔离验收脚本
 ├── docs/                         # 架构、接口及实现记录
-└── infra/                        # MySQL、Neo4j、Qdrant 容器配置
+└── infra/                        # MySQL、Neo4j、Qdrant、MinIO 容器配置
 ```
 
 ## 算法与策略亮点

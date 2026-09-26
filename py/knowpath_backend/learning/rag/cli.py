@@ -33,7 +33,7 @@ def main(argv=None):
         if name != "validate":
             command.add_argument("--expected-generation", required=True, type=int)
     args = parser.parse_args(argv)
-    engine = client = plugin = None
+    engine = client = plugin = materials = None
     try:
         if args.command == "build":
             config = BuildConfiguration.model_validate_json(Path(args.config).read_text(encoding="utf-8"))
@@ -59,7 +59,7 @@ def main(argv=None):
         settings = LearningSettings.from_env()
         engine = create_db_engine()
         repo = SqlRagRepository(engine)
-        materials = SqlAlchemyMaterialRepository(engine)
+        materials = SqlAlchemyMaterialRepository.from_env(engine)
         state = LearningState(materials)
         embedder = embedding_model(settings)
         client = QdrantClient(url=os.getenv("QDRANT_URL", "http://127.0.0.1:6333"),
@@ -110,6 +110,8 @@ def main(argv=None):
             plugin.close()
         if client is not None:
             client.close()
+        if materials is not None:
+            materials.close()
         if engine is not None:
             engine.dispose()
 

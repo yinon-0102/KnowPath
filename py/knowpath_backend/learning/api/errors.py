@@ -13,9 +13,14 @@ from knowpath_backend.learning.conversations.generation import DashScopeAnswerGe
 from knowpath_backend.learning.providers.models import chat_model, ModelError
 from knowpath_backend.learning.assessments.generation import DashScopeQuestionGenerator
 from .contract import error_response
+from ..materials.raw_storage import RawStorageError
 
 
 def install_error_handlers(app: FastAPI) -> None:
+    @app.exception_handler(RawStorageError)
+    async def raw_storage_error(_: Request, exc: RawStorageError) -> JSONResponse:
+        return _error_response(503, 'RAW_STORAGE_UNAVAILABLE', '文档存储暂不可用，请稍后重试')
+
     @app.exception_handler(HTTPException)
     async def http_error(_: Request, exc: HTTPException) -> JSONResponse:
         codes = {404: "RESOURCE_NOT_FOUND", 405: "METHOD_NOT_ALLOWED"}

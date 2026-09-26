@@ -764,6 +764,12 @@ HTTP 图查询目前读取 MySQL 的不可变审核快照，在服务内完成�
 
 ### 14.3 上传、内容和错误约束
 
+启用 `LEARNING_RAW_STORAGE=minio` 后，上传请求和响应结构保持不变；新原文件位于私有
+MinIO 桶，MySQL 保留资料/版本、大小、SHA-256、对象引用、来源和任务记录。原文件不通过公开
+桶 URL 暴露。解析和后续重建按已保存引用读取并校验内容，未迁移的旧 SQL 原文件仍兼容。
+同步对象写入失败返回 `503 RAW_STORAGE_UNAVAILABLE`；异步读取失败由 Run 体现。
+资料删除通过持久化 outbox 重试清除 MinIO 原文件及历史对象版本，外部清理确认前不报告成功。
+
 上传单文件最多 20 MiB、文本 PDF 最多 300 页、每空间最多 5 份资料；Markdown/TXT 使用 UTF-8。校验实际内容而非仅后缀。加密 PDF、扫描 PDF、空文本、损坏文件分别返回 ENCRYPTED_PDF/SCANNED_PDF_UNSUPPORTED/EMPTY_MATERIAL/MATERIAL_PARSE_FAILED。异步发现错误时上传 HTTP 已返回 201，由 run.error 和 Material.failed 提供失败详情。
 
 source_refs 统一结构为 `{material_id,material_version_id,chunk_id,page,line_start,line_end}`，不适用位置字段为 null。首版题目绑定主 topic_id；复杂题需要分题评分后分别登记证据，不能把整题分数不加区别写入多个知识点。正式测试期间 source_refs 和答案键按前文规则隐藏；用户本来已持有原资料，应用不能保证其线下不查资料，学习效果研究应说明这一限制。

@@ -45,7 +45,11 @@ class MaterialRawRow(Base):
     __tablename__ = "material_raw_files"
     version_id: Mapped[str] = mapped_column(
         ForeignKey("material_versions.id", ondelete="CASCADE"), primary_key=True)
-    content: Mapped[bytes] = mapped_column(LargeBinary().with_variant(LONGBLOB(), "mysql"), nullable=False)
+    content: Mapped[bytes | None] = mapped_column(LargeBinary().with_variant(LONGBLOB(), "mysql"), nullable=True)
+    storage_backend: Mapped[str] = mapped_column(String(16), nullable=False, default="sql", server_default="sql")
+    bucket: Mapped[str | None] = mapped_column(String(63), nullable=True)
+    object_key: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    etag: Mapped[str | None] = mapped_column(String(128), nullable=True)
 
 
 class SourceChunkRow(Base):

@@ -54,6 +54,9 @@ def create_app(
         try:
             yield
         finally:
+            close_store = getattr(service.repository, 'close', None)
+            if close_store is not None:
+                close_store()
             if source_retriever is None:
                 close = getattr(state.message_service.retriever, "close", None)
                 if close is not None:

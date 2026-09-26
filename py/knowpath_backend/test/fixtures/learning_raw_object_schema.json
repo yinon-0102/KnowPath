@@ -1,0 +1,4 @@
+{
+  "table": "\nCREATE TABLE material_raw_files (\n\tversion_id VARCHAR(36) NOT NULL, \n\tcontent LONGBLOB, \n\tstorage_backend VARCHAR(16) NOT NULL DEFAULT 'sql', \n\tbucket VARCHAR(63), \n\tobject_key VARCHAR(512), \n\tetag VARCHAR(128), \n\tPRIMARY KEY (version_id), \n\tFOREIGN KEY(version_id) REFERENCES material_versions (id) ON DELETE CASCADE\n)\n\n",
+  "indexes": []
+}

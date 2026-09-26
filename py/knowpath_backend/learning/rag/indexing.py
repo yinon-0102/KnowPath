@@ -38,11 +38,12 @@ def main(argv=None):
     parser.add_argument("--version-id", required=True, help="Exact material_version_id to index")
     args = parser.parse_args(argv)
     load_dotenv()
-    engine = retriever = None
+    engine = retriever = materials = None
     try:
         engine = create_db_engine()
         retriever = configured_vector_retriever()
-        result = index_material_version(SqlAlchemyMaterialRepository(engine), retriever, args.version_id)
+        materials = SqlAlchemyMaterialRepository.from_env(engine)
+        result = index_material_version(materials, retriever, args.version_id)
         print(json.dumps(result, ensure_ascii=False))
         return 0
     except RetrievalError as exc:
@@ -54,6 +55,8 @@ def main(argv=None):
     finally:
         if retriever is not None:
             retriever.close()
+        if materials is not None:
+            materials.close()
         if engine is not None:
             engine.dispose()
 

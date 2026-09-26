@@ -19,7 +19,7 @@ def build_app():
 
         engine = create_db_engine()
         # Apply Alembic migrations before starting this single-process runtime.
-        materials = SqlAlchemyMaterialRepository(engine)
+        materials = SqlAlchemyMaterialRepository.from_env(engine)
         runs = RunService(SqlAlchemyRunRepository(engine, unit_of_work=materials.unit_of_work))
         from knowpath_backend.learning.persistence.learning_repository import SqlAlchemyLearningRepository
         from .startup import recover_legacy_runs
