@@ -69,10 +69,12 @@ class LearningState:
         return self.run_service.create(kind, result_ref, status=status)
 
     def events_for(self, run_id: str, *, after_id: int = 0) -> list[dict[str, Any]]:
-        return self.run_service.events_for(run_id, after_id=after_id)
+        return self.message_service.read_run(run_id, after_id=after_id)
 
-    def get_run(self, run_id: str) -> dict[str, Any]:
-        return self.run_service.get(run_id)
+    def get_run(self, run_id: str, *, include_events: bool = True) -> dict[str, Any]:
+        if include_events:
+            return self.message_service.read_run(run_id, include_run=True)
+        return {key: value for key, value in self.run_service.get(run_id).items() if key != "events"}
 
     def cancel_run(self, run_id: str) -> dict[str, Any]:
         return self.run_service.request_cancel(run_id)

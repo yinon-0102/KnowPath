@@ -23,8 +23,7 @@ router = APIRouter(route_class=ContractRoute)
 @router.get("/api/v1/runs/{run_id}")
 def get_run(state: LearningStateDep, run_id: str) -> JSONResponse:
     try:
-        run = state.get_run(run_id)
-        return JSONResponse(status_code=200, content={k: v for k, v in run.items() if k != "events"})
+        return JSONResponse(status_code=200, content=state.get_run(run_id, include_events=False))
     except DomainNotFound as exc:
         return _domain_error(exc)
 
@@ -38,12 +37,12 @@ async def get_run_events(state: LearningStateDep, run_id: str, request: Request)
     last_event_id = int(cursor)
     try:
         # Validate before sending HTTP headers so missing/expired history is JSON.
-        await asyncio.to_thread(state.events_for, run_id, after_id=last_event_id)
+        await asyncio.to_thread(state.run_service.events_for, run_id, after_id=last_event_id)
     except (DomainNotFound, DomainConflict) as exc:
         return _domain_error(exc)
     return StreamingResponse(
         stream_run_events(state.run_service, run_id, after_id=last_event_id,
-                          is_disconnected=request.is_disconnected),
+                          is_disconnected=request.is_disconnected, event_reader=state.events_for),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )

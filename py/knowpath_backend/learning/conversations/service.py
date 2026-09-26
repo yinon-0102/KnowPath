@@ -11,8 +11,9 @@ from knowpath_backend.learning.workers.model_tasks import ModelTaskWorker, TRANS
 from knowpath_backend.learning.spaces.service import SpaceService, now
 from knowpath_backend.learning.rag.retrieval import KeywordRetriever, RetrievalError, configured_retriever
 from knowpath_backend.learning.config import LearningSettings
-from knowpath_backend.learning.conversations.context import bound_snapshot, project_memory
+from knowpath_backend.learning.conversations.context import bound_snapshot, project_memory, delivery_source_refs, message_source_refs
 from knowpath_backend.learning.rag.verification import VerificationError, safe_error_details
+from knowpath_backend.learning.materials.source_access import SourceAccessService, AssistanceDeliveryChanged
 
 
 def uid():
@@ -27,6 +28,7 @@ class MessageService:
         self.retriever = retriever if retriever is not None else configured_retriever()
         self.context_settings = context_settings or getattr(self.generator, "settings", None) or LearningSettings.from_env()
         self.rag_pipeline = rag_pipeline
+        self.source_access = SourceAccessService(assessments)
 
     def send(self, space_id, payload, key=None, *, dispatch=None, durable=False):
         payload = SendMessage.model_validate(payload).model_dump()
@@ -126,13 +128,62 @@ class MessageService:
                    if q["id"] in message or q["prompt"].casefold() in normalized]
         if not matched and asking:
             matched = [(a, q) for a in active for q in a["questions"]]
-        touched = {}
-        for assessment, question in matched:
-            question["assisted"] = True
-            touched[assessment["id"]] = assessment
-        for assessment in touched.values():
-            self.repository.put_record("assessments", assessment)
+        # Wording chooses the deterministic response only. Assistance is
+        # source-bound and recorded atomically when help is actually delivered.
         return bool(matched)
+
+    def read_run(self, run_id, *, after_id=0, include_run=False):
+        """Audit historical help again before returning an event-bearing read.
+
+        Event cursors and tombstones are resolved before preparing assistance.
+        The returned events are reread with the message and source aggregates
+        locked, so deletion or finalization cannot expose an unaudited answer.
+        """
+        def read():
+            return self.runs.get(run_id) if include_run else self.runs.events_for(run_id, after_id=after_id)
+        def has_help(value):
+            events = value["events"] if include_run else value
+            return any(event["event"] in {"message.delta", "message.completed"}
+                       and event.get("data") and (event["data"].get("text") or event["data"].get("delta"))
+                       for event in events)
+        def sources(message):
+            snapshot = message["snapshot"]
+            originals = (self.repository.records("messages", space_id=message["space_id"], lock=False)
+                         if not {"delivered_source_refs", "context_provenance"} & snapshot.keys() else ())
+            return message_source_refs(message, originals)
+        delivery_id = uid()
+        for _ in range(3):
+            value = read()
+            if not has_help(value):
+                return value
+            rows = self.repository.records("messages", run_id=run_id, lock=False)
+            if not rows:
+                raise DomainConflict("MESSAGE_CONTEXT_UNAVAILABLE", "历史回答来源不可用，无法安全重放")
+            initial = rows[0]
+            refs = sources(initial)
+            # A verified RAG clarification/refusal can intentionally disclose
+            # no source facts. Its persisted empty audit is different from
+            # unknown provenance on an older or erased response.
+            if not refs and "delivered_source_refs" not in initial["snapshot"]:
+                raise DomainConflict("MESSAGE_CONTEXT_UNAVAILABLE", "历史回答来源不可用，无法安全重放")
+            plan = self.source_access.prepare_delivery(refs, initial["space_id"])
+            def deliver():
+                active, _ = self.source_access.lock_delivery(plan, initial["space_id"])
+                current = self.repository.get_record("messages", initial["id"])
+                fresh = read()
+                if has_help(fresh):
+                    current_refs = sources(current)
+                    if (current["status"] != "completed" or current_refs != refs
+                            or (not current_refs and "delivered_source_refs" not in current["snapshot"])):
+                        raise AssistanceDeliveryChanged()
+                    self.source_access.record_delivery(active, plan, kind="message_replay",
+                        delivery_id=delivery_id, message_id=current["id"], space_id=current["space_id"])
+                return fresh
+            try:
+                return self.commands._execute("message.replay", initial["space_id"], {}, None, deliver)
+            except AssistanceDeliveryChanged:
+                continue
+        raise DomainConflict("STALE_LEARNING_CONTEXT", "学习范围已变化，请重新读取消息")
 
     def generate(self, identifier, *, job=None):
         try:
@@ -226,9 +277,32 @@ class MessageService:
         return text, citations, snapshot
 
     def _publish_answer(self, initial, identifier, snapshot, text, citations, error, answer_status, *, error_details=None, job=None):
+        for attempt in range(3):
+            plan = self.source_access.prepare_delivery(delivery_source_refs(snapshot), initial["space_id"]) if error is None else None
+            try:
+                return self.commands._execute("message.publish", initial["space_id"], {}, None,
+                    lambda: self._publish_answer_once(initial, identifier, snapshot, text, citations,
+                        error, answer_status, error_details=error_details, job=job, delivery_plan=plan))
+            except AssistanceDeliveryChanged:
+                if attempt == 2:
+                    # Continuous assessment creation must never release unaudited
+                    # text. Fail closed without calling the provider again.
+                    error, error_details = "STALE_LEARNING_CONTEXT", {}
+            except DomainConflict as exc:
+                if exc.code != "BOUND_VERSION_UNAVAILABLE":
+                    raise
+                error, error_details = "STALE_LEARNING_CONTEXT", {}
+                break
+        return self._publish_answer_once(initial, identifier, snapshot, None, None, error,
+                                         answer_status, error_details=error_details, job=job)
+
+    def _publish_answer_once(self, initial, identifier, snapshot, text, citations, error, answer_status, *, error_details=None, job=None, delivery_plan=None):
         try:
             with self.repository.transaction():
-                space = self.spaces.repository.get(initial["space_id"])
+                if delivery_plan is not None:
+                    assisted, space = self.source_access.lock_delivery(delivery_plan, initial["space_id"])
+                else:
+                    space = self.spaces.repository.get(initial["space_id"])
                 current = self.repository.get_record("messages", identifier)
                 if job is not None:
                     job.check()
@@ -285,6 +359,9 @@ class MessageService:
                     self.runs.fail(current["run_id"], failure)
                     current["status"] = "failed"
                 else:
+                    self.source_access.record_delivery(assisted, delivery_plan,
+                        kind="message", delivery_id=identifier, space_id=current["space_id"])
+                    current["snapshot"]["delivered_source_refs"] = delivery_plan["sources"]
                     response = {"message_id": identifier, "session_id": current["conversation_id"], "text": text, "citations": citations}
                     if answer_status is not None:
                         response["answer_status"] = answer_status

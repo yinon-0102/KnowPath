@@ -299,7 +299,7 @@ def test_explicit_assessment_help_phrases_never_call_answer_model(message_text):
     assert state.get_run(response["run_id"])["status"] == "succeeded"
 
 
-def test_ordinary_programming_question_does_not_mark_assessment_assisted():
+def test_ordinary_programming_wording_does_not_hide_delivered_assessment_help():
     from knowpath_backend.learning.state import LearningState
     from knowpath_backend.test.test_learning_state_persistence import FixedQuestions
     generator = FixedAnswer()
@@ -310,4 +310,6 @@ def test_ordinary_programming_question_does_not_mark_assessment_assisted():
     state.send_message(space["id"], {"message": "How do I create a unit test?"})
     assert len(generator.calls) == 1
     stored = state.assessment_service.repository.get_record("assessments", assessment["id"])
-    assert not any(q.get("assisted", False) for q in stored["questions"])
+    # The fixture actually delivers a Functions explanation from the assessed
+    # source. Accounting follows that delivered help, not the question wording.
+    assert all(q.get("assisted", False) for q in stored["questions"])

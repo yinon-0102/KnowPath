@@ -205,7 +205,7 @@ class RunService:
 
 
 async def stream_run_events(service: RunService, run_id: str, *, after_id=0,
-                            is_disconnected=None, heartbeat_seconds=15.0, poll_seconds=0.25):
+                            is_disconnected=None, heartbeat_seconds=15.0, poll_seconds=0.25, event_reader=None):
     """Poll committed events without blocking the ASGI event loop."""
     loop = asyncio.get_running_loop()
     heartbeat_at = loop.time() + heartbeat_seconds
@@ -213,9 +213,10 @@ async def stream_run_events(service: RunService, run_id: str, *, after_id=0,
         if is_disconnected is not None and await is_disconnected():
             return
         try:
-            events = await asyncio.to_thread(service.events_for, run_id, after_id=after_id)
-        except (DomainNotFound, EventHistoryExpired):
-            # HTTP status is already sent; close so reconnect can return 404/410.
+            events = await asyncio.to_thread(event_reader or service.events_for, run_id, after_id=after_id)
+        except (DomainNotFound, DomainConflict, EventHistoryExpired):
+            # Headers are sent. Close on expired/deleted history or a failed
+            # assistance fence; never release unaudited message text.
             return
         for event in events:
             after_id = int(event["id"])
