@@ -43,7 +43,8 @@ def review_grade(service, assessment_id, payload, key=None):
                       and old["topic_revision_id"] == current_topics.get(old["topic_id"])))
         # Keep observation time/family/submission unchanged: a review is not a
         # new independent answer or a later spaced assessment.
-        old.update(eligible=False, revoked_by_review_id=review_id, revoked_at=timestamp)
+        old.update(eligibility_before_revocation=old.get("eligible", False),
+                   eligible=False, revoked_by_review_id=review_id, revoked_at=timestamp)
         service.repository.put_record("evidence", old)
         service.repository.put_record("evidence", replacement)
         reviewed = {**previous_result, "score": score, "verdict": verdict, "feedback": feedback,

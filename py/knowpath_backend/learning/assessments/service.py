@@ -11,6 +11,7 @@ from uuid import uuid4
 from knowpath_backend.learning.assessments.schemas import CreateAssessment, RecordAttempt, FinalizeAssessment, ResetState
 from knowpath_backend.learning.errors import DomainConflict, DomainNotFound
 from knowpath_backend.learning.assessments.mastery import aggregate, MasteryPolicy
+from knowpath_backend.learning.assessments.review_policy import enrich_observation_times, project_review_state
 from knowpath_backend.learning.assessments.grading import grade_answer
 from knowpath_backend.learning.assessments.grade_reviews import review_grade
 from knowpath_backend.learning.assessments.generation import DashScopeQuestionGenerator, QuestionGenerationError, validate_questions
@@ -240,10 +241,13 @@ class AssessmentService:
                 "question_id": question["id"], "submission_id": assessment["submission_id"],
                 "topic_revision_id": question["topic_revision_id"], "family_id": question["family_id"],
                 "rubric_version": question["rubric_version"], "is_application": question.get("is_application", False),
+                "difficulty": question["difficulty"], "assessment_kind": assessment["kind"],
                 "assisted": assisted, "eligible": eligible, "epoch": epoch,
                 "submission_sequence": space["state_version"] + 1,
                 "kind": "objective_answer" if question["type"] == "single_choice" else "short_answer",
                 "result": verdict, "score": score, "error_tags": ["incorrect_answer"] if verdict == "incorrect" else [],
+                "observed_at": answer["created_at"] if answer else timestamp,
+                "observed_at_source": "attempt" if answer else "finalization_unanswered",
                 "source_refs": question["source_refs"], "created_at": timestamp}
             self.repository.put_record("evidence", record)
             evidence.append(record)
@@ -276,6 +280,7 @@ class AssessmentService:
         previous = old[0] if old else {}
         evidence = [e for e in self.repository.records("evidence", space_id=space_id, topic_id=topic_id)
                     if e.get("epoch") == epoch and e.get("topic_revision_id") == revision_id and not e.get("revoked_by_review_id")]
+        evidence = enrich_observation_times(self.repository, evidence)
         same_cycle = previous.get("epoch") == epoch and previous.get("topic_revision_id") == revision_id
         value = aggregate(topic_id, revision_id, evidence, previous if same_cycle else {}, version, timestamp, policy=self.mastery_policy)
         value.update(id=previous.get("id", uid()), space_id=space_id, epoch=epoch)
@@ -295,15 +300,17 @@ class AssessmentService:
             space = self.spaces.repository.get(space_id)
             items = self.repository.records("states", space_id=space_id)
             current = {t["id"]: revision(t) for t in self.spaces.bound_topics(space)}
-            timestamp = datetime.fromisoformat(now())
-            for item in items:
-                if item.get("topic_revision_id") != current.get(item["topic_id"]):
-                    item.update(score_validity="stale", status="needs_review")
-                elif item.get("next_review_at") and datetime.fromisoformat(item["next_review_at"]) <= timestamp:
-                    item["status"] = "needs_review"
+            timestamp, epochs = now(), self._epochs(space_id)
+            rows = enrich_observation_times(self.repository, self.repository.records("evidence", space_id=space_id))
+            by_topic = {}
+            for row in rows:
+                by_topic.setdefault(row["topic_id"], []).append(row)
+            items = [project_review_state(item, by_topic.get(item["topic_id"], []),
+                revision_id=current.get(item["topic_id"]), epoch=epochs.get(item["topic_id"], 0),
+                as_of=timestamp, mastery_policy=self.mastery_policy) for item in items]
             items = [i for i in items if (topic_id is None or i["topic_id"] == topic_id) and (status is None or i["status"] == status)]
             if include_evidence:
-                evidence = {e["id"]: e for e in self.repository.records("evidence", space_id=space_id)}
+                evidence = {e["id"]: e for e in rows}
                 for item in items:
                     item["evidence"] = [evidence[eid] for eid in item["evidence_ids"] if eid in evidence]
             return {"space_id": space_id, "state_version": space["state_version"], "items": items}

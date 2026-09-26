@@ -12,6 +12,7 @@ from sqlalchemy import select
 from knowpath_backend.learning.persistence.db import StudyPlanRow, StudyTaskRow, SessionRow, SessionEventRow
 from knowpath_backend.learning.errors import DomainConflict, DomainNotFound
 from knowpath_backend.learning.plans.policy import PlannerPolicy, build_tasks, conflict
+from knowpath_backend.learning.assessments.review_policy import review_schedule, enrich_observation_times, moment, project_mastery_state
 
 
 def uid():
@@ -80,19 +81,34 @@ class PlanSessionService:
                 "source_refs": [{k: ref.get(k) for k in ("material_id", "material_version_id", "chunk_id", "page", "line_start", "line_end")}
                                 for t in topics for ref in t.get("source_refs", [])]}
 
-    def _planning_states(self, space_id):
+    def _planning_states(self, space_id, *, as_of=None):
+        from knowpath_backend.learning.assessments.service import revision
         states = {row["topic_id"]: row for row in self.repository.records("states", space_id=space_id)}
-        evidence = self.repository.records("evidence", space_id=space_id)
+        evidence = enrich_observation_times(self.repository, self.repository.records("evidence", space_id=space_id))
+        timestamp = iso(as_of) if as_of is not None else now()
+        epochs = self.assessments._epochs(space_id)
+        space = self.spaces.repository.get(space_id)
+        current = {topic["id"]: revision(topic) for topic in self.spaces.bound_topics(space)}
         for topic_id, state in states.items():
-            valid = [e for e in evidence if e["topic_id"] == topic_id and e.get("eligible") and not e.get("assisted")
-                     and e.get("topic_revision_id") == state.get("topic_revision_id") and e["id"] in state.get("evidence_ids", [])]
-            if valid:
-                submissions = len({e["assessment_id"] for e in valid})
-                days = self.policy.review_intervals[min(submissions - 1, len(self.policy.review_intervals) - 1)]
-                latest = max(datetime.fromisoformat(e["created_at"]) for e in valid)
-                state["review_due_at"] = (latest + timedelta(days=days)).isoformat()
+            rows = [e for e in evidence if e["topic_id"] == topic_id]
+            if rows and state.get("topic_revision_id"):
+                state = project_mastery_state(state, rows, revision_id=current.get(topic_id),
+                    epoch=epochs.get(topic_id, 0), as_of=timestamp, mastery_policy=self.assessments.mastery_policy)
+                states[topic_id] = state
+                schedule = review_schedule(rows, revision_id=current.get(topic_id),
+                                           epoch=epochs.get(topic_id, 0), as_of=timestamp)
+                state["review_due_at"] = schedule["next_review_at"]
+                state["next_review_at"] = schedule["next_review_at"]
+            if state.get("topic_revision_id") and (state["topic_revision_id"] != current.get(topic_id)
+                    or state.get("epoch", 0) != epochs.get(topic_id, 0)):
+                state.update(score_validity="stale", status="needs_review", next_review_at=None, review_due_at=None)
+            # Presentation-only metadata must not alter task identity.
+            state.pop("review_schedule", None)
+            state.pop("evidence_sufficiency", None)
             due_at = state.get("review_due_at") or state.get("next_review_at")
-            state["review_due"] = bool(due_at and datetime.fromisoformat(due_at) <= datetime.fromisoformat(now()))
+            # Snapshot only the threshold crossing, not a constantly changing
+            # timestamp: clock-only review transitions must invalidate plans.
+            state["review_due"] = bool(due_at and moment(due_at) <= moment(timestamp))
         return states
 
     def _snapshot(self, space, states):
@@ -131,7 +147,7 @@ class PlanSessionService:
             state = state_rows.get(topic["id"], {})
             status = state.get("status", "unseen")
             due_at = state.get("review_due_at") or state.get("next_review_at")
-            if status == "mastered" and due_at and datetime.fromisoformat(due_at).date() <= today:
+            if status == "mastered" and state.get("review_due", bool(due_at and datetime.fromisoformat(due_at).date() <= today)):
                 status = "needs_review"
             return (rank.get(status, 4), -len(state.get("error_tags") or []),
                     state.get("last_assessed_at") or "9999", topic["id"])

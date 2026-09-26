@@ -58,3 +58,29 @@ def test_review_keeps_observation_order_at_window_boundary():
     assert after["mastery_score"] == before["mastery_score"]
     assert after["evidence_ids"] == before["evidence_ids"]
     assert after["next_review_at"] == before["next_review_at"]
+
+
+def test_empty_aggregate_without_assessment_time_stays_unknown():
+    previous = {"status": "mastered", "last_assessed_at": START.isoformat(),
+                "next_review_at": (START + timedelta(days=7)).isoformat()}
+    result = aggregate("t1", "r1", [], previous, 2, None)
+    assert result["last_assessed_at"] is None
+    assert result["mastery_score"] is None
+    assert result["status"] == "unseen"
+    assert result["next_review_at"] is None
+    assert result["evidence_ids"] == []
+    assert result["evidence_sufficiency"]["status"] == "unknown"
+    schedule = result["review_schedule"]
+    assert schedule["selected_evidence_ids"] == []
+    assert schedule["last_observed_at"] is None
+    assert schedule["anchor_observed_at"] is None
+    assert schedule["interval_days"] is None
+    assert schedule["due"] is False
+
+
+def test_missing_assessment_time_uses_available_evidence_for_schedule_only():
+    result = aggregate("t1", "r1", [row(1)], {}, 1, None)
+    assert result["last_assessed_at"] is None
+    assert result["mastery_score"] == 1.0
+    assert result["review_schedule"]["anchor_observed_at"] == START.isoformat()
+    assert result["next_review_at"] == (START + timedelta(days=1)).isoformat()

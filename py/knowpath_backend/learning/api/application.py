@@ -21,6 +21,7 @@ from .contract import ContractRoute
 from .errors import install_error_handlers
 from .middleware import install_middleware
 from .routers import health, materials, graphs, runs, spaces, assessments, plans_sessions, messages, knowledge, exports
+from .routers import evolution
 
 
 def create_app(
@@ -81,4 +82,5 @@ def create_app(
     app.include_router(messages.router)
     app.include_router(knowledge.router)
     app.include_router(exports.router)
+    app.include_router(evolution.router)
     return app

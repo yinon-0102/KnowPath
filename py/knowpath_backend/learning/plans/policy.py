@@ -52,7 +52,7 @@ def build_tasks(topics, states, config, space, old_tasks, timestamp, policy):
         elif status in {"mastered", "needs_review"}:
             if config["include_review"] and (status == "needs_review" or due):
                 kind, estimate = "review", policy.review_minutes
-                reason = f"复习到期 {due_at or today.isoformat()}；使用 {policy.version} 间隔策略"
+                reason = f"复习到期 {due_at or today.isoformat()}；使用共享 review-v2 间隔策略"
         elif status == "unstable" or state.get("error_tags") or (state.get("mastery_score") is not None and state["mastery_score"] < 0.6):
             kind, estimate = "targeted_practice", policy.practice_minutes
             reason = f"掌握度 {state.get('mastery_score')}；需练习的错误类型：{', '.join(state.get('error_tags') or ['掌握不稳定'])}"

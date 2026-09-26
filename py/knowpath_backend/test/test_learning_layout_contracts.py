@@ -45,11 +45,14 @@ def test_full_openapi_matches_pre_refactor_contract():
     app = isolated_app()
 
     actual = app.openapi()
-    # The RAG migration is additive. Preserve every pre-refactor HTTP contract
-    # while checking the explicitly added v2 endpoint independently.
-    assert set(actual['paths']) - set(expected['paths']) == {'/api/v1/learning-spaces/{space_id}/citations/resolve'}
+    # Preserve historical contracts; freeze each additive review operation and
+    # its request schema separately from the original pre-refactor snapshot.
+    algorithms = json.loads((FIXTURES / 'learning_algorithms_openapi.json').read_text(encoding='utf-8'))
+    assert set(actual['paths']) - set(expected['paths']) == {'/api/v1/learning-spaces/{space_id}/citations/resolve'} | set(algorithms['paths'])
+    assert {path: actual['paths'].pop(path) for path in algorithms['paths']} == algorithms['paths']
     actual['paths'].pop('/api/v1/learning-spaces/{space_id}/citations/resolve')
-    assert set(actual['components']['schemas']) - set(expected['components']['schemas']) == {'Citation','SourceSpan'}
+    assert set(actual['components']['schemas']) - set(expected['components']['schemas']) == {'Citation','SourceSpan'} | set(algorithms['schemas'])
+    assert {name: actual['components']['schemas'].pop(name) for name in algorithms['schemas']} == algorithms['schemas']
     for name in ('Citation','SourceSpan'):
         actual['components']['schemas'].pop(name)
     assert actual == expected
@@ -62,9 +65,9 @@ def test_full_openapi_matches_pre_refactor_contract():
                 yield from api_routes(included.routes)
 
     routes = list(api_routes(app.routes))
-    assert len(routes) == 50
+    assert len(routes) == 51
     assert all(isinstance(route, ContractRoute) for route in routes)
-    assert len({(route.path, method) for route in routes for method in route.methods}) == 50
+    assert len({(route.path, method) for route in routes for method in route.methods}) == 51
 
 
 def test_mysql_schema_matches_pre_refactor_contract():
