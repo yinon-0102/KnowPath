@@ -364,8 +364,11 @@ class DatabaseSettings:
 
     @classmethod
     def from_env(cls) -> "DatabaseSettings":
+        url = os.getenv("DATABASE_URL", "").strip()
+        if not url:
+            raise ValueError("DATABASE_URL is required")
         return cls(
-            url=os.getenv("DATABASE_URL", "mysql+pymysql://keel:keel@127.0.0.1:3306/keel_learning"),
+            url=url,
             echo=os.getenv("DATABASE_ECHO", "false").lower() == "true",
         )
 

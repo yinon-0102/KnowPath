@@ -13,9 +13,11 @@ backend = Path(config.config_file_name).resolve().parent if config.config_file_n
 load_dotenv(backend / ".env", override=False)
 if config.config_file_name:
     fileConfig(config.config_file_name)
-database_url = os.getenv("DATABASE_URL")
+database_url = os.getenv("DATABASE_URL", "").strip()
 if database_url:
     config.set_main_option("sqlalchemy.url", database_url.replace("%", "%%"))
+elif not (config.get_main_option("sqlalchemy.url") or "").strip():
+    raise ValueError("DATABASE_URL is required; set it in py/.env or the process environment")
 
 target_metadata = Base.metadata
 

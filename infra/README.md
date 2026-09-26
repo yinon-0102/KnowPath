@@ -4,7 +4,8 @@
 
 ```powershell
 if (-not (Test-Path .\infra\.env)) { Copy-Item .\infra\.env.example .\infra\.env }
-# 先在 infra/.env 填写随机 MinIO 密码，并同步到 py/.env。
+# 按下文填写所有存储凭据、同步后端配置，再启动。已有数据卷先阅读迁移步骤。
+docker compose -f .\infra\docker-compose.yml config --quiet
 docker compose -f .\infra\docker-compose.yml up -d
 docker compose -f .\infra\docker-compose.yml ps
 ```
@@ -14,13 +15,100 @@ docker compose -f .\infra\docker-compose.yml ps
 
 | 服务 | 默认宿主机端口 | 用途 |
 | --- | --- | --- |
-| MySQL 8.4 | 3306 | 业务数据、来源和图谱快照、Run/事件、outbox 任务 |
-| Neo4j 5.26 | 7474、7687 | 按版本准备的知识图谱 |
-| Qdrant | 6333、6334 | 按模型和资料版本隔离的向量索引 |
+| MySQL 8.4 | 3306（仅本机） | 业务数据、来源和图谱快照、Run/事件、outbox 任务 |
+| Neo4j 5.26 | 7474、7687（仅本机） | 按版本准备的知识图谱 |
+| Qdrant | 6333、6334（仅本机） | 按模型和资料版本隔离的向量索引 |
 | MinIO | 9000、9001（仅本机） | 原始文档 S3 API、管理控制台 |
 
 端口已被占用时，可修改 Compose 映射左侧的宿主机端口，并同步 `py/.env` 的连接配置。
 不要通过删除 Docker 卷解决端口冲突；卷中保存已有数据。
+全部存储端口显式绑定 `127.0.0.1`；远程访问应通过受控隧道或经认证的 TLS 代理。
+本机 HTTP 连接不提供 TLS 加密；API key 不能替代远程部署中的 TLS。
+
+## 凭据配置与已有数据卷迁移
+
+新安装必须在 `infra/.env` 填写 `MYSQL_PASSWORD`、`MYSQL_ROOT_PASSWORD`、
+`NEO4J_PASSWORD`、`QDRANT_API_KEY` 和 `MINIO_ROOT_PASSWORD`；MinIO 用户名也不能为空。
+使用密码管理器为各项生成独立的高熵随机值（建议至少 32 个随机字节、URL-safe 字符），
+Neo4j 密码至少满足镜像的默认长度要求。示例文件故意留空，Compose 会拒绝缺失或空凭据，
+不再内置弱密码。包含 `$`、`#`、空格等字符的 dotenv 值应使用单引号，
+避免 Compose 插值；不要把实际凭据提交到 Git、命令行参数或日志中。
+
+**已有卷不要直接更换 `.env` 中的 MySQL/Neo4j 密码并认为已轮换。**
+MySQL 初始化环境变量和 Neo4j 的初始认证配置不会覆盖已持久化的用户密码。
+先备份并确认恢复方法，将当前仍然有效的密码放入本地 `infra/.env`，使应用恢复一致配置；
+这些值只作为迁移过渡，已知弱密码应在维护窗口中通过各数据库的认证管理功能轮换。
+MySQL 的应用用户与 root 账户需分别更新，Neo4j 需更新已有 `neo4j` 用户；
+用交互式管理工具完成变更，避免密码进入 shell 历史，然后同步两个 `.env` 并重启客户端。
+不要删除卷、重新初始化数据库或使用 `down -v` 来轮换密码。
+
+Qdrant 的 API key 是运行时配置：设置新随机 key 并同步所有 API/worker 客户端，
+在维护窗口通过 Compose 重建该服务后才启用认证。数据卷保持不变，未携带 key 的请求
+应被拒绝。回环端口限制同样需要重建对应存储容器才生效，代码更新不会修改正在运行的容器。
+所有步骤就绪后再执行开头的 `up -d`；它会重建配置变化的服务。
+即使只启动 MinIO，也需为 Compose 文件中的必填变量提供有效配置。
+
+### 同步到后端配置
+
+以下脚本从项目根目录运行，要求已在 `py/` 执行过 `uv sync --locked`。
+它只同步存储连接配置，保留现有 `py/.env` 中的模型、token 等其他配置，不输出凭据。
+已有部署请在确认当前密码或完成计划内轮换后运行；不要用示例文件覆盖已有 `.env`。
+数据库 URL 由 SQLAlchemy 正确转义用户名和密码中的 `@`、`:`、`/`、`%` 等字符，
+原始密码不要自行再次进行 URL 编码。脚本对应当前 Compose 的用户 `keel` 和库 `keel_learning`。
+后端 dotenv 会展开 `${...}`；脚本会拒绝含这种语法的原样传递凭据，
+避免悄悄改变密码。此类已有凭据应通过进程环境直接提供，或在计划内轮换后同步。
+
+```powershell
+@'
+from pathlib import Path
+from shutil import copyfile
+from dotenv import dotenv_values, set_key
+from sqlalchemy.engine import URL
+
+root = Path.cwd()
+source = dotenv_values(root / "infra/.env", interpolate=False)
+required = ("MYSQL_PASSWORD", "MYSQL_ROOT_PASSWORD", "NEO4J_PASSWORD",
+            "QDRANT_API_KEY", "MINIO_ROOT_USER", "MINIO_ROOT_PASSWORD")
+missing = [name for name in required if not (source.get(name) or "").strip()]
+if missing:
+    raise SystemExit("Fill infra/.env first: " + ", ".join(missing))
+raw_keys = ("NEO4J_PASSWORD", "QDRANT_API_KEY", "MINIO_ROOT_USER",
+            "MINIO_ROOT_PASSWORD", "MINIO_BUCKET")
+if any("${" in (source.get(name) or "") for name in raw_keys):
+    raise SystemExit("Secret interpolation syntax is unsupported; use process environment or rotate first.")
+target = root / "py/.env"
+if not target.exists():
+    copyfile(root / "py/.env.example", target)
+values = {
+    "DATABASE_URL": URL.create(
+        "mysql+pymysql", username="keel", password=source["MYSQL_PASSWORD"],
+        host="127.0.0.1", port=3306, database="keel_learning",
+    ).render_as_string(hide_password=False),
+    "NEO4J_URI": "bolt://127.0.0.1:7687",
+    "NEO4J_USERNAME": "neo4j",
+    "NEO4J_PASSWORD": source["NEO4J_PASSWORD"],
+    "QDRANT_URL": "http://127.0.0.1:6333",
+    "QDRANT_API_KEY": source["QDRANT_API_KEY"],
+    "LEARNING_RAW_STORAGE": "minio",
+    "MINIO_ENDPOINT": "127.0.0.1:9000",
+    "MINIO_ACCESS_KEY": source["MINIO_ROOT_USER"],
+    "MINIO_SECRET_KEY": source["MINIO_ROOT_PASSWORD"],
+    "MINIO_BUCKET": source.get("MINIO_BUCKET") or "knowpath-materials",
+    "MINIO_SECURE": "false",
+}
+for name, value in values.items():
+    set_key(str(target), name, value, quote_mode="always")
+print("Storage settings synchronized; no credentials printed.")
+'@ | & .\py\.venv\Scripts\python.exe -
+```
+
+如果使用自定义主机端口或容器内运行后端，请按实际地址调整同步脚本；
+进程中已有的同名环境变量优先于 `.env`，需要一并更新。使用 `config --quiet` 做校验，
+不要把普通 `docker compose config` 的完整展开内容粘贴到日志或工单（其中包含凭据）。
+之后重启 API、graph worker 和 model worker，确认数据库连接、图谱准备和向量查询正常。
+`DATABASE_URL` 与 `NEO4J_PASSWORD` 缺失时客户端会明确报错；显式 SQLite URL 仍可用于隔离测试。
+
+## 后端数据库迁移
 
 进入 `py/`，在 `.env` 配置连接地址和密码，然后运行：
 

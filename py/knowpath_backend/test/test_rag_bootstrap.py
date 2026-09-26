@@ -30,6 +30,7 @@ class LocalEmbeddings:
 
 @pytest.fixture
 def local_setup(tmp_path, monkeypatch):
+    monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
     samples, dataset, output = tmp_path / "samples", tmp_path / "draft", tmp_path / "output"
     samples.mkdir()
     (dataset / "sources").mkdir(parents=True)

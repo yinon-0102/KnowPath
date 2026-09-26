@@ -1,3 +1,5 @@
+import pytest
+
 from sqlalchemy import create_engine, inspect
 from sqlalchemy.pool import StaticPool
 
@@ -14,12 +16,11 @@ def test_database_schema_creates_core_learning_tables():
     assert {"materials", "material_versions", "source_chunks", "learning_spaces", "assessments", "evidence", "study_plans", "runs"}.issubset(tables)
 
 
-def test_database_settings_use_documented_mysql_defaults(monkeypatch):
+def test_database_settings_require_explicit_database_url(monkeypatch):
     monkeypatch.delenv("DATABASE_URL", raising=False)
 
-    settings = DatabaseSettings.from_env()
-
-    assert settings.url.startswith("mysql+pymysql://")
+    with pytest.raises(ValueError, match="DATABASE_URL is required"):
+        DatabaseSettings.from_env()
 
 
 def test_sqlalchemy_material_repository_round_trips_source_chunks():

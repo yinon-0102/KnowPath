@@ -36,7 +36,7 @@ class QdrantVectorStore:
         from qdrant_client import QdrantClient
 
         self.settings = settings or VectorSettings.from_env()
-        self.client = QdrantClient(url=self.settings.url)
+        self.client = QdrantClient(url=self.settings.url, api_key=self.settings.api_key)
 
     def upsert_chunks(self, points: Iterable[Any]) -> None:
         self.client.upsert(collection_name=self.settings.collection, points=list(points), wait=True)

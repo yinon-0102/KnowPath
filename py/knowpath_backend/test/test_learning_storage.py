@@ -1,7 +1,8 @@
 from knowpath_backend.learning.storage import GraphSettings, VectorSettings
 
 
-def test_graph_and_vector_settings_have_local_defaults():
+def test_graph_and_vector_settings_have_local_defaults(monkeypatch):
+    monkeypatch.setenv("NEO4J_PASSWORD", "test-only-graph-secret")
     graph = GraphSettings.from_env()
     vector = VectorSettings.from_env()
 
