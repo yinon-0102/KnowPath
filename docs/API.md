@@ -229,6 +229,8 @@ SSE 只传执行状态和可展示的摘要，不传完整原始资料或敏感�
 
 每条 SSE 事件均有递增的 `id:` 和服务端时间戳。对话另外发送 `message.delta`（可见文本片段）、`message.completed`（消息 ID 与引用）；验证中的候选文本不能先展示。终态事件为 run.completed/run.failed/run.cancelled。15 秒发送心跳注释，支持 Last-Event-ID 续传，7 天之前的历史返回 `410 EVENT_HISTORY_EXPIRED`，调用方改查 run 最终状态。终态后关闭流。
 
+重读历史回答时，只对 Last-Event-ID 之后实际返回的消息文本重新执行来源辅助审计，匹配当时活动的测验；仅查询 Run 元数据或游标已跳过全部文本不会标记 assisted。来源审计与返回事件读取共享事务，审计失败不交付文本。旧会话缺少新增来源记录时，从保留的原始历史/召回消息重建来源；无法追溯时拒绝重放，也不把该内容重新交给模型。
+
 ### `POST /runs/{run_id}/cancel`
 
 空 JSON 请求；202 返回 `{ "id": "run_001", "status": "cancelling" }`。取消是协作式：检查步骤边界和流式模型输出，已发布事务不回滚；迟到的未发布生成结果丢弃。终态 run 重复取消返回原终态 200。无法立即取消外部模型请求时等待超时，不能虚报 cancelled。
@@ -522,6 +524,8 @@ result 响应至少包含：assessment_id、graded_at、topic_results（topic_id
 
 session_count=3—5，minutes_per_session=10—120，必须满足 profile 时间约束。local_replan 另需 base_plan_id 和 expected_plan_version；仅重排未完成、受影响任务，历史任务保留。返回 422 PLAN_CONSTRAINT_UNSATISFIABLE 时 details 列出冲突及用户可调整条件。
 
+`planner-v2` 区分主题与任务周期：完成或跳过只关闭当前周期；新证据、知识版本变更或新的到期复习可产生新任务，原完成记录保留为 historical。相同证据与复习时间下重复 local_replan 不重复生成已关闭任务；调整 include_review 不会重新打开同一学习周期。仅时钟变化造成复习到期或延期到期时，GET plan 返回 needs_replan，由调用方显式 local_replan。
+
 响应：`run_id`，完成后生成 `plan_id`。
 
 ### `GET /plans/{plan_id}`
@@ -561,6 +565,8 @@ session_count=3—5，minutes_per_session=10—120，必须满足 profile 时间
 ```
 
 可写状态仅 completed/skipped/deferred；deferred 必须有 defer_until（UTC 时间），skipped 必须有 reason。手动标记不产生答题证据。任务预计时间和自报时间不作为实际学习效果的唯一依据。
+
+延期任务不能提前启动学习会话。达到 defer_until 后，local_replan 恢复为 pending 并保留延期备注和来源任务；未到期的延期继续有效，知识更新造成的替代诊断任务也继承原延期时间。
 
 ### `POST /plans/{plan_id}/sessions`
 
@@ -609,6 +615,8 @@ session_count=3—5，minutes_per_session=10—120，必须满足 profile 时间
 生成内容必须使用当前学习范围和资料来源。需要记录工具调用，但不向用户泄露内部提示词和隐藏状态。
 
 首版只接受 stream=true；message 为 1—8000 字。session_id 可空，为空时创建独立对话会话，不修改计划任务状态。202 返回 run_id/session_id/status，文本由 SSE message.delta 发送。活动测验内问答案应转为提示请求并记录 assisted，禁止隐式写入成绩。
+
+辅助判定按实际交付回答使用的资料来源与活动测验交集记录，不依赖“提示”等关键词或题目原句匹配；同一学习者跨空间的同源测验、生成中的测验以及保留的历史/召回上下文均参与审计。标记与回答发布同事务提交，失败、取消或上下文失效的未交付回答不计辅助。已经结束的测验不会因后续聊天追溯改为 assisted。
 
 当前消息实现会持久化独立对话和来源快照，使用绑定资料版本及当前主题范围召回片段。同会话只允许一条消息生成中；相同幂等键重放原始响应，不再次调用模型。`tool.completed` 提供公开来源引用，`message.completed` 返回正文和引用。正文在模型响应完成并通过引用校验后分块发送；召回可配置为 `keyword`（默认）或 `qdrant`。Qdrant 模式使用 DashScope `text-embedding-v3`（1024 维、Cosine），只查询当前范围内固定资料版本、图版本与正文哈希匹配的片段，正文从数据库快照读取。向量索引在自动摄入的 graph.prepare 阶段准备，亦可通过显式维护命令重建；任一候选片段未索引时任务记录 `VECTOR_INDEX_NOT_READY` 并有限重试，不会静默退回关键词。Embedding 或向量服务不可用分别返回 `EMBEDDING_UNAVAILABLE` / `VECTOR_UNAVAILABLE`；`tool.completed` 在检索成功且再次确认上下文有效后写入。消息与测验生成通过持久化 outbox 执行；进程重启后继续原 Run，只有通过检索、模型输出和来源校验的结果才能发布。范围或绑定在生成期间变化时 Run 失败为 `STALE_LEARNING_CONTEXT`；关联学习会话结束时为 `SESSION_FINISHED`。
 
@@ -708,7 +716,10 @@ API、graph worker 与 model worker 的启动说明见 `py/README.md`；本节�
 | GET `/learning-spaces/{space_id}/knowledge-updates`          | 无                                                           | 200 bindings、available_updates、affected_topic_ids、invalidated_question_ids、plan_impact；只预览，不修改状态 |
 | POST `/learning-spaces/{space_id}/knowledge-updates/apply`   | bindings（material_id、material_version_id、graph_version 数组）、expected_space_version | 202 run_id；只采用已发布快照，同一事务替换空间绑定、标记受影响状态 stale 和旧计划 needs_replan。未变化概念证据可复用，待重排计划另有 run_id |
 | POST `/learning-spaces/{space_id}/state/reset`               | topic_ids（非空）、expected_state_version、reason            | 200 state_version；追加 reset 事件，选定主题从新证据周期重新评估，历史保留；旧证据不再参与新状态计算 |
-| POST `/assessments/{assessment_id}/grade-reviews`            | question_id、reason                                          | 202 run_id；对评分提出复核，仍用原封存答案和原评分标准。结果不确定则 unverified；撤销旧证据并重算，不能重复加分 |
+| POST `/assessments/{assessment_id}/grade-reviews`            | question_id、reason                                          | 202 run_id；重新计算评分，始终使用封存作答与当前已人工确认的评分定义（无更正时为原标准）。pending/invalid 题返回 409 QUESTION_QUARANTINED；原因文本不改答案、不授予分数 |
+| GET `/assessments/{assessment_id}/question-reviews`           | 无                                                           | 200 review_version、items；仅已完成测验，返回复核事件、原始及当前题目定义、封存来源原文；查阅同时审计并标记来源重叠的活动测验 assisted |
+| POST `/assessments/{assessment_id}/question-reviews`          | question_id、reason、expected_review_version                   | 201 review_id、event_id、run_id、review_version、state_version、status=pending；举报题目并立即隔离当前评分/掌握度证据，投诉不等于更正 |
+| POST `/assessments/{assessment_id}/question-reviews/{review_id}/resolve` | action=correct/invalidate/reject、expected_review_version、confirmed=true、reason、source_refs；correct 还需 corrected_rubric，单选题还需 corrected_answer_key | 200 同上；人工确认更正/作废/驳回。更正重新评分；作废保持 unverified；驳回恢复举报前已确认定义与有效性 |
 | POST `/learning-spaces/{space_id}/exports`                   | format=json                                                  | 202 run_id；导出空间目标、学习记录、版本清单及有权查看的资料引用，不导出 API Key 或系统提示 |
 | GET `/exports/{export_id}/download`                          | 无                                                           | 200 application/zip；仅服务端生成的导出 ID，可下载 24 小时，过期 410 |
 | PATCH `/materials/{material_id}`                             | status=archived 或 name、expected_version                    | 200 Material；归档不清除证据，禁止新空间绑定                 |
@@ -716,6 +727,12 @@ API、graph worker 与 model worker 的启动说明见 `py/README.md`；本节�
 | DELETE `/materials/{material_id}`                            | expected_version、confirm=true、cascade（默认 false）        | 202 run_id；被空间引用且 cascade=false 时返回 409 MATERIAL_IN_USE 和影响空间。cascade=true 才清除原文件、解析/图谱版本、索引、来源相关题目和证据并重算受影响状态 |
 
 当前实现进度（ingest）：原文件存于 material_raw_files，与版本、幂等记录及解析任务事务提交。默认上传排队；auto_ingest=false 只保存。显式入口仅接受 version_id，要求 Idempotency-Key；未解析版本从原文件排队，已解析版本直接准备图谱。解析与 graph.prepare 使用同一个 Run，解析阶段 candidate_revision_id 为 null，完成后可从 Run.result_ref 获取候选 ID。独立 worker 具备租约接管、取消围栏、有限重试和原子交接，成功候选仍 pending_review，不自动发布。失败/取消后使用新键重试，同键重放原接收响应；请通过 Run 查询实际状态。旧版本若既无原文件也无可用来源，返回 MATERIAL_SOURCE_MISSING，不伪造原文件。
+
+题目复核只作用于指定 `assessment_id` 内的一个封存 `question_id`（`scope=assessment_question_snapshot`），不声称修正所有相似生成题。`review_version` 是测验内全局复核事件版本，初始为 0，每次举报或裁决增加 1；所有写入需要 `Idempotency-Key`，旧版本返回 `VERSION_CONFLICT`。同键同体重放原结果，改体返回 `IDEMPOTENCY_CONFLICT`；已裁决事件不可覆盖，可使用当前版本再次举报。待裁决重复举报返回 `QUESTION_REVIEW_PENDING`，已裁决对象再次裁决返回 `QUESTION_REVIEW_RESOLVED`。
+
+裁决由使用本地会话身份的用户明确确认；这是透明的人工核对流程，不是多用户权限审批或模型真值验证。`source_refs` 必须非空、无重复，并逐项完整复制该题封存引用；缺少原文或越界引用返回 `INVALID_SOURCE_PROOF`，非法单选答案返回 `INVALID_CORRECTION`。`corrected_answer_key` 仅可选择原题已有选项，不能改题干/选项或提交分数。开放题允许更正参考答案和 rubric，但仍然 `unverified`，不会因人工确认 rubric 自动取得可信分数。未确认或自由文本投诉不授予成绩。
+
+举报及裁决会在同一事务内追加审计事件、撤销/替代原证据并重算题目/主题结果及学习状态；失败整体回滚。原始题目、作答、初次评分结果保留；替代证据沿用原 observation、family、submission、作答时间及顺序，复核时间不计作间隔学习。assisted、reset 周期、旧主题版本限制继续生效。GET 的 `items` 包含每次复核的不可变 `events`、`frozen_question`、当前 `question` 和 `source_text`；`status` 表示该次复核结论，当前题目状态见 `question.question_review_status`。查阅会把同一学习者其他空间中来源重叠的活动测验标记为 assisted，避免复核原文成为隐性提示。
 
 删除和重置是不同操作：reset 保留学习历史，delete 彻底清除约定范围。运行中的相关任务先取消，防止数据被迟到结果重新写入；无法清除的文件返回 failed 与原因，不虚报成功。首版本地文件清除不承诺硬件级安全擦除。
 
@@ -795,3 +812,64 @@ HTTP 创建测验或消息时，资源、queued Run、outbox 和幂等响应同�
 网络调用在业务事务外执行，结果提交时重新核验租约、取消、资源存在性和学习上下文。空间/资料删除撤销关联模型任务；旧执行器无法发布迟到结果。升级前没有 outbox 的中断任务标记 RUN_INTERRUPTED，有持久事件的任务留给 worker 恢复。
 
 完整持久服务需同时运行 API、graph_worker_cli、model_worker_cli，并配置 MySQL、Neo4j、Qdrant 和模型认证。创建应用工厂供隔离测试注入；生产 ASGI 入口从环境生成/读取本地令牌。健康检查不调用付费模型，模型状态 configured 只表示认证配置存在，不代表外部模型已实测可用。部分列表采用内存游标分页，尚未进行大规模负载测试。
+
+### 15. 学习算法功能
+
+以下接口沿用 X-Local-Token 认证、空间隔离和统一错误格式。两个比较类 POST 必须提供非空 Idempotency-Key，同键同请求重放同一快照，同键不同请求返回 409；删除空间后不得通过幂等缓存读回报告。比较与回放只保存幂等响应，不改写真实任务、测验证据或掌握状态。
+
+#### 15.1 自适应诊断与前置排查
+
+创建测验 POST /api/v1/learning-spaces/{space_id}/assessments 可增加 "adaptive": true；默认 false，保留旧答题协议。诊断在通过验证的冻结题池内按 adaptive-v1 排序，冻结范围、知识版本、重置轮次、已有独立证据和已见题族。不会临时构造未经来源验证的题。
+
+GET /api/v1/assessments/{assessment_id}/diagnostic 返回：
+
+- current_question：当前题或 null；未来题、答案键与评分细则不对外返回。
+- progress：answered / presented / target；decisions 保存题目、主题、选择理由和证据引用。
+- hypotheses：错题触发的前置排查，状态 pending / supported / not_supported / inconclusive。被提示、未经验证、越出范围或知识版本失效时，不确认为前置缺口。
+- completion_reason：target_reached 或 no_unseen_question_family；后者表示冻结题池没有新的可用题族，不能视为已经掌握。
+
+生成发布和每次选题都在空间锁保护下排除其他测验已经展示的题族，避免同时开始的诊断把重复题当作新独立证据。原题池、冻结历史输入和首次有效观察不变，runtime_excluded_family_count 只暴露排除数量。在线最多检查 2000 次既有测验；超限以 exposure_history_limit 停止新题，不能把无法确认独立性解释成已经掌握。
+
+每次 POST attempts 只接受当前题的一条答案，expected_answer_revision 为 0，重复、未来或已答题返回 ADAPTIVE_QUESTION_ORDER。同幂等键可重试但不会再次推进。答完已展示题后显式 finalize；提前结束需 allow_unanswered: true，只评分已展示题。未展示题禁止题目复核和评分复核。旧测验调用 diagnostic 返回 ADAPTIVE_NOT_ENABLED。
+
+前置排查是可核验的假设，不能当作后续题出错的已证实因果关系。策略只保证显式题族去重，不宣称具有语义改写识别能力。
+
+#### 15.2 掌握度演化与动态复习
+
+GET /api/v1/learning-spaces/{space_id}/evolution?limit=200 返回当前范围的主题、current 状态、curve、events 和证据充分性。limit 取 1–500，限制全报告曲线点与事件总数，truncated 与计数明确显示截断。
+
+曲线区分 observed_at（原始答案时间）、recorded_at（首次评分可用时间）、observed_mastery_score（该记录时刻已知成绩）与 mastery_score（按已接受复核重新解释的当前成绩），last_revised_at 标明后续复核。重置、旧版本和撤销证据保留审计事件，但不计入当前轮次曲线。
+
+状态查询、计划和演化统一使用 review-v2 的 1/3/7/14 天规则。只有不同题族、不同测验且真实答题间隔至少 24 小时的独立成功才推进阶段；独立错误缩短间隔。容易/未知难度最多 3 天，有已知中高难度最多 7 天，含高难度应用证据才可至 14 天。答题跨天时，间隔判断使用前一次测验的最后答题时间。
+
+review_schedule 返回策略版本、stage、interval_days、next_review_at、due、selected_evidence_ids、reasons、config 与 limitations。提示、同题族和未验证答题不作为独立成功。复核保留原答题时间；纠正错误评分可以重算历史间隔，但不能以复核时间创建一次新复习。旧记录可由不可变 attempts 补出真实答题时间；无法恢复时明确标记 legacy_finalization。掌握度是证据均值与充分性规则，不是经过校准的掌握概率。
+
+读取旧状态时，状态查询、演化和计划会用补全后的真实答题时间与当前 MasteryPolicy 重新验证缓存中的掌握结论，整个投影不改写已存状态或证据。旧评分时间造成的虚假间隔不会继续维持 mastered，也不会让关闭复习的计划跳过尚需学习的主题。知识版本失效、重置隔离与既有 unstable 语义仍然保留；到期提示在基础掌握判定之后计算。
+
+#### 15.3 时间预算比较
+
+POST /api/v1/learning-spaces/{space_id}/plan-comparisons 请求示例：
+
+    {"budgets_minutes_per_day":[20,40],"horizon_days":7}
+
+支持 2–5 个不同的严格整数预算，每天 1–480 分钟，horizon_days 为 1–30。各场景共享范围、资料绑定、状态、复习时钟、档案和快照 hash。返回 scenarios，每项含 schedule、blocked、deferred、already_satisfied_topic_ids、summary、daily_totals、weekly_totals。
+
+budget-closure-v1 优先覆盖到期、薄弱和未知主题，并为每个目标纳入所需前置。缺失、排除或环状前置会阻塞依赖项；每日上限、周一到周日的每周预算和包含截止当天的目标日期共同约束。不能装下全部主题时返回可行子集及延后理由，不静默越界。最多处理 512 个主题、4096 条关系/来源；超出返回 COMPARISON_LIMIT_EXCEEDED，快照损坏返回 INVALID_GRAPH_SNAPSHOT。
+
+预览从 UTC 当天开始，是独立预算场景，不扣减或替换现有计划。任务时间来自透明的计划默认值，覆盖率不能解释为预期学习收益；该启发式不保证全局最优。
+
+#### 15.4 历史策略回放与观测评估
+
+POST /api/v1/learning-spaces/{space_id}/policy-replays 可提交 {}，或：
+
+    {"limit":200,"minimum_delay_hours":24,"from_time":"2026-09-01T00:00:00+08:00","to_time":"2026-09-26T23:59:59+08:00"}
+
+limit 为 1–1000，minimum_delay_hours 为 24–8760；时间必须带时区。报告只纳入截止时已完成且有完成时间的测验。决策重放取该次测验创建时冻结的主题/前置/版本/轮次，只使用严格早于创建时间已可用的证据，后续复核不会倒灌至历史决策。缺失原始资格审计的历史撤销记录保守排除。
+
+三个结果必须分开理解：
+
+1. policies / decisions：同一候选集上的 fixed_order、existing_rules_topic_proxy、adaptive_topic_proxy 首主题优先级比较，展示薄弱/未知覆盖与选择差异。自适应排序复用在线策略函数，但不模拟题池覆盖、测验内探查或反事实答题。旧规则仅为主题级代理，不还原历史计划完成状态和所有不稳定状态转换。
+2. prediction：共同前缀证据均值对随后独立答题的平均绝对误差与覆盖率。没有可用先验证据时为 null，不填 0，也不归因于某条选题策略。
+3. observed_retests：同主题、同版本、同重置轮次、不同题族与测验的连续已记录独立答题，真实间隔满足要求后才统计 followup_score / score_change。中间练习会重启间隔，已知提示或重复题练习打断配对。无法恢复真实答题时间的旧记录不计入延迟复测。真实复测统计使用报告时间窗口内的全部可用观测，决策 limit 只截断策略明细；配对明细也单独标记截断。
+
+causal_effect_estimated 固定为 false：题目难度、自选练习和其他学习活动都可能影响结果，不能把观测差值解释为策略因果收益。无数据时明确给出原因。报告带 snapshot_hash、policy_version、limits、truncated；在线历史总行数上限 20000，决策主题总数上限 2048，估计行访问量上限 2000000。超出组合计算量返回 REPLAY_LIMIT_EXCEEDED，应缩小 limit / 决策时间范围或做离线评估。
