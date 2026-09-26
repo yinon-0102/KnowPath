@@ -91,6 +91,8 @@ class PlanSessionService:
                 days = self.policy.review_intervals[min(submissions - 1, len(self.policy.review_intervals) - 1)]
                 latest = max(datetime.fromisoformat(e["created_at"]) for e in valid)
                 state["review_due_at"] = (latest + timedelta(days=days)).isoformat()
+            due_at = state.get("review_due_at") or state.get("next_review_at")
+            state["review_due"] = bool(due_at and datetime.fromisoformat(due_at) <= datetime.fromisoformat(now()))
         return states
 
     def _snapshot(self, space, states):
@@ -286,7 +288,10 @@ class PlanSessionService:
         space = self.spaces.repository.get(result["space_id"])
         current = self._snapshot(space, self._planning_states(space["id"]))
         saved = result.get("config", {}).get("snapshot")
-        if result["status"] == "ready" and saved != current:
+        elapsed_deferral = any(t["status"] == "deferred" and not t.get("context", {}).get("historical")
+            and t.get("defer_until") and datetime.fromisoformat(t["defer_until"]) <= datetime.fromisoformat(now())
+            for t in result["tasks"])
+        if result["status"] == "ready" and (saved != current or elapsed_deferral):
             result["status"] = "needs_replan"
         return result
 
@@ -340,9 +345,9 @@ class PlanSessionService:
 
     def _validate_active_task(self, space, task):
         current_topics = {t["id"] for t in self.assessments._topics(space)}
-        if (task["status"] in {"completed", "skipped"} or task.get("context", {}).get("historical")
+        if (task["status"] in {"completed", "skipped", "deferred"} or task.get("context", {}).get("historical")
                 or not set(task["topic_ids"]).issubset(current_topics)):
-            raise DomainConflict("TASK_NOT_ACTIVE", "历史、范围外、已完成或跳过的任务不能开始会话")
+            raise DomainConflict("TASK_NOT_ACTIVE", "历史、范围外、已完成、跳过或延期的任务不能开始会话")
 
     def start_session(self, plan_id, task_id, idempotency_key=None):
         payload = {"task_id": task_id}

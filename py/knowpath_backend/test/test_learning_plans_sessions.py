@@ -166,7 +166,7 @@ def test_local_replan_preserves_unchanged_tasks_and_history(backend):
     assert exc.value.code == "PLAN_NOT_ACTIVE"
 
 
-def test_http_datetime_event_idempotency_and_conflict_details():
+def test_http_datetime_event_idempotency_and_conflict_details(monkeypatch):
     from fastapi.testclient import TestClient
     from knowpath_backend.learning.api import create_app
     app = create_app()
@@ -185,6 +185,14 @@ def test_http_datetime_event_idempotency_and_conflict_details():
     conflict = client.patch(task_url, json={"status": "completed", "expected_plan_version": 1})
     assert conflict.json()["error"]["details"]["latest_plan"]["version"] == 2
     assert client.patch(task_url, json={"status": "skipped", "expected_plan_version": 2, "note": "no reason"}).status_code == 422
+    blocked = client.post(f"/api/v1/plans/{plan['id']}/sessions", json={"task_id": plan["tasks"][0]["id"]}, headers={"Idempotency-Key": "deferred-start"})
+    assert blocked.status_code == 409
+    import knowpath_backend.learning.plans.service as planner
+    monkeypatch.setattr(planner, "now", lambda: "2099-01-01T00:00:00+00:00")
+    rebuilt = client.post(url, json={"rebuild_mode": "local_replan", "base_plan_id": plan["id"],
+        "expected_plan_version": 2}, headers={"Idempotency-Key": "resume-plan"})
+    assert rebuilt.status_code == 202, rebuilt.text
+    plan = state.get_plan(rebuilt.json()["plan_id"])
     started = client.post(f"/api/v1/plans/{plan['id']}/sessions", json={"task_id": plan["tasks"][0]["id"]}, headers={"Idempotency-Key": "api-start"})
     assert started.status_code == 201, started.text
     events = f"/api/v1/sessions/{started.json()['id']}/events"
