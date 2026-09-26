@@ -21,6 +21,7 @@ class DifficultyMix(StrictRequest):
 
 
 class CreateAssessment(StrictRequest):
+    adaptive: bool = False
     kind: Literal["diagnostic", "practice", "retest"] = "diagnostic"
     topic_ids: list[Annotated[str, Field(min_length=1)]] | None = Field(default=None, min_length=1)
     question_count: int = Field(default=5, ge=5, le=10)

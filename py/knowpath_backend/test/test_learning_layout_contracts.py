@@ -55,6 +55,7 @@ def test_full_openapi_matches_pre_refactor_contract():
     actual['paths'].pop('/api/v1/learning-spaces/{space_id}/citations/resolve')
     assert set(actual['components']['schemas']) - set(expected['components']['schemas']) == {'Citation','SourceSpan'} | set(reviews['schemas']) | set(algorithms['schemas'])
     assert {name: actual['components']['schemas'].pop(name) for name in algorithms['schemas']} == algorithms['schemas']
+    assert actual['components']['schemas']['CreateAssessment']['properties'].pop('adaptive') == algorithms['adaptive_property']
     assert {name: actual['components']['schemas'].pop(name) for name in reviews['schemas']} == reviews['schemas']
     for name in ('Citation','SourceSpan'):
         actual['components']['schemas'].pop(name)
@@ -68,9 +69,9 @@ def test_full_openapi_matches_pre_refactor_contract():
                 yield from api_routes(included.routes)
 
     routes = list(api_routes(app.routes))
-    assert len(routes) == 54
+    assert len(routes) == 55
     assert all(isinstance(route, ContractRoute) for route in routes)
-    assert len({(route.path, method) for route in routes for method in route.methods}) == 54
+    assert len({(route.path, method) for route in routes for method in route.methods}) == 55
 
 
 def test_mysql_schema_matches_pre_refactor_contract():

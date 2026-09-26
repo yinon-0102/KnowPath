@@ -1,5 +1,42 @@
 {
   "paths": {
+    "/api/v1/assessments/{assessment_id}/diagnostic": {
+      "get": {
+        "summary": "Get Diagnostic",
+        "operationId": "get_diagnostic_api_v1_assessments__assessment_id__diagnostic_get",
+        "parameters": [
+          {
+            "name": "assessment_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Assessment Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/learning-spaces/{space_id}/evolution": {
       "get": {
         "summary": "Evolution",
@@ -50,5 +87,10 @@
       }
     }
   },
-  "schemas": {}
+  "schemas": {},
+  "adaptive_property": {
+    "type": "boolean",
+    "title": "Adaptive",
+    "default": false
+  }
 }

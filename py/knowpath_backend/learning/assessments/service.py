@@ -13,6 +13,7 @@ from knowpath_backend.learning.errors import DomainConflict, DomainNotFound
 from knowpath_backend.learning.assessments.mastery import aggregate, MasteryPolicy
 from knowpath_backend.learning.assessments.review_policy import enrich_observation_times, project_review_state
 from knowpath_backend.learning.assessments.grading import grade_answer, effective_question
+from knowpath_backend.learning.assessments import adaptive
 from knowpath_backend.learning.assessments.grade_reviews import review_grade
 from knowpath_backend.learning.assessments.question_reviews import report_question, resolve_question_review, question_reviews
 from knowpath_backend.learning.assessments.generation import DashScopeQuestionGenerator, QuestionGenerationError, validate_questions
@@ -37,7 +38,14 @@ class AssessmentService:
         self.mastery_policy = mastery_policy or MasteryPolicy()
 
     def _execute(self, operation, identifier, payload, key, change):
-        return self.commands._execute(operation, identifier, payload, key, change)
+        def guarded_change():
+            if operation in {"assessment.grade_review", "assessment.question_report"}:
+                assessment = self.repository.get_record("assessments", identifier)
+                diagnostic = assessment["snapshot"].get("adaptive")
+                if diagnostic is not None and payload["question_id"] not in diagnostic["presented_question_ids"]:
+                    raise DomainConflict("QUESTION_NOT_PRESENTED", "未展示的诊断题目不可复核")
+            return change()
+        return self.commands._execute(operation, identifier, payload, key, guarded_change)
 
     def _topics(self, space):
         topics = self.spaces.bound_topics(space)
@@ -55,6 +63,8 @@ class AssessmentService:
 
     def create(self, space_id, payload, key=None, *, dispatch=None, durable=False):
         payload = CreateAssessment.model_validate(payload).model_dump(exclude_none=True)
+        if not payload.get("adaptive"):
+            payload.pop("adaptive", None)  # Preserve legacy command fingerprints.
         created = []
         def prepare():
             space = self.spaces.repository.get(space_id)
@@ -78,6 +88,13 @@ class AssessmentService:
                     "bindings": copy.deepcopy(space["bindings"]), "topics": topics,
                     "epochs": self._epochs(space_id), "request": payload,
                     "assessment_policy_version": "assessment-v1"}}
+            if payload.get("adaptive"):
+                assessment["snapshot"]["adaptive"] = adaptive.freeze_inputs(
+                    topics, enrich_observation_times(self.repository,
+                        self.repository.records("evidence", space_id=space_id, lock=False)),
+                    self.repository.records("assessments", space_id=space_id, lock=False),
+                    assessment["snapshot"]["epochs"], space["state_version"], assessment["created_at"],
+                    policy=self.mastery_policy)
             self.repository.put_record("assessments", assessment)
             event_id = enqueue(self.repository, "assessment", assessment) if durable else None
             created.append((assessment["id"], event_id))
@@ -137,10 +154,35 @@ class AssessmentService:
             else:
                 apply_source_assistance(questions, current["snapshot"])
                 current.update(status="ready", questions=questions)
+                if current["snapshot"].get("adaptive") and self._refresh_runtime_exposures(current):
+                    adaptive.select_next(current)
                 self.runs.complete(run["id"], {"type": "assessment", "id": assessment_id})
             self.repository.put_record("assessments", current)
             if job is not None:
                 job.settle()
+
+    def _refresh_runtime_exposures(self, assessment):
+        """Read published exposures after the caller acquired the space lock."""
+        uow = getattr(self.repository, "unit_of_work", None)
+        if uow is not None and uow.engine.dialect.name in {"mysql", "mariadb"}:
+            # A command replay lookup can establish a MySQL repeatable-read
+            # snapshot before waiting for the space lock. A fresh short read
+            # sees the preceding publisher's commit without taking any other
+            # assessment lock in the reverse order. Current staged data belongs
+            # only to the excluded assessment; the space lock fences publishers.
+            from sqlalchemy import select
+            from knowpath_backend.learning.persistence.db import AssessmentRow
+            query = select(AssessmentRow.id, AssessmentRow.status, AssessmentRow.questions, AssessmentRow.snapshot).where(
+                AssessmentRow.space_id == assessment["space_id"], AssessmentRow.id != assessment["id"],
+                AssessmentRow.status.not_in(["generating", "failed", "cancelled"])
+            ).order_by(AssessmentRow.created_at, AssessmentRow.id).limit(adaptive.MAX_RUNTIME_HISTORY + 1)
+            with uow.engine.connect() as connection:
+                history = list(connection.execute(query).mappings())
+        else:
+            # SQLite BEGIN IMMEDIATE and the memory transaction lock already
+            # serialize publication. Never lock a second assessment here.
+            history = self.repository.records("assessments", space_id=assessment["space_id"], lock=False)
+        return adaptive.exclude_runtime_exposures(assessment, history, now())
 
     def public(self, assessment):
         snapshot = assessment["snapshot"]
@@ -150,11 +192,15 @@ class AssessmentService:
                       material_version_ids=[b["material_version_id"] for b in snapshot["bindings"]],
                       assessment_policy_version=snapshot["assessment_policy_version"], questions=[], answers=[])
         if assessment["status"] not in {"generating", "failed", "cancelled"}:
-            result["questions"] = [{k: copy.deepcopy(q[k]) for k in ("id", "type", "prompt", "options", "difficulty") if k in q}
-                                   | {"topic_ids": [q["topic_id"]]} for q in assessment["questions"]]
+            result["questions"] = [adaptive.public_question(q) for q in adaptive.reached_questions(assessment)]
             answers = self._latest(assessment["id"])
             result["answers"] = [{"question_id": qid, "answer_revision": a["answer_revision"], "answer": a["answer"]}
                                  for qid, a in answers.items()]
+        if snapshot.get("adaptive"):
+            trace = adaptive.diagnostic_view(assessment)
+            result.update(adaptive=True, current_question_id=(trace["current_question"] or {}).get("id"),
+                          progress=trace["progress"], adaptive_policy_version=trace["policy_version"],
+                          completion_reason=trace["completion_reason"])
         if assessment["status"] == "completed":
             result["result_url"] = f"/api/v1/assessments/{assessment['id']}/result"
         return result
@@ -175,6 +221,45 @@ class AssessmentService:
                 answers[answer["question_id"]] = answer
         return answers
 
+    def _diagnostic_observations(self, assessment, answers=None):
+        """Check current independence without changing frozen selection inputs."""
+        answers = self._latest(assessment["id"]) if answers is None else answers
+        space = self.spaces.repository.get(assessment["space_id"])
+        revisions = {t["id"]: revision(t) for t in self.spaces.bound_topics(space)}
+        epochs = self._epochs(assessment["space_id"])
+        snapshot = assessment["snapshot"]
+        historical = set(snapshot["adaptive"]["historical_family_ids"])
+        current_results = {r["question_id"]: r for r in (assessment.get("result") or {}).get("question_results", [])}
+        observations = {}
+        for question in adaptive.reached_questions(assessment):
+            answer = answers.get(question["id"])
+            score, _, _ = grade_answer(effective_question(assessment, question), answer)
+            independent = (score is not None and answer is not None
+                and not question.get("assisted") and not answer.get("assisted")
+                and question["family_id"] not in historical
+                and question["topic_revision_id"] == revisions.get(question["topic_id"])
+                and snapshot["epochs"].get(question["topic_id"], 0) == epochs.get(question["topic_id"], 0))
+            result = current_results.get(question["id"])
+            if result is not None:
+                evidence = self.repository.get_record("evidence", result["evidence_id"])
+                independent = independent and bool(evidence.get("eligible") and not evidence.get("revoked_by_review_id"))
+            observations[question["id"]] = {"score": score, "independent": independent,
+                "attempt_id": answer["id"] if answer else None, "evidence_id": result["evidence_id"] if result else None}
+        return observations
+
+    def diagnostic(self, assessment_id):
+        with self.repository.transaction():
+            assessment = self.repository.get_record("assessments", assessment_id)
+            if not assessment["snapshot"].get("adaptive"):
+                raise DomainConflict("ADAPTIVE_NOT_ENABLED", "当前测验未启用自适应诊断")
+            if assessment["status"] == "generating":
+                run = self.runs.get(assessment["run_id"])
+                if run["status"] in {"failed", "cancelled"}:
+                    assessment["status"] = run["status"]
+            if assessment["snapshot"]["adaptive"]["hypotheses"]:
+                adaptive.update_hypotheses(assessment, self._diagnostic_observations(assessment))
+            return adaptive.diagnostic_view(assessment)
+
     def record(self, assessment_id, payload, key=None):
         payload = RecordAttempt.model_validate(payload).model_dump()
         def change():
@@ -183,6 +268,12 @@ class AssessmentService:
                 raise DomainConflict("ASSESSMENT_FINALIZED", "测验不再接受答题")
             questions = {q["id"]: q for q in assessment["questions"]}
             latest = self._latest(assessment_id)
+            diagnostic = assessment["snapshot"].get("adaptive")
+            if diagnostic is not None:
+                item = payload["answers"][0]
+                if (len(payload["answers"]) != 1 or item["question_id"] != diagnostic["current_question_id"]
+                        or item["question_id"] in latest or item["expected_answer_revision"] != 0):
+                    raise DomainConflict("ADAPTIVE_QUESTION_ORDER", "自适应测验仅接受当前问题的一次回答")
             timestamp, batch_id = now(), uid()
             for item in payload["answers"]:
                 question = questions.get(item["question_id"])
@@ -201,11 +292,19 @@ class AssessmentService:
                 self.repository.put_record("attempts", record)
                 latest[item["question_id"]] = record
             assessment["status"] = "in_progress"
+            if diagnostic is not None:
+                diagnostic["answered_question_ids"].append(question["id"])
+                observations = self._diagnostic_observations(assessment, latest)
+                adaptive.update_hypotheses(assessment, observations)
+                observed = observations[question["id"]]
+                if self._refresh_runtime_exposures(assessment):
+                    adaptive.select_next(assessment, trigger=question if observed["independent"] and observed["score"] == 0 else None,
+                                         attempt=record)
             self.repository.put_record("assessments", assessment)
             if payload["finalize"]:
                 return self._finalize(assessment, False)
             return {"attempt_id": batch_id, "status": "recorded", "accepted_count": len(payload["answers"]),
-                    "next_question_id": next((qid for qid in questions if qid not in latest), None)}
+                    "next_question_id": diagnostic["current_question_id"] if diagnostic is not None else next((qid for qid in questions if qid not in latest), None)}
         return self._execute("assessment.attempt", assessment_id, payload, key, change)
 
     def finalize(self, assessment_id, payload):
@@ -220,7 +319,8 @@ class AssessmentService:
         if assessment["status"] not in {"ready", "in_progress"}:
             raise DomainConflict("ASSESSMENT_NOT_READY", "测验尚未就绪")
         answers = self._latest(assessment["id"])
-        if not allow_unanswered and len(answers) != len(assessment["questions"]):
+        questions = adaptive.reached_questions(assessment)
+        if not allow_unanswered and len(answers) != len(questions):
             raise DomainConflict("ASSESSMENT_INCOMPLETE", "仍有未回答题目")
         space = self.spaces.repository.get(assessment["space_id"])
         # Bindings, rather than mutable scope, determine whether old scores apply.
@@ -229,7 +329,7 @@ class AssessmentService:
         run = self.runs.create("assessment_finalize", status="running")
         assessment.update(submission_id=uid(), finalize_run_id=run["id"])
         timestamp, question_results, topic_results, evidence = now(), [], [], []
-        for question in assessment["questions"]:
+        for question in questions:
             answer = answers.get(question["id"])
             score, verdict, feedback = grade_answer(question, answer)
             topic_id = question["topic_id"]
@@ -256,7 +356,7 @@ class AssessmentService:
                 "feedback": feedback, "rubric_version": question["rubric_version"], "source_refs": question["source_refs"],
                 "evidence_id": record["id"], "assisted": assisted})
         version = space["state_version"] + 1
-        for topic_id in dict.fromkeys(q["topic_id"] for q in assessment["questions"]):
+        for topic_id in dict.fromkeys(q["topic_id"] for q in questions):
             rows = [e for e in evidence if e["topic_id"] == topic_id]
             verified = [e for e in rows if e["score"] is not None]
             topic_results.append({"topic_id": topic_id, "topic_revision_id": rows[0]["topic_revision_id"],
@@ -272,6 +372,11 @@ class AssessmentService:
         assessment.update(status="completed", result={"assessment_id": assessment["id"], "graded_at": timestamp,
             "topic_results": topic_results, "question_results": question_results, "state_version": version,
             "plan_replan_run_id": None})
+        if assessment["snapshot"].get("adaptive"):
+            diagnostic = assessment["snapshot"]["adaptive"]
+            diagnostic["current_question_id"] = None
+            diagnostic["completion_reason"] = diagnostic["completion_reason"] or "finalized_early"
+            adaptive.update_hypotheses(assessment, self._diagnostic_observations(assessment, answers))
         self.repository.put_record("assessments", assessment)
         self.runs.complete(run["id"], {"type": "assessment", "id": assessment["id"]})
         return {"run_id": run["id"], "assessment_id": assessment["id"], "status": "processing"}
