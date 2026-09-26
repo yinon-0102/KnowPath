@@ -1,0 +1,14 @@
+{
+  "name": "knowpath-frontend",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "KnowPath — 清晰、从容的个人学习空间",
+  "scripts": {
+    "dev": "node server.mjs",
+    "start": "node server.mjs",
+    "check": "node --check src/app.js && node --check src/api.js && node --check src/store.js && node --check src/icons.js && node --check server.mjs",
+    "test": "node --test tests/*.test.mjs"
+  },
+  "engines": { "node": ">=20" }
+}

@@ -1,0 +1,34 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 500" fill="none">
+ <defs>
+  <linearGradient id="glass" x1="250" y1="180" x2="400" y2="320" gradientUnits="userSpaceOnUse"><stop stop-color="#fff" stop-opacity=".96"/><stop offset=".45" stop-color="#d7e6f4"/><stop offset="1" stop-color="#8aaacf"/></linearGradient>
+  <linearGradient id="blue" x1="100" y1="100" x2="530" y2="400" gradientUnits="userSpaceOnUse"><stop stop-color="#e5edf5"/><stop offset=".48" stop-color="#8facce"/><stop offset="1" stop-color="#d8e5ef"/></linearGradient>
+  <radialGradient id="pearl" cx=".3" cy=".25" r=".85"><stop stop-color="white"/><stop offset=".5" stop-color="#e7eef5"/><stop offset="1" stop-color="#9fb7cd"/></radialGradient>
+  <radialGradient id="sage" cx=".3" cy=".2" r=".9"><stop stop-color="#f5faf4"/><stop offset=".6" stop-color="#c6d9cd"/><stop offset="1" stop-color="#93aea0"/></radialGradient>
+  <radialGradient id="lavender" cx=".3" cy=".2" r=".9"><stop stop-color="#faf8ff"/><stop offset=".6" stop-color="#d9d5e9"/><stop offset="1" stop-color="#aaa5c9"/></radialGradient>
+  <filter id="shadow" x="-50%" y="-50%" width="200%" height="220%"><feDropShadow dx="0" dy="16" stdDeviation="15" flood-color="#7e98b1" flood-opacity=".17"/></filter>
+  <filter id="blur"><feGaussianBlur stdDeviation="18"/></filter>
+ </defs>
+ <ellipse cx="326" cy="418" rx="176" ry="16" fill="#ccd9e6" opacity=".32" filter="url(#blur)"/>
+ <g stroke="url(#blue)" stroke-width="1.6">
+  <ellipse cx="324" cy="244" rx="227" ry="94" transform="rotate(-28 324 244)"/>
+  <ellipse cx="324" cy="244" rx="212" ry="103" transform="rotate(39 324 244)"/>
+  <ellipse cx="324" cy="244" rx="171" ry="98" transform="rotate(-76 324 244)" opacity=".75"/>
+ </g>
+ <path d="M175 307 323 244 470 150M240 109 323 244 404 369M136 193 323 244 492 318" stroke="#c4d4e4" stroke-width="1.5" stroke-dasharray="4 6"/>
+ <g filter="url(#shadow)">
+  <rect x="267" y="187" width="116" height="116" rx="35" transform="rotate(-12 325 245)" fill="url(#glass)" stroke="#fff" stroke-width="2"/>
+  <path d="M304 215v57m41-62-25 35 29 24m-45-25 16 1" stroke="#567b9e" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"/><circle cx="345" cy="210" r="5" fill="#567b9e"/>
+  <circle cx="175" cy="307" r="32" fill="url(#pearl)" stroke="white"/>
+  <circle cx="470" cy="150" r="27" fill="url(#sage)" stroke="white"/>
+  <circle cx="240" cy="109" r="20" fill="url(#lavender)" stroke="white"/>
+  <circle cx="404" cy="369" r="24" fill="url(#pearl)" stroke="white"/>
+  <circle cx="136" cy="193" r="13" fill="url(#sage)"/>
+  <circle cx="492" cy="318" r="15" fill="url(#lavender)"/>
+ </g>
+ <g font-family="-apple-system, BlinkMacSystemFont, 'Microsoft YaHei', sans-serif" font-size="12" fill="#61748b">
+  <rect x="95" y="349" width="99" height="31" rx="15.5" fill="white" fill-opacity=".86"/><text x="145" y="369" text-anchor="middle">连接每个知识点</text>
+  <rect x="451" y="99" width="78" height="31" rx="15.5" fill="white" fill-opacity=".9"/><text x="490" y="119" text-anchor="middle">发现新方向</text>
+  <rect x="376" y="407" width="79" height="31" rx="15.5" fill="white" fill-opacity=".86"/><text x="415" y="427" text-anchor="middle">让理解发生</text>
+ </g>
+ <circle cx="346" cy="78" r="4" fill="#b4c9db"/><circle cx="535" cy="253" r="5" fill="#b6cbd8"/><circle cx="268" cy="390" r="3" fill="#b9bfd3"/>
+</svg>

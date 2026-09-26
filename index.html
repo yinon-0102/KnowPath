@@ -1,0 +1,877 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light">
+<meta name="referrer" content="no-referrer">
+<title>KnowPath · 知识图谱与来源问答</title>
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/cytoscape/3.28.1/cytoscape.min.js"></script>
+<style>
+:root{--bg:#fff;--soft:#f5f5f7;--text:#1d1d1f;--muted:#6e6e73;--blue:#0071e3;--line:#e5e5e7}
+*{box-sizing:border-box}[hidden]{display:none!important}
+body{margin:0;color:var(--text);background:var(--bg);font:17px/1.47 -apple-system,BlinkMacSystemFont,"SF Pro Display","PingFang SC","Microsoft YaHei",sans-serif}
+button,input,select,textarea{font:inherit}button{cursor:pointer;transition:background .25s ease-out,opacity .25s ease-out}button:disabled{cursor:default;opacity:.45}
+:focus-visible{outline:3px solid var(--blue);outline-offset:3px}h1,h2,h3,p{margin:0}
+h1{font-size:28px;line-height:1.15;font-weight:600;letter-spacing:-1px}h2{font-size:22px;line-height:1.25;font-weight:600;letter-spacing:-.6px}h3{font-size:17px;font-weight:600}
+.app{height:100vh;height:100dvh;display:grid;grid-template-rows:44px auto minmax(0,1fr) 40px}
+.topbar{grid-row:1}#health-error{grid-row:2}.workspace{grid-row:3}.footer{grid-row:4}
+.topbar{display:flex;align-items:center;justify-content:space-between;padding:0 24px;border-bottom:1px solid var(--line);background:rgba(255,255,255,.85);backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px)}
+.brand{font-weight:600;letter-spacing:-.6px;font-size:19px}.connection{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--muted)}
+.status-dot{width:7px;height:7px;border-radius:50%;background:#86868b}.connection[data-status="online"] .status-dot{background:#34c759}.connection[data-status="offline"] .status-dot{background:#ff3b30}.connection[data-status="loading"] .status-dot{animation:fade 1.4s ease-out infinite alternate}
+.text-button{padding:3px 0;border:0;border-radius:4px;color:var(--blue);background:none;font-size:13px;white-space:nowrap}
+.error{display:flex;align-items:flex-start;gap:10px;padding:12px;border:1px solid var(--line);border-radius:12px;background:var(--soft);color:var(--muted);font-size:12px;overflow-wrap:anywhere}.error span{flex:1}.error .text-button{flex:none;padding:0;font-size:12px}#health-error{margin:8px 24px}
+.workspace{display:grid;grid-template-columns:280px minmax(0,1fr) 340px;min-height:0}.controls{overflow:auto;padding:28px 22px;border-right:1px solid var(--line)}
+.intro{margin:9px 0 26px;color:var(--muted);font-size:13px}.field{margin:0 0 22px}.field-label{display:block;font-size:14px;font-weight:600;margin-bottom:9px}.field-row{display:flex;align-items:center;justify-content:space-between}
+select,textarea{width:100%;padding:12px;color:var(--text);background:var(--soft);border:1px solid transparent;border-radius:12px}select{font-size:14px;min-height:46px}textarea{resize:vertical;min-height:115px;font-size:15px;line-height:1.47}select:focus,textarea:focus{border-color:var(--blue)}
+.hint{margin-top:7px;font-size:12px;color:var(--muted);overflow-wrap:anywhere}.depth-value{color:var(--blue);font-size:14px;font-variant-numeric:tabular-nums}input[type="range"]{width:100%;margin:8px 0 0;accent-color:var(--blue);cursor:pointer}.range-labels{display:flex;justify-content:space-between;font-size:11px;color:var(--muted)}
+fieldset{border:0;padding:0;min-width:0}legend{padding:0}.filters{display:grid;grid-template-columns:1fr 1fr;gap:12px 6px}.filter{display:flex;gap:7px;align-items:center;font-size:13px;cursor:pointer}.filter input{margin:0;accent-color:var(--blue);width:15px;height:15px}.type-dot{width:7px;height:7px;border-radius:50%;flex:none}
+.primary,.secondary{border-radius:980px;padding:11px 18px;border:0}.primary{width:100%;background:var(--blue);color:#fff;font-size:15px}.primary:hover:not(:disabled){opacity:.88}.secondary{background:var(--soft);color:var(--text);font-size:13px}.secondary:hover:not(:disabled){background:#e9e9ec}
+.stats{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;padding:18px 7px;margin-top:24px;border-radius:18px;background:var(--soft);text-align:center}.stat strong{display:block;font-size:25px;font-weight:600;letter-spacing:-.8px;font-variant-numeric:tabular-nums}.stat span{font-size:11px;color:var(--muted)}
+.graph-section{min-width:0;min-height:0;display:flex;flex-direction:column;padding:28px 26px 16px}.graph-subtitle{margin-top:6px;color:var(--muted);font-size:13px}#graph-error{margin-top:16px}
+.graph-stage{position:relative;flex:1;min-height:240px;margin-top:20px;border-radius:18px;overflow:hidden;background:var(--soft)}#cy{position:absolute;inset:0}
+.graph-tools{position:absolute;top:14px;right:14px;z-index:2;display:flex;gap:5px}.graph-tools button{height:30px;min-width:30px;border:1px solid var(--line);border-radius:980px;background:#fff;color:var(--text);font-size:15px;padding:0 9px}.graph-tools button:last-child{font-size:12px}
+.empty{display:grid;align-content:center;justify-items:center;gap:9px;padding:30px 24px;text-align:center;color:var(--muted);font-size:14px}.empty strong{color:var(--text);font-weight:600;font-size:17px}.graph-empty{position:absolute;inset:45px 0 0;pointer-events:none}.graph-footer{min-height:35px;padding-top:12px;font-size:11px;color:var(--muted)}
+.paths-panel{min-height:0;display:flex;flex-direction:column;border-left:1px solid var(--line);padding:28px 20px 18px}.paths-heading{display:flex;justify-content:space-between;align-items:center;gap:8px}.path-count{font-size:12px;color:var(--muted);font-variant-numeric:tabular-nums}.path-body{position:relative;flex:1;min-height:0;overflow:auto;margin-top:20px}#reason-error{margin-bottom:12px}
+.path-card,.node-card{padding:16px;background:var(--soft);border:1px solid transparent;border-radius:18px;margin-bottom:12px;overflow-wrap:anywhere}.path-card.is-active{border-color:var(--blue)}.path-select{display:flex;align-items:center;justify-content:space-between;gap:10px;border:0;padding:0;width:100%;text-align:left;background:transparent;color:var(--text);font-size:14px;font-weight:600}.path-select small{font-size:11px;font-weight:400;color:var(--muted);max-width:50%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.timeline{list-style:none;padding:0;margin:18px 0}.timeline li{position:relative;padding:0 0 15px 20px}.timeline li:not(:last-child)::before{content:"";position:absolute;top:8px;bottom:-7px;left:3px;width:1px;background:#d2d2d7}.timeline li:last-child{padding-bottom:0}.timeline li::after{content:"";position:absolute;top:7px;left:0;width:7px;height:7px;border-radius:50%;background:#86868b}.timeline li.is-selected::after{background:var(--blue)}
+.step-button{display:block;width:100%;border:0;background:none;color:var(--text);padding:0;text-align:left;font-size:14px}.step-button:hover,.step-button[aria-pressed="true"]{color:var(--blue)}.step-note{display:block;color:var(--muted);font-size:12px;margin-top:3px;line-height:1.47}.relation{color:var(--muted);font-size:11px;display:block;margin-top:6px}
+.score{margin-top:11px}.score-label{display:flex;justify-content:space-between;color:var(--muted);font-size:11px;margin-bottom:5px}.score-label strong{color:var(--text);font-weight:400;font-variant-numeric:tabular-nums}.score-track{height:5px;background:#e2e2e5;border-radius:980px;overflow:hidden}.score-fill{height:100%;width:0;background:var(--blue);border-radius:inherit;transition:width .25s ease-out}
+.explanation{margin-top:17px;padding-top:13px;border-top:1px solid var(--line);font-size:13px;line-height:1.6}.explanation h3{margin-bottom:5px;font-size:12px;font-weight:600}.explanation p{color:var(--muted);white-space:pre-wrap}
+.path-nav{display:flex;align-items:center;gap:8px;border-top:1px solid var(--line);padding-top:14px;margin-top:12px}.path-nav button{flex:1}#path-position{font-size:11px;color:var(--muted);white-space:nowrap}.node-card dl{font-size:13px;margin:14px 0 0}.node-card dt{color:var(--muted);margin-top:10px}.node-card dd{margin:2px 0 0}.node-card .text-button{margin-top:12px}
+.footer{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:0 24px;border-top:1px solid var(--line);font-size:11px;color:var(--muted);font-variant-numeric:tabular-nums}.footer-meta{max-width:50%;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+.skeleton{background:#e8e8ed;border-radius:9px;animation:fade 1.4s ease-out infinite alternate}.learner-skeleton{height:46px}.graph-loading{position:absolute;inset:0;z-index:3;background:var(--soft);padding:30px;display:flex;flex-direction:column;justify-content:center;gap:18px}.graph-loading .skeleton{height:64px;width:58%;align-self:center}.graph-loading .skeleton:nth-child(2){width:80%;animation-delay:.15s}.graph-loading p{text-align:center;font-size:13px;color:var(--muted)}.path-loading{padding:18px;border-radius:18px;background:var(--soft)}.path-loading .skeleton{height:14px;margin-bottom:18px}.path-loading .skeleton:nth-child(2){width:75%}.path-loading .skeleton:nth-child(3){height:90px}.path-loading p{color:var(--muted);font-size:13px}
+@keyframes fade{from{opacity:.4}to{opacity:1}}
+@media(max-width:1100px){.graph-section{padding:28px 16px 16px}}
+@media(max-width:950px){.app{height:auto;min-height:100vh;grid-template-rows:44px auto auto auto}.workspace{grid-template-columns:280px minmax(0,1fr)}.graph-section{min-height:650px}.paths-panel{grid-column:1/-1;border-left:0;border-top:1px solid var(--line);min-height:400px}.path-body{max-height:600px}.footer{min-height:40px}}
+@media(max-width:620px){.workspace{grid-template-columns:1fr}.controls{border:0;padding:24px}.graph-section{min-height:520px;padding:24px;border-top:1px solid var(--line)}.paths-panel{padding:24px}.footer{align-items:flex-start;flex-direction:column;gap:4px;padding:10px 24px}.footer-meta{max-width:100%}.intro{margin-bottom:22px}}
+@media(prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important;scroll-behavior:auto!important}}
+.connection[data-status="limited"] .status-dot{background:#86868b}
+.connection-settings{padding:12px;margin-bottom:20px;border-radius:18px;background:var(--soft);font-size:13px}
+.connection-settings summary{cursor:pointer;font-weight:600}
+.connection-settings input{width:100%;min-width:0;margin:10px 0 6px;padding:10px;border:1px solid var(--line);border-radius:10px;background:#fff;font-size:13px}
+#backend-notice{margin-bottom:20px}
+.answer-text{font-size:14px;white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.6}
+.citation-card{padding:13px;margin-top:12px;border-radius:18px;background:var(--soft);font-size:12px;overflow-wrap:anywhere}
+.citation-card.is-active{outline:1px solid var(--blue);outline-offset:-1px}
+.citation-card button{display:block;width:100%;text-align:left;border:0;background:none;padding:0;color:var(--blue);font-size:13px}
+.citation-card p{margin-top:5px;color:var(--muted)}
+</style>
+</head>
+<body>
+<div class="app">
+  <header class="topbar"><div class="brand">KnowPath</div><div id="connection" class="connection" data-status="loading" role="status"><span class="status-dot" aria-hidden="true"></span><span id="connection-label">检测中</span><button id="health-retry" class="text-button" type="button" hidden>重试</button></div></header>
+  <div id="health-error" class="error" role="alert" hidden><span></span><button class="text-button" data-retry="health" type="button">重试</button></div>
+  <main class="workspace">
+    <aside class="controls" aria-label="推理控制面板">
+      <h1>发现学习的<br>下一步。</h1><p class="intro">探索知识关系，理解每一条推荐。</p>
+      <details id="connection-settings" class="connection-settings">
+        <summary>本地连接设置</summary>
+        <form id="connection-form">
+          <label for="local-token" class="hint">本地服务令牌</label>
+          <input id="local-token" type="password" autocomplete="off" spellcheck="false" placeholder="输入本地会话令牌">
+          <button class="text-button" type="submit">连接服务</button>
+          <p class="hint">运行 start-local.ps1 -OpenBrowser 可自动连接。令牌仅保留在当前标签页。</p>
+        </form>
+      </details>
+      <p id="backend-notice" class="hint" role="status"></p>
+      <form id="reason-form">
+        <div class="field" id="learner-region" aria-busy="true"><label class="field-label" for="learner-select">学习空间</label><div id="learner-loading" class="skeleton learner-skeleton" role="status" aria-label="正在加载学习空间"></div><select id="learner-select" required disabled hidden><option value="">请选择学习空间</option></select><p id="learner-detail" class="hint"></p><div id="learners-error" class="error" role="alert" hidden><span></span><button class="text-button" data-retry="learners" type="button">重试</button></div></div>
+        <div class="field"><label class="field-label" for="query-input">你想探索什么？</label><textarea id="query-input" required rows="3" aria-label="推理问题">根据学习资料，推荐下一步需要掌握的知识，并给出依据。</textarea></div>
+        <div class="field"><div class="field-row"><label class="field-label" for="depth-range">图谱深度</label><output id="depth-value" class="depth-value" for="depth-range">3 层</output></div><input id="depth-range" type="range" min="1" max="3" step="1" value="3"><div class="range-labels" aria-hidden="true"><span>1 层</span><span>3 层</span></div></div>
+        <fieldset class="field"><legend class="field-label">实体类型</legend><div id="type-filters" class="filters"></div></fieldset>
+        <button id="reason-btn" class="primary" type="submit" disabled>基于资料提问</button>
+      </form>
+      <div class="stats" aria-label="图谱与推理统计"><div class="stat"><strong id="node-count">0</strong><span>节点数</span></div><div class="stat"><strong id="edge-count">0</strong><span>关系数</span></div><div class="stat"><strong id="path-count">0</strong><span>引用数</span></div></div>
+    </aside>
+    <section class="graph-section" aria-labelledby="graph-title">
+      <h2 id="graph-title">知识关系，一目了然。</h2><p id="graph-subtitle" class="graph-subtitle">选择学习空间，探索知识图谱。</p>
+      <div id="graph-error" class="error" role="alert" hidden><span></span><button class="text-button" data-retry="graph" type="button">重试</button></div>
+      <div class="graph-stage" id="graph-region" aria-busy="false"><div id="cy" role="region" aria-label="可拖拽和缩放的知识图谱"></div><div class="graph-tools" aria-label="图谱视图控制"><button id="zoom-in" type="button" aria-label="放大图谱" disabled>＋</button><button id="zoom-out" type="button" aria-label="缩小图谱" disabled>−</button><button id="fit-graph" type="button" disabled>适应画布</button></div><div id="graph-empty" class="empty graph-empty"><strong>从一位学习空间开始</strong><span>选择学习空间后，这里将展示真实的知识关系。</span></div><div id="graph-loading" class="graph-loading" role="status" hidden><div class="skeleton"></div><div class="skeleton"></div><div class="skeleton"></div><p>正在加载知识图谱</p></div></div>
+      <p id="graph-note" class="graph-footer" role="status">拖拽节点 · 滚轮缩放 · 点击节点查看详情</p>
+    </section>
+    <aside class="paths-panel" aria-labelledby="paths-title">
+      <div class="paths-heading"><h2 id="paths-title">回答与依据</h2><span id="paths-total" class="path-count">0 条</span></div>
+      <div id="reason-region" class="path-body" aria-busy="false"><div id="reason-error" class="error" role="alert" hidden><span></span><button class="text-button" data-retry="reason" type="button">重试</button></div><div id="reason-loading" class="path-loading" role="status" hidden><div class="skeleton"></div><div class="skeleton"></div><div class="skeleton"></div><div class="skeleton"></div><p>正在检索资料，等待模型回答</p></div><div id="node-info" class="node-card" hidden></div><div id="paths-empty" class="empty"><strong>让推荐有据可循。</strong><span>输入问题并基于资料提问，查看回答及真实来源引用。</span></div><div id="path-list"></div></div>
+      <nav class="path-nav" aria-label="切换来源引用"><button id="prev-path" class="secondary" type="button" disabled>上一条</button><span id="path-position">0 / 0</span><button id="next-path" class="secondary" type="button" disabled>下一条</button></nav>
+    </aside>
+  </main>
+  <footer class="footer"><span id="footer-result" role="status">尚未提问 · 当前 0 条引用</span><span id="footer-meta" class="footer-meta">正在检测模型与图谱版本</span></footer>
+</div>
+<script>
+const BASE_URL = "http://localhost:8000";
+
+const API = (() => {
+  /*
+   * KnowPath 真实后端适配层。业务代码只调用本对象，不直接使用 fetch。
+   * 真实服务使用 /api/v1；学习对象是学习空间，不是人员名单。
+   * 修改后端路由或字段时，只需调整本区域内的请求与映射。
+   *
+   * 本地鉴权：X-Local-Token。令牌通过输入或本地启动器的 URL fragment
+   * 导入 sessionStorage；fragment 立即移除，不发送到服务器，不写源码和日志。
+   * POST 使用 Idempotency-Key，网络中断后的重试复用同一键。
+   *
+   * CORS：运行 .\\start-local.ps1 -OpenBrowser，通过 http://127.0.0.1:5173 打开。
+   * 静态服务器仅提供页面，不暴露项目配置、令牌文件或其他源码。
+   * 后端 LEARNING_ALLOWED_ORIGINS 必须包含页面的完整 Origin（含端口）。
+   * file:// 常使用 Origin: null，当前后端不允许它；不要禁用浏览器安全策略。
+   * 不采用 JSONP、no-cors 或代理绕过 CORS。
+   */
+  const PREFIX = "/api/v1";
+  const TIMEOUT_MS = 15000;
+  const RUN_WAIT_MS = 120000;
+  const TOKEN_KEY = `knowpath.local-token:${BASE_URL}`;
+  const graphs = new Map();
+  const pending = new Map();
+  let localToken = "";
+  try { localToken = sessionStorage.getItem(TOKEN_KEY) || ""; } catch (_) {}
+
+  class APIError extends Error {
+    constructor(kind, message, details = {}) {
+      super(message);
+      this.name = "APIError";
+      this.kind = kind;
+      this.code = details.code || "";
+      this.status = details.status ?? null;
+      this.endpoint = details.endpoint || "";
+      this.details = details.details || {};
+      this.run_id = details.run_id || this.details.run_id || null;
+      this.request_id = details.request_id || null;
+      this.retryable = details.retryable ?? false;
+    }
+  }
+
+  const text = value => value == null ? "" : String(value);
+  const object = value => !!value && typeof value === "object" && !Array.isArray(value);
+  const identifier = value => {
+    if ((typeof value !== "string" && typeof value !== "number") || !String(value).trim()) {
+      throw new APIError("schema", "后端响应缺少有效标识", { code: "INVALID_RESPONSE_ID" });
+    }
+    return String(value);
+  };
+  const expect = (condition, message, code = "INVALID_RESPONSE") => {
+    if (!condition) throw new APIError("schema", message, { code });
+  };
+  const normalized = (error, endpoint) => error instanceof APIError ? error :
+    new APIError("schema", "后端响应不符合接口约定，请检查 API 适配层", { endpoint });
+
+  function setToken(value) {
+    const next = text(value).trim();
+    if (next === localToken) return;
+    localToken = next;
+    graphs.clear();
+    pending.clear();
+    try {
+      if (localToken) sessionStorage.setItem(TOKEN_KEY, localToken);
+      else sessionStorage.removeItem(TOKEN_KEY);
+    } catch (_) { /* 禁用存储时仍允许在当前页面内使用用户输入的令牌。 */ }
+  }
+
+  function getToken() { return localToken; }
+
+  function requireToken() {
+    if (!localToken) {
+      throw new APIError("auth", "请输入本地服务令牌后连接", {
+        code: "LOCAL_TOKEN_REQUIRED", status: 401
+      });
+    }
+  }
+
+  function newKey() {
+    if (crypto.randomUUID) return crypto.randomUUID();
+    const bytes = new Uint8Array(16);
+    crypto.getRandomValues(bytes);
+    return Array.from(bytes, b => b.toString(16).padStart(2, "0")).join("");
+  }
+
+  function throwIfAborted(signal) {
+    if (signal?.aborted) throw new APIError("aborted", "请求已取消", { code: "REQUEST_ABORTED" });
+  }
+
+  async function request(path, options = {}) {
+    const controller = new AbortController();
+    const external = options.signal;
+    const onAbort = () => controller.abort();
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, Math.max(1, Math.min(TIMEOUT_MS, options.timeoutMs || TIMEOUT_MS)));
+
+    try {
+      throwIfAborted(external);
+      external?.addEventListener("abort", onAbort, { once: true });
+      const response = await fetch(BASE_URL.replace(/\/$/, "") + PREFIX + path, {
+        method: options.method || "GET",
+        signal: controller.signal,
+        cache: "no-store",
+        headers: {
+          Accept: options.consume ? "text/event-stream" : "application/json",
+          ...(localToken ? { "X-Local-Token": localToken } : {}),
+          ...(options.body === undefined ? {} : { "Content-Type": "application/json" }),
+          ...options.headers
+        },
+        ...(options.body === undefined ? {} : { body: JSON.stringify(options.body) })
+      });
+
+      if (!response.ok) {
+        let payload = {};
+        try { payload = await response.json(); } catch (_) {
+          if (controller.signal.aborted) throw new Error("响应读取已中止");
+        }
+        const detail = object(payload.error) ? payload.error : {};
+        throw new APIError(response.status === 401 ? "auth" : "http",
+          text(detail.message) || `后端返回状态码 ${response.status}`, {
+            code: text(detail.code) || `HTTP_${response.status}`,
+            status: response.status,
+            endpoint: path,
+            details: object(detail.details) ? detail.details : {},
+            request_id: detail.request_id || response.headers.get("X-Request-ID"),
+            retryable: detail.retryable === true
+          });
+      }
+
+      // 计时器包含响应体读取时间，SSE 每 15 秒断开并从 Last-Event-ID 续接。
+      return options.consume ? await options.consume(response) : await response.json();
+    } catch (error) {
+      if (external?.aborted) throw new APIError("aborted", "请求已取消", { code: "REQUEST_ABORTED", endpoint: path });
+      if (timedOut) throw new APIError("timeout", "请求超过 15 秒", { code: "REQUEST_TIMEOUT", endpoint: path, retryable: true });
+      if (error instanceof APIError) throw error;
+      throw new APIError(error instanceof SyntaxError ? "json" : "network",
+        error instanceof SyntaxError ? "后端未返回有效 JSON" : "无法连接到后端服务，请检查地址、服务状态与 CORS 配置", {
+          code: error instanceof SyntaxError ? "INVALID_JSON" : "NETWORK_ERROR", endpoint: path, retryable: true
+        });
+    } finally {
+      clearTimeout(timer);
+      external?.removeEventListener("abort", onAbort);
+    }
+  }
+
+  async function getHealth(options = {}) {
+    try {
+      const raw = await request("/health", options);
+      expect(object(raw) && ["ok", "degraded"].includes(raw.status), "健康检查返回了未知状态");
+      // 匿名或错误令牌也会得到 {status:"ok"}；有 dependencies 才是认证报告。
+      const authenticated = object(raw.dependencies);
+      return {
+        status: raw.status,
+        authenticated,
+        model: text(raw.dependencies?.llm?.model), // 模型来自认证健康报告。
+        kg_version: "按学习空间版本", // 后端没有全局图版本；各资料版本在 graph_versions 中。
+        version: text(raw.version),
+        dependencies: authenticated ? raw.dependencies : {}
+      };
+    } catch (error) { throw normalized(error, "/health"); }
+  }
+
+  async function getLearners(options = {}) {
+    try {
+      requireToken();
+      const spaces = [];
+      const cursors = new Set();
+      let cursor = null;
+      do {
+        const query = new URLSearchParams({ limit: "100" });
+        if (cursor) query.set("cursor", cursor);
+        const raw = await request(`/learning-spaces?${query}`, options);
+        expect(Array.isArray(raw?.items), "学习空间列表缺少 items 数组");
+        spaces.push(...raw.items);
+        cursor = raw.next_cursor || null;
+        if (cursor) {
+          expect(typeof cursor === "string" && !cursors.has(cursor), "学习空间分页游标无效");
+          cursors.add(cursor);
+          expect(cursors.size < 100, "学习空间数量过多，请缩小列表查询范围");
+        }
+      } while (cursor);
+      const ids = new Set();
+      return {
+        learners: spaces.map(space => {
+          const id = identifier(space.id);
+          expect(!ids.has(id), "学习空间标识重复");
+          ids.add(id);
+          // id/name：空间选择器；goal→major：兼容原控件的说明字段。
+          // bindings/topic_ids/excluded_topic_ids：后续图谱的版本和范围约束。
+          return { ...space, id, name: text(space.name) || id, major: text(space.goal), avatar: "" };
+        }),
+        kind: "learning_spaces"
+      };
+    } catch (error) { throw normalized(error, "/learning-spaces"); }
+  }
+
+  function sourceRefs(value) {
+    if (value == null) return [];
+    expect(Array.isArray(value), "知识图谱来源引用不是数组");
+    return value.map(ref => {
+      expect(object(ref), "知识图谱来源引用格式无效");
+      return {
+        ...ref,
+        material_id: identifier(ref.material_id),
+        material_version_id: identifier(ref.material_version_id),
+        chunk_id: identifier(ref.chunk_id)
+      };
+    });
+  }
+
+  function assertBoundVersion(raw, binding, records = []) {
+    if (Number(raw.graph_version) !== Number(binding.graph_version) ||
+        (raw.version_id && raw.version_id !== binding.material_version_id) ||
+        records.some(row =>
+          Number(row.graph_version) !== Number(binding.graph_version) ||
+          row.material_version_id !== binding.material_version_id ||
+          (binding.graph_revision_id && row.revision_id !== binding.graph_revision_id))) {
+      // /topics/{id}/graph 不支持 graph_revision_id；拒绝把最新版本冒充空间固定版本。
+      throw new APIError("capability", "后端图谱查询未返回此学习空间绑定的版本；请先同步空间版本，或增加按图谱修订读取的接口", {
+        code: "BOUND_GRAPH_VERSION_UNAVAILABLE",
+        details: {
+          material_id: binding.material_id,
+          expected_graph_version: binding.graph_version,
+          actual_graph_version: raw.graph_version,
+          revision_id: binding.graph_revision_id || null
+        }
+      });
+    }
+  }
+
+  async function getGraph(learnerId, depth, options = {}) {
+    try {
+      requireToken();
+      expect(Number.isInteger(depth) && depth >= 1 && depth <= 3,
+        "当前后端图谱深度只支持 1–3 层", "INVALID_GRAPH_DEPTH");
+      const spaceId = identifier(learnerId);
+      graphs.delete(spaceId); // 加载失败时不可继续把旧图谱当作新回答的证据图。
+      const space = await request(`/learning-spaces/${encodeURIComponent(spaceId)}`, options);
+      expect(Array.isArray(space?.bindings), "学习空间缺少绑定资料版本");
+      const nodes = new Map();
+      const edges = new Map();
+      const versions = [];
+      const selected = new Set((space.topic_ids || []).map(identifier));
+      const excluded = new Set((space.excluded_topic_ids || []).map(identifier));
+      const resolvedSelections = new Set();
+
+      for (const binding of space.bindings) {
+        identifier(binding.material_id);
+        identifier(binding.material_version_id);
+        expect(Number.isInteger(binding.graph_version), "学习空间缺少图谱版本");
+        const query = new URLSearchParams({ version_id: binding.material_version_id });
+        const topics = await request(`/materials/${encodeURIComponent(binding.material_id)}/topics?${query}`, options);
+        expect(Array.isArray(topics?.items), "资料主题响应缺少 items 数组");
+        assertBoundVersion(topics, binding, topics.items);
+        versions.push({ material_id: binding.material_id, material_version_id: binding.material_version_id, graph_version: binding.graph_version });
+        // 当前后端为单资料空间兼容 topic_<名称> 别名；按同一命名规则解析。
+        // 名称冲突时不自行猜测，最后明确返回无法解析范围的错误。
+        const aliases = new Map();
+        if (space.bindings.length === 1) {
+          for (const row of topics.items) {
+            const slug = Array.from(text(row.name)).map(char => /[\p{L}\p{N}]/u.test(char) ? char.toLowerCase() : "_").join("").replace(/^_+|_+$/g, "");
+            if (!slug) continue;
+            const alias = `topic_${slug}`;
+            aliases.set(alias, aliases.has(alias) ? null : row.id);
+          }
+        }
+        const selectedIds = new Set([...selected].map(id => aliases.get(id) || id));
+        const excludedIds = new Set([...excluded].map(id => aliases.get(id) || id));
+        for (const row of topics.items) {
+          for (const id of selected) {
+            if (row.id === id || aliases.get(id) === row.id) resolvedSelections.add(id);
+          }
+        }
+        const available = topics.items.filter(row => !excludedIds.has(row.id));
+        const ids = new Set(available.map(row => row.id));
+        // 明确学习范围时以所选主题为起点；未设范围时从结构根节点展开。
+        const seeds = selected.size
+          ? available.filter(row => selectedIds.has(row.id))
+          : available.filter(row => !row.parent_id || !ids.has(row.parent_id));
+        expect(seeds.length <= 100, "当前空间起点超过 100 个，请缩小学习范围", "GRAPH_SCOPE_TOO_LARGE");
+
+        for (const seed of seeds) {
+          const query = new URLSearchParams({ depth: String(depth), include_sources: "true" });
+          const raw = await request(`/topics/${encodeURIComponent(identifier(seed.id))}/graph?${query}`, options);
+          expect(Array.isArray(raw?.nodes) && Array.isArray(raw?.edges), "图谱响应缺少 nodes 或 edges 数组");
+          assertBoundVersion(raw, binding, [...raw.nodes, ...raw.edges]);
+          for (const row of raw.nodes) {
+            const id = identifier(row.id);
+            if (excludedIds.has(id)) continue;
+            nodes.set(id, {
+              ...row,
+              id,
+              label: text(row.name) || id, // 后端 name 是节点显示名称。
+              type: row.kind === "chapter" ? "category" : "concept",
+              source_refs: sourceRefs(row.source_refs)
+            });
+          }
+          for (const row of raw.edges) {
+            const id = identifier(row.id);
+            edges.set(id, {
+              ...row, id,
+              source: identifier(row.from_id), // 后端 from_id / to_id 是端点。
+              target: identifier(row.to_id),
+              relation: text(row.type), // contains、prerequisite_of、related_to。
+              source_refs: sourceRefs(row.source_refs)
+            });
+          }
+        }
+      }
+      expect([...selected].every(id => resolvedSelections.has(id)),
+        "当前图谱接口无法解析空间内部分主题标识，请检查绑定版本和学习范围", "GRAPH_SCOPE_UNRESOLVED");
+      const result = {
+        nodes: [...nodes.values()],
+        edges: [...edges.values()].filter(edge => nodes.has(edge.source) && nodes.has(edge.target)),
+        graph_versions: versions,
+        kind: "space_graph"
+      };
+      graphs.set(spaceId, result);
+      return result;
+    } catch (error) { throw normalized(error, "/topics/{topic_id}/graph"); }
+  }
+
+  function pause(ms, signal) {
+    return new Promise((resolve, reject) => {
+      if (signal?.aborted) { reject(new APIError("aborted", "请求已取消")); return; }
+      const aborted = () => {
+        clearTimeout(timer);
+        reject(new APIError("aborted", "请求已取消", { code: "REQUEST_ABORTED" }));
+      };
+      const timer = setTimeout(() => {
+        signal?.removeEventListener("abort", aborted);
+        resolve();
+      }, ms);
+      signal?.addEventListener("abort", aborted, { once: true });
+    });
+  }
+
+  async function consumeEvents(response, job) {
+    expect(response.headers.get("Content-Type")?.includes("text/event-stream") && response.body,
+      "任务事件接口未返回 SSE 事件流", "INVALID_EVENT_STREAM");
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    let frame = { event: "message", data: [], id: "" };
+    let terminal = false;
+
+    const dispatch = () => {
+      const event = frame;
+      frame = { event: "message", data: [], id: "" };
+      if (!event.data.length) return;
+      if (event.id && /^\d{1,20}$/.test(event.id) && BigInt(event.id) <= BigInt(job.lastEventId)) return;
+      let data;
+      try { data = JSON.parse(event.data.join("\n")); }
+      catch (_) { throw new APIError("json", "任务事件包含无效 JSON", { code: "INVALID_EVENT_JSON", run_id: job.run_id }); }
+      expect(object(data), "任务事件格式无效");
+      if (event.id && /^\d{1,20}$/.test(event.id)) job.lastEventId = event.id;
+      if (event.event === "message.completed") {
+        expect(typeof data.text === "string" && data.text.trim() && Array.isArray(data.citations), "完成事件缺少回答或引用");
+        job.message = data;
+      } else if (event.event === "run.failed") {
+        const error = data.error || {};
+        throw new APIError("backend", text(error.message) || "后端任务执行失败", {
+          code: text(error.code) || "RUN_FAILED", run_id: job.run_id,
+          details: error.details || {}, retryable: error.retryable === true
+        });
+      } else if (event.event === "run.cancelled") {
+        throw new APIError("backend", "后端任务已取消", { code: "RUN_CANCELLED", run_id: job.run_id });
+      } else if (event.event === "run.completed") {
+        expect(job.message, "任务已完成，但后端事件流没有提供回答正文", "MESSAGE_RESULT_UNAVAILABLE");
+        terminal = true;
+      }
+    };
+
+    const line = value => {
+      if (!value) { dispatch(); return; }
+      if (value.startsWith(":")) return;
+      const separator = value.indexOf(":");
+      const field = separator < 0 ? value : value.slice(0, separator);
+      let data = separator < 0 ? "" : value.slice(separator + 1);
+      if (data.startsWith(" ")) data = data.slice(1);
+      if (field === "data") frame.data.push(data);
+      else if (field === "event") frame.event = data;
+      else if (field === "id" && !data.includes("\0")) frame.id = data;
+    };
+
+    try {
+      while (!terminal) {
+        const chunk = await reader.read();
+        buffer += decoder.decode(chunk.value || new Uint8Array(), { stream: !chunk.done });
+        expect(buffer.length <= 1024 * 1024, "任务事件超出读取大小限制", "EVENT_TOO_LARGE");
+        while (!terminal) {
+          const end = buffer.search(/[\r\n]/);
+          if (end < 0 || (buffer[end] === "\r" && end === buffer.length - 1 && !chunk.done)) break;
+          const width = buffer[end] === "\r" && buffer[end + 1] === "\n" ? 2 : 1;
+          const content = buffer.slice(0, end);
+          buffer = buffer.slice(end + width);
+          line(content);
+        }
+        if (chunk.done) break;
+      }
+      return terminal;
+    } finally {
+      try { await reader.cancel(); } catch (_) {}
+      reader.releaseLock();
+    }
+  }
+
+  function answerResult(job, learnerId) {
+    const graph = graphs.get(learnerId);
+    // 引用是真实证据，不是模型推理轨迹。匹配同一资料、版本及 chunk_id，
+    // 再把 node_ids 提供给页面进行证据节点高亮，不拼造节点连接或评分。
+    const citations = sourceRefs(job.message.citations).map(ref => ({
+      ...ref,
+      node_ids: (graph?.nodes || []).filter(node =>
+        (!ref.graph_version || node.graph_version === ref.graph_version) &&
+        node.source_refs.some(source =>
+          source.material_id === ref.material_id &&
+          source.material_version_id === ref.material_version_id &&
+          source.chunk_id === ref.chunk_id)).map(node => node.id)
+    }));
+    return {
+      paths: [], // 后端没有路径评估接口，不伪造 paths 或任何分数。
+      answer: job.message.text,
+      citations,
+      kind: "grounded_answer",
+      elapsed_ms: Math.max(0, Date.now() - job.started),
+      run_id: job.run_id,
+      session_id: job.session_id,
+      message_id: job.message.message_id
+    };
+  }
+
+  async function postReason({ learnerId, query }, options = {}) {
+    let key;
+    let job;
+    try {
+      requireToken();
+      learnerId = identifier(learnerId);
+      expect(typeof query === "string" && query.trim().length > 0 && query.trim().length <= 8000,
+        "问题须为 1–8000 个字符", "INVALID_QUERY");
+      query = query.trim();
+      // depth 只属于图谱浏览参数，真实消息契约禁止额外字段，故不发送 depth。
+      key = JSON.stringify([learnerId, query]);
+      job = pending.get(key);
+      if (!job) {
+        job = { idempotencyKey: newKey(), run_id: null, lastEventId: "0", started: Date.now() };
+        pending.set(key, job);
+      }
+      if (!job.run_id) {
+        const raw = await request(`/learning-spaces/${encodeURIComponent(learnerId)}/messages`, {
+          method: "POST", signal: options.signal,
+          headers: { "Idempotency-Key": job.idempotencyKey },
+          body: { message: query, stream: true }
+        });
+        // run_id：SSE 任务标识；session_id：后台创建的真实对话会话。
+        job.run_id = identifier(raw?.run_id);
+        job.session_id = identifier(raw?.session_id);
+      }
+      const deadline = Date.now() + RUN_WAIT_MS;
+      let networkFailures = 0;
+      while (Date.now() < deadline) {
+        throwIfAborted(options.signal);
+        try {
+          const done = await request(`/runs/${encodeURIComponent(job.run_id)}/events`, {
+            signal: options.signal,
+            timeoutMs: deadline - Date.now(),
+            headers: { "Last-Event-ID": job.lastEventId },
+            consume: response => consumeEvents(response, job)
+          });
+          networkFailures = 0;
+          if (done) {
+            const result = answerResult(job, learnerId);
+            pending.delete(key);
+            return result;
+          }
+        } catch (error) {
+          if (error.kind === "timeout") continue; // 同一 Run 续传，绝不再次提交消息。
+          if (error.kind !== "network" || ++networkFailures >= 3) throw error;
+        }
+        await pause(Math.min(500, Math.max(1, deadline - Date.now())), options.signal);
+      }
+      throw new APIError("pending", "后台任务尚未返回结果；点击重试将继续读取同一任务", {
+        code: "RUN_PENDING", run_id: job.run_id, retryable: true
+      });
+    } catch (error) {
+      const result = normalized(error, "/learning-spaces/{space_id}/messages");
+      if (job?.run_id) result.run_id = job.run_id;
+      // 可恢复的等待、网络中断、取消均保留任务；显式失败允许用户创建新任务。
+      if (key && !["pending", "network", "timeout", "aborted"].includes(result.kind)) pending.delete(key);
+      throw result;
+    }
+  }
+
+  return Object.freeze({ getHealth, getLearners, getGraph, postReason, setToken, getToken });
+})();
+
+// 以下业务逻辑只使用 API 返回的规范数据。
+const TYPES = {
+  learner:{ label:"学习空间", color:"#0071E3", shape:"ellipse" }, course:{ label:"课程", color:"#F59E0B", shape:"round-rectangle" },
+  concept:{ label:"概念", color:"#A78BFA", shape:"hexagon" }, teacher:{ label:"教师", color:"#34D399", shape:"ellipse" },
+  school:{ label:"学校", color:"#F472B6", shape:"rectangle" }, category:{ label:"章节", color:"#86868B", shape:"diamond" }
+};
+const $ = id => document.getElementById(id);
+const escapeHTML = value => String(value ?? "").replace(/[&<>"']/g, char => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;" })[char]);
+const state = { learners:[], learnerId:"", depth:3, graph:{ nodes:[], edges:[] }, paths:[], citations:[], answer:"", health:null, evidence:-1, active:-1, step:null, node:null, elapsed:0, reasonDone:false, visible:new Set(Object.keys(TYPES)) };
+const jobs = {};
+let cy = null, currentLayout = null;
+const reducedMotion = () => window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+const nodeKey = id => `node:${id}`, edgeKey = id => `edge:${id}`; // 避免节点与边使用相同 id。
+function beginJob(key) { jobs[key]?.controller.abort(); const job = { controller:new AbortController(), pending:true }; jobs[key] = job; return job; }
+function cancelJob(key) { jobs[key]?.controller.abort(); delete jobs[key]; }
+function isCurrent(key, job) { return jobs[key] === job && !job.controller.signal.aborted; }
+function syncControls() {
+  $("reason-btn").disabled = !state.learnerId || !!jobs.reason?.pending || !!jobs.learners?.pending || !state.health?.authenticated || state.health?.dependencies?.llm?.status !== "configured" || state.health?.dependencies?.embedding?.status !== "configured";
+  $("prev-path").disabled = state.evidence <= 0 || !!jobs.reason?.pending;
+  $("next-path").disabled = state.evidence < 0 || state.evidence >= state.citations.length - 1 || !!jobs.reason?.pending;
+  document.querySelectorAll(".graph-tools button").forEach(button => { button.disabled = !cy || !state.graph.nodes.length || !!jobs.graph?.pending; });
+}
+function busy(key, value) {
+  const names = { learners:["learner-region","learner-loading"], graph:["graph-region","graph-loading"], reason:["reason-region","reason-loading"] };
+  const [region, loading] = names[key]; $(region).setAttribute("aria-busy", String(value)); $(loading).hidden = !value;
+  if (key === "learners") { $("learner-select").hidden = value; $("learner-select").disabled = value || !state.learners.length; }
+  if (key === "reason") { $("path-list").hidden = value; $("paths-empty").hidden = value || state.reasonDone; $("reason-btn").textContent = value ? "正在生成回答…" : "基于资料提问"; }
+  syncControls();
+}
+function showError(key, error) {
+  const el = $(`${key}-error`); el.hidden = !error; if (!error) return;
+  const connectionFailure = ["network", "timeout"].includes(error.kind);
+  el.querySelector("span").textContent = connectionFailure
+    ? `无法连接到后端服务，请确认服务已在 ${BASE_URL} 启动`
+    : error.message || "请求失败，请重试";
+  el.title = [error.code, error.request_id ? `请求编号：${error.request_id}` : ""].filter(Boolean).join(" · ");
+  if (error.kind === "auth") {
+    $("connection-settings").open = true;
+    $("connection").dataset.status = "limited";
+    $("connection-label").textContent = "服务在线 · 待认证";
+  }
+}
+function setNumber(id, value) {
+  const el = $(id), next = String(value); if (el.textContent === next) return;
+  el.textContent = next; if (!reducedMotion() && el.animate) el.animate([{ opacity:.4 },{ opacity:1 }], { duration:250, easing:"ease-out" });
+}
+function updateStats() {
+  setNumber("node-count", state.graph.nodes.length); setNumber("edge-count", state.graph.edges.length); setNumber("path-count", state.citations.length);
+  $("paths-total").textContent = `${state.citations.length} 条引用`;
+  $("footer-result").textContent = state.reasonDone
+    ? `已完成资料问答 · ${state.citations.length} 条引用 · 耗时 ${(state.elapsed / 1000).toFixed(1)}s`
+    : "尚未提问 · 当前 0 条引用";
+}
+function graphEmpty(title, detail) { $("graph-empty").hidden = false; $("graph-empty").querySelector("strong").textContent = title; $("graph-empty").querySelector("span").textContent = detail; }
+function resetReason() {
+  cancelJob("reason"); state.citations = []; state.answer = ""; state.evidence = -1; state.paths = []; state.active = -1; state.step = null; state.node = null; state.elapsed = 0; state.reasonDone = false;
+  showError("reason", null); busy("reason", false); renderPaths(); updateGraph();
+}
+function resetContext() {
+  cancelJob("graph"); currentLayout?.stop(); state.graph = { nodes:[], edges:[] }; cy?.elements().remove();
+  busy("graph", false); showError("graph", null); resetReason();
+  graphEmpty("从一位学习空间开始", "选择学习空间后，这里将展示真实的知识关系。");
+}
+function ensureGraph() {
+  if (cy) return;
+  if (typeof window.cytoscape !== "function") throw new Error("图谱组件未加载，请检查网络后刷新页面。");
+  cy = window.cytoscape({ container:$("cy"), elements:[], layout:{ name:"preset" }, minZoom:.15, maxZoom:3, wheelSensitivity:.18, boxSelectionEnabled:false, autounselectify:true,
+    style:[
+      { selector:"node", style:{ shape:"data(shape)", "background-color":"data(color)", width:36, height:36, label:"data(label)", "font-family":'-apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif', "font-size":11, color:"#1D1D1F", "text-valign":"bottom", "text-margin-y":8, "text-wrap":"ellipsis", "text-max-width":110, "border-width":2, "border-color":"#fff", "overlay-opacity":0 } },
+      { selector:"edge", style:{ width:1.3, "line-color":"#c7c7cc", "target-arrow-color":"#a1a1a6", "target-arrow-shape":"triangle", "curve-style":"bezier", label:"data(relation)", "font-size":9, color:"#6E6E73", "text-rotation":"autorotate", "text-background-color":"#F5F5F7", "text-background-opacity":1, "text-background-padding":"3px", "overlay-opacity":0 } },
+      { selector:'node[type="course"]', style:{ width:58, height:32 } },
+      { selector:".dim", style:{ opacity:.2 } }, { selector:"node.highlight", style:{ "border-width":3, "border-color":"#0071E3" } },
+      { selector:"edge.highlight", style:{ width:3, "line-color":"#0071E3", "target-arrow-color":"#0071E3", color:"#0071E3" } },
+      { selector:"node.focus", style:{ "border-width":5 } }, { selector:".filtered", style:{ display:"none" } }
+    ]
+  });
+  cy.on("tap", "node", event => inspectNode(event.target.data("originalId")));
+  if ("ResizeObserver" in window) new ResizeObserver(() => cy.resize()).observe($("graph-region"));
+}
+function renderGraph() {
+  ensureGraph(); currentLayout?.stop();
+  cy.batch(() => { cy.elements().remove(); cy.add([
+    ...state.graph.nodes.map(n => ({ group:"nodes", data:{ ...n, id:nodeKey(n.id), originalId:n.id, ...TYPES[n.type], label:n.label } })),
+    ...state.graph.edges.map(e => ({ group:"edges", data:{ ...e, originalId:e.id, id:edgeKey(e.id), source:nodeKey(e.source), target:nodeKey(e.target) } }))
+  ]); });
+  if (state.graph.nodes.length) {
+    currentLayout = cy.layout({ name:"cose", randomize:true, animate:false, fit:true, padding:45, nodeRepulsion:() => 6500, idealEdgeLength:() => 110, nodeDimensionsIncludeLabels:true });
+    currentLayout.run();
+  }
+  updateGraph();
+  if (!state.graph.nodes.length) graphEmpty("暂无知识关系", "后端返回的图谱为空，可调整学习空间或图谱深度。");
+  syncControls();
+}
+// 只匹配相邻步骤与关系名称，不把路径节点之间的其他连线误当作路径关系。
+// relation 在适配层统一为“到下一步的关系”；允许沿已有边的反方向推理。
+function pathEdges(path, indices) {
+  const found = new Set();
+  for (const i of indices) {
+    const a = path.steps[i], b = path.steps[i + 1]; if (!a || !b) continue;
+    state.graph.edges.forEach(edge => {
+      const adjacent = (edge.source === a.node_id && edge.target === b.node_id) || (edge.target === a.node_id && edge.source === b.node_id);
+      if (adjacent && (!a.relation || edge.relation === a.relation)) found.add(edge.id);
+    });
+  }
+  return found;
+}
+function updateGraph() {
+  if (!cy) return;
+  const path = state.paths[state.active]; let nodes = new Set(), edges = new Set();
+  const citation = state.citations[state.evidence];
+  if (citation) {
+    nodes = new Set(citation.node_ids || []);
+    // 只高亮来源引用明确对应的节点，不伪造推理边。
+  }
+  if (path) {
+    const links = state.step === null ? path.steps.map((_, i) => i).slice(0,-1) : [state.step - 1, state.step]; edges = pathEdges(path, links);
+    if (state.step === null) nodes = new Set(path.steps.map(step => step.node_id));
+    else { nodes.add(path.steps[state.step].node_id); state.graph.edges.filter(edge => edges.has(edge.id)).forEach(edge => { nodes.add(edge.source); nodes.add(edge.target); }); }
+  } else if (state.node) nodes.add(state.node);
+  const highlighting = !!path || !!state.node || !!citation;
+  cy.batch(() => {
+    cy.elements().removeClass("dim highlight focus filtered");
+    cy.nodes().forEach(node => { const selected = nodes.has(node.data("originalId")); node.toggleClass("highlight", selected); node.toggleClass("dim", highlighting && !selected); node.toggleClass("filtered", !state.visible.has(node.data("type"))); });
+    cy.edges().forEach(edge => { const selected = edges.has(edge.data("originalId")); edge.toggleClass("highlight", selected); edge.toggleClass("dim", highlighting && !selected); edge.toggleClass("filtered", !state.visible.has(edge.source().data("type")) || !state.visible.has(edge.target().data("type"))); });
+    if (path && state.step !== null) cy.getElementById(nodeKey(path.steps[state.step].node_id)).addClass("focus");
+  });
+  const visibleCount = state.graph.nodes.filter(node => state.visible.has(node.type)).length;
+  const missing = path ? path.steps.filter(step => !state.graph.nodes.some(node => node.id === step.node_id)).length : 0;
+  $("graph-note").textContent = missing ? `当前图谱未包含路径中的 ${missing} 个步骤节点，请检查图谱深度与节点标识。` : `显示 ${visibleCount} / ${state.graph.nodes.length} 个节点 · 拖拽节点 · 滚轮缩放`;
+  $("graph-empty").hidden = state.graph.nodes.length > 0 && visibleCount > 0;
+  if (state.graph.nodes.length && !visibleCount) graphEmpty("所有实体类型均已隐藏", "在左侧勾选实体类型，重新显示节点。");
+}
+function focusNode(id) {
+  if (!cy) return; const node = cy.getElementById(nodeKey(id));
+  if (!node.length) { $("graph-note").textContent = "此步骤节点未包含在当前图谱中，请检查图谱深度与节点标识。"; return; }
+  if (!state.visible.has(node.data("type"))) { $("graph-note").textContent = "此步骤节点的实体类型已被过滤，请在左侧勾选对应类型。"; return; }
+  cy.stop(); const position = { center:{ eles:node }, zoom:Math.max(.9, cy.zoom()) };
+  if (reducedMotion()) { cy.zoom(position.zoom); cy.center(node); } else cy.animate(position, { duration:250, easing:"ease-out" });
+}
+function renderPaths() {
+  updateStats(); $("node-info").hidden = true; $("path-list").hidden = false;
+  $("paths-empty").hidden = state.reasonDone || !!jobs.reason?.pending;
+  $("paths-empty").querySelector("strong").textContent = "让回答有据可循。";
+  $("paths-empty").querySelector("span").textContent = "选择学习空间并提问，查看回答与引用。当前后端不提供推理路径或三项评分。";
+  $("path-list").innerHTML = state.reasonDone
+    ? `<section class="answer-text">${escapeHTML(state.answer)}</section><p class="hint">以下为资料引用，不是模型内部推理过程。</p>` + state.citations.map((ref, index) => {
+        const position = ref.page != null ? `第 ${ref.page} 页` : ref.line_start != null ? `第 ${ref.line_start}–${ref.line_end ?? ref.line_start} 行` : "未提供页码或行号";
+        return `<article class="citation-card" data-index="${index}"><button type="button" data-citation="${index}">来源 ${index + 1} · ${escapeHTML(position)}</button><p>资料：${escapeHTML(ref.material_id)}</p><p>片段：${escapeHTML(ref.chunk_id)}</p><p>${ref.node_ids?.length ? `可定位 ${ref.node_ids.length} 个图谱节点` : "当前图谱中没有匹配的来源节点"}</p></article>`;
+      }).join("")
+    : "";
+  syncSelection();
+}
+function syncSelection(scroll = false) {
+  document.querySelectorAll(".citation-card").forEach(card => {
+    const selected = Number(card.dataset.index) === state.evidence;
+    card.classList.toggle("is-active", selected);
+    if (selected && scroll) card.scrollIntoView({ behavior:reducedMotion() ? "instant" : "smooth", block:"nearest" });
+  });
+  $("path-position").textContent = `${state.evidence + 1} / ${state.citations.length}`;
+  syncControls(); updateGraph();
+}
+function selectEvidence(index, scroll = false) {
+  const ref = state.citations[index]; if (!ref) return;
+  state.evidence = index; state.node = null; $("node-info").hidden = true; $("path-list").hidden = false; $("paths-empty").hidden = true;
+  syncSelection(scroll);
+  if (ref.node_ids?.length) focusNode(ref.node_ids[0]);
+  else $("graph-note").textContent = "这条来源引用未对应到当前可见图谱节点。";
+}
+function inspectNode(id) {
+  const node = state.graph.nodes.find(item => item.id === id); if (!node) return;
+  const index = state.citations.findIndex(ref => ref.node_ids?.includes(id));
+  if (index !== -1) { selectEvidence(index, true); return; }
+  state.node = id; state.evidence = -1; $("path-list").hidden = true; $("paths-empty").hidden = true; $("node-info").hidden = false;
+  const degree = state.graph.edges.filter(edge => edge.source === id || edge.target === id).length;
+  $("node-info").innerHTML = `<h3>${escapeHTML(node.label)}</h3><dl><dt>实体类型</dt><dd>${TYPES[node.type].label}</dd><dt>节点标识</dt><dd>${escapeHTML(id)}</dd><dt>相连关系</dt><dd>${degree} 条</dd></dl><p class="hint">此节点未匹配当前回答的来源引用。</p><button class="text-button" type="button" id="back-paths">返回回答</button>`;
+  $("back-paths").addEventListener("click", () => { state.node = null; renderPaths(); }); syncSelection();
+}
+async function loadHealth() {
+  const job = beginJob("health"); showError("health", null); $("connection").dataset.status = "loading"; $("connection-label").textContent = "检测中"; $("health-retry").hidden = true;
+  try {
+    const data = await API.getHealth({ signal:job.controller.signal }); if (!isCurrent("health", job)) return;
+    state.health = data;
+    $("connection").dataset.status = data.authenticated && data.status === "ok" ? "online" : "limited";
+    $("connection-label").textContent = !data.authenticated ? "服务在线 · 待认证" : data.status === "degraded" ? "已连接 · 依赖异常" : "已连接";
+    const modelReady = data.dependencies?.llm?.status === "configured" && data.dependencies?.embedding?.status === "configured";
+    $("footer-meta").textContent = data.authenticated ? `模型：${data.model}（${modelReady ? "已配置" : "未配置密钥"}） · ${data.kg_version}` : "请输入令牌以读取模型及图谱状态";
+    $("backend-notice").textContent = !data.authenticated ? "服务已启动。请输入本地令牌，或用启动脚本自动连接。"
+      : !modelReady ? "本地 API 已连接。模型与嵌入密钥尚未配置，暂不能生成回答。"
+      : data.status === "degraded" ? "本地 API 已连接，但部分存储依赖不可用。"
+      : "已连接真实后端，使用当前学习空间的资料与知识图谱。";
+    if (!data.authenticated) $("connection-settings").open = true;
+    syncControls();
+  } catch (error) {
+    if (!isCurrent("health", job)) return; state.health = null; syncControls(); $("connection").dataset.status = "offline"; $("connection-label").textContent = "未连接"; $("health-retry").hidden = false; $("footer-meta").textContent = "模型与图谱版本暂不可用"; showError("health", error);
+  } finally { if (isCurrent("health", job)) job.pending = false; }
+}
+async function loadLearners() {
+  const job = beginJob("learners"); busy("learners", true); showError("learners", null);
+  try {
+    const data = await API.getLearners({ signal:job.controller.signal }); if (!isCurrent("learners", job)) return;
+    state.learners = data.learners; $("learner-select").replaceChildren(new Option(data.learners.length ? "请选择学习空间" : "暂无学习空间", "")); data.learners.forEach(item => $("learner-select").add(new Option(item.name, item.id)));
+    const selected = data.learners.find(item => item.id === state.learnerId) || data.learners[0]; state.learnerId = selected?.id || ""; $("learner-select").value = state.learnerId;
+    $("learner-detail").textContent = selected ? `${selected.major || "未设置学习目标"} · ${selected.id}` : "已连接，当前没有学习空间。请先上传并发布资料，再创建学习空间。"; resetContext(); if (state.learnerId) void loadGraph();
+  } catch (error) { if (isCurrent("learners", job)) showError("learners", error); }
+  finally { if (isCurrent("learners", job)) { job.pending = false; busy("learners", false); } }
+}
+async function loadGraph() {
+  if (!state.learnerId) return; const job = beginJob("graph"); busy("graph", true); showError("graph", null); $("graph-empty").hidden = true;
+  try {
+    const data = await API.getGraph(state.learnerId, state.depth, { signal:job.controller.signal }); if (!isCurrent("graph", job)) return;
+    state.graph = data;
+    state.citations = state.citations.map(ref => ({ ...ref, node_ids:data.nodes.filter(node => node.source_refs?.some(source => source.material_id === ref.material_id && source.material_version_id === ref.material_version_id && source.chunk_id === ref.chunk_id) && (!ref.graph_version || node.graph_version === ref.graph_version)).map(node => node.id) }));
+    updateStats(); const learner = state.learners.find(item => item.id === state.learnerId); $("graph-subtitle").textContent = `${learner?.name || state.learnerId} · ${state.depth} 层知识关系`;
+    // 渲染组件失败单独处理，避免误报为后端网络错误。
+    try { renderGraph(); } catch (error) { graphEmpty("图谱暂时无法显示", error.message); }
+  } catch (error) { if (isCurrent("graph", job)) { showError("graph", error); graphEmpty("图谱加载失败", "确认后端服务可用后，点击上方重试。"); } }
+  finally { if (isCurrent("graph", job)) { job.pending = false; busy("graph", false); } }
+}
+async function runReason() {
+  if (!state.learnerId) { $("learner-select").focus(); return; } if (state.health?.dependencies?.llm?.status !== "configured" || state.health?.dependencies?.embedding?.status !== "configured") {
+    showError("reason", { kind:"configuration", message:"请先在 py/.env 配置 DASHSCOPE_API_KEY，并启动图谱与模型后台进程。", code:"MODEL_NOT_CONFIGURED" }); return;
+  }
+  const query = $("query-input").value.trim(); $("query-input").setCustomValidity(query ? "" : "请输入推理问题"); if (!query) { $("query-input").reportValidity(); return; }
+  resetReason(); const job = beginJob("reason"); busy("reason", true); const start = performance.now();
+  try {
+    const data = await API.postReason({ learnerId:state.learnerId, query, depth:state.depth }, { signal:job.controller.signal }); if (!isCurrent("reason", job)) return;
+    state.paths = []; state.answer = data.answer; state.citations = data.citations; state.evidence = state.citations.length ? 0 : -1; state.elapsed = data.elapsed_ms ?? performance.now() - start; state.reasonDone = true; state.active = -1; renderPaths();
+  } catch (error) { if (isCurrent("reason", job)) showError("reason", error); }
+  finally { if (isCurrent("reason", job)) { job.pending = false; busy("reason", false); } }
+}
+async function connectBackend() {
+  cancelJob("health"); cancelJob("learners"); resetContext(); state.health = null; state.learnerId = ""; state.learners = [];
+  $("learner-select").replaceChildren(new Option("请选择学习空间", "")); syncControls();
+  await loadHealth();
+  if (state.health?.authenticated) {
+    $("connection-settings").open = false;
+    await loadLearners();
+  } else {
+    busy("learners", false);
+  }
+}
+function init() {
+  // 启动器只把本地令牌放在 fragment（不随 HTTP 请求发送），读取后立即移除。
+  const fragment = new URLSearchParams(location.hash.slice(1));
+  if (fragment.has("local_token")) {
+    API.setToken(fragment.get("local_token"));
+    history.replaceState(null, "", location.pathname + location.search);
+  }
+  $("connection-form").addEventListener("submit", event => {
+    event.preventDefault();
+    const token = $("local-token").value.trim();
+    if (token) API.setToken(token);
+    $("local-token").value = "";
+    void connectBackend();
+  });
+  if (location.protocol === "file:") {
+    $("backend-notice").textContent = "请运行 start-local.ps1 -OpenBrowser，以允许的本地网页来源连接 API。";
+    $("connection-settings").open = true;
+  }
+  $("type-filters").innerHTML = Object.entries(TYPES).map(([type, meta]) => `<label class="filter"><input type="checkbox" value="${type}" checked><span class="type-dot" style="background:${meta.color}" aria-hidden="true"></span>${meta.label}</label>`).join("");
+  $("type-filters").addEventListener("change", event => { const { value, checked } = event.target; if (!TYPES[value]) return; checked ? state.visible.add(value) : state.visible.delete(value); updateGraph(); });
+  $("learner-select").addEventListener("change", event => { state.learnerId = event.target.value; resetContext(); const selected = state.learners.find(item => item.id === state.learnerId); $("learner-detail").textContent = selected ? `${selected.major || "专业未提供"} · ${selected.id}` : ""; $("graph-subtitle").textContent = "选择学习空间，探索知识图谱。"; if (state.learnerId) void loadGraph(); });
+  $("depth-range").addEventListener("input", event => { $("depth-value").textContent = `${event.target.value} 层`; });
+  $("depth-range").addEventListener("change", event => { const depth = Number(event.target.value); if (depth === state.depth) return; state.depth = depth; resetContext(); if (state.learnerId) { void loadGraph(); } });
+  $("query-input").addEventListener("input", () => { $("query-input").setCustomValidity(""); resetReason(); });
+  $("reason-form").addEventListener("submit", event => { event.preventDefault(); void runReason(); });
+  $("path-list").addEventListener("click", event => { const button = event.target.closest("button[data-citation]"); if (button) selectEvidence(Number(button.dataset.citation)); });
+  $("prev-path").addEventListener("click", () => selectEvidence(state.evidence - 1, true)); $("next-path").addEventListener("click", () => selectEvidence(state.evidence + 1, true)); $("health-retry").addEventListener("click", connectBackend);
+  const retries = { health:connectBackend, learners:connectBackend, graph:loadGraph, reason:runReason }; document.querySelectorAll("[data-retry]").forEach(button => button.addEventListener("click", () => { void retries[button.dataset.retry](); }));
+  const zoom = factor => { if (cy) cy.zoom({ level:Math.max(cy.minZoom(), Math.min(cy.maxZoom(), cy.zoom() * factor)), renderedPosition:{ x:cy.width()/2, y:cy.height()/2 } }); };
+  $("zoom-in").addEventListener("click", () => zoom(1.2)); $("zoom-out").addEventListener("click", () => zoom(1/1.2)); $("fit-graph").addEventListener("click", () => { if (cy) cy.fit(cy.elements(":visible"), 45); });
+  renderPaths(); void connectBackend();
+}
+document.addEventListener("DOMContentLoaded", init, { once:true });
+</script>
+</body>
+</html>
