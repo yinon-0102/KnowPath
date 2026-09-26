@@ -136,6 +136,15 @@ export function createApi(getToken) {
     throw new ApiError('后台仍在生成，点击“继续接收”查看结果。', 0, 'RUN_PENDING');
   }
   return { request, list, topics, graph, waitRun, readMessage,
+    createAssessment: (spaceId, body, options = {}) => request(`/learning-spaces/${id(spaceId)}/assessments`, { ...options, method: 'POST', body }),
+    assessment: (assessmentId, options = {}) => request(`/assessments/${id(assessmentId)}`, options),
+    diagnostic: (assessmentId, options = {}) => request(`/assessments/${id(assessmentId)}/diagnostic`, options),
+    recordAttempt: (assessmentId, body, options = {}) => request(`/assessments/${id(assessmentId)}/attempts`, { ...options, method: 'POST', body }),
+    finalizeAssessment: (assessmentId, body, options = {}) => request(`/assessments/${id(assessmentId)}/finalize`, { ...options, method: 'POST', body }),
+    assessmentResult: (assessmentId, options = {}) => request(`/assessments/${id(assessmentId)}/result`, options),
+    evolution: (spaceId, options = {}) => request(`/learning-spaces/${id(spaceId)}/evolution`, options),
+    comparePlans: (spaceId, body, options = {}) => request(`/learning-spaces/${id(spaceId)}/plan-comparisons`, { ...options, method: 'POST', body }),
+    replayPolicies: (spaceId, body = {}, options = {}) => request(`/learning-spaces/${id(spaceId)}/policy-replays`, { ...options, method: 'POST', body }),
     spaces: () => list('/learning-spaces'), materials: () => list('/materials'),
     space: value => request(`/learning-spaces/${id(value)}`),
     createSpace: body => request('/learning-spaces', { method: 'POST', body }),

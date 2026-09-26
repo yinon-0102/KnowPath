@@ -1,5 +1,6 @@
 import { icon, logo } from './icons.js';
 import { createApi } from './api.js';
+import { createLearningController, renderLearning, comparisonPayload } from './learning.js';
 import { DEMO_KEY, MODE_KEY, TOKEN_KEY, esc, uid, dateText, sizeText, storageRead, storageWrite, validateFile, loadDemo, makeDemo, spaceProgress, materialIds } from './store.js';
 
 const $ = (selector, root = document) => root.querySelector(selector);
@@ -23,7 +24,7 @@ const state = {
   messages: new Map(), chats: new Map(), pendingJob: null, sending: false, chatController: null,
   timerRemaining: 25 * 60, timerEnd: null, timerInterval: null, timerDuration: 25,
 };
-const routes = [ ['overview', '概览'], ['spaces', '学习空间'], ['materials', '资料库'], ['graph', '知识图谱'], ['plan', '学习计划'] ];
+const routes = [ ['overview', '概览'], ['spaces', '学习空间'], ['materials', '资料库'], ['graph', '知识图谱'], ['plan', '学习计划'], ['learning', '学习实验'] ];
 const statusLabels = { ready: '已就绪', uploaded: '待解析', processing: '解析中', needs_review: '待审核', failed: '解析失败', archived: '已归档', active: '学习中', draft: '待选择范围' };
 const taskLabels = { learn: '学习', learning: '学习', review: '复习', practice: '练习', assessment: '测评', retest: '复测' };
 const data = () => state.mode === 'demo' ? demo : state.live;
@@ -36,6 +37,10 @@ const route = () => {
 };
 const currentSpace = () => data().spaces.find(s => s.id === state.selected) || data().spaces[0];
 const byId = id => data().spaces.find(s => s.id === id);
+const learning = createLearningController({ api, storage: session,
+  context: () => ({ mode: state.mode, spaceId: currentSpace()?.id || '', active: route().name === 'learning' && !state.loading && !state.error }),
+  changed: () => { if (route().name === 'learning') render(); },
+});
 const activeTasks = () => state.mode === 'demo' ? demo.tasks : [...state.plans.values()].flatMap(p => (p.tasks || []).map(t => ({ ...t, space_id: p.space_id, plan_id: p.id || p.plan_id })));
 const link = (label, href, cls = 'text-link', glyph = 'chevron') => `<a class="${cls}" href="${href}">${label}${icon(glyph)}</a>`;
 const button = (label, action, cls = 'button button-primary', glyph = '', attrs = '') => `<button type="button" class="${cls}" data-action="${action}" ${attrs}>${glyph ? icon(glyph) : ''}${label}</button>`;
@@ -174,9 +179,10 @@ function spacePage(spaceId) {
   return `<a class="text-link back-link" href="#/spaces">返回学习空间</a>${pageHeading(esc(space.name), '在这里，把一份资料变成一次理解。', button('选择学习范围', 'edit-scope', 'button button-secondary', 'settings'))}<div class="details-grid"><div><section class="detail-hero"><span class="badge">${state.mode === 'demo' ? '示例空间' : '个人学习空间'}</span><h2 style="margin-top:20px">${esc(space.name)}</h2><p>${esc(space.goal || '还没有设置具体目标。从一个感兴趣的主题开始也很好。')}</p>${link('进入学习计划', '#/plan', 'button button-primary', 'arrow')}</section><section class="panel" style="margin-top:24px"><div class="panel-title"><h2>知识主题</h2>${link('查看图谱', '#/graph')}</div>${topics ? `<div class="topic-list">${topics.map(t => `<button class="topic-chip" data-action="explore-topic" data-id="${esc(t.id)}">${esc(t.title || t.name)}</button>`).join('') || '<p class="subtle">暂无主题，请检查资料的解析与发布状态。</p>'}</div>` : '<p class="subtle">正在读取资料中的主题…</p>'}</section></div><aside class="panel" style="align-self:start"><div class="panel-title"><h2>空间里的资料</h2><span class="badge">${materials.length} 份</span></div>${materials.map(m => `<div class="list-item">${icon('file')}<span>${esc(m.name)}</span>${button('查看', 'view-material', 'text-link', '', `data-id="${esc(m.id)}"`)}</div>`).join('')}<div class="mini-heading">每周学习预算</div><p class="subtle">${space.weekly_minutes || '未设置'} ${space.weekly_minutes ? '分钟' : ''}</p><div class="mini-heading">已经选择的学习主题</div><p class="subtle">${space.topic_ids?.length || 0} 个</p><div class="large-callout"><p>有不理解的地方？让问题带你走得更远。</p>${link('问问学习助手', '#/assistant')}</div></aside></div>`;
 }
 function render() {
-  renderVersion++; header();
+  learning.sync(); renderVersion++; header();
   const current = route();
-  const views = { overview, spaces: spacesPage, materials: materialsPage, graph: graphPage, plan: planPage, assistant: assistantPage, space: () => spacePage(current.id) };
+  const views = { overview, spaces: spacesPage, materials: materialsPage, graph: graphPage, plan: planPage, assistant: assistantPage, space: () => spacePage(current.id),
+    learning: () => renderLearning({ mode: state.mode, space: currentSpace(), state: learning.snapshot(), spaceSelectHtml: spaceSelect() }) };
   let content;
   if (state.loading) content = pageHeading('正在连接你的知识', '读取学习空间和资料，请稍候。') + '<div class="skeleton" role="status" aria-label="正在加载数据"></div>';
   else if (state.error && state.mode === 'live') content = pageHeading('让连接，重新发生。', '检查本地服务，然后继续你的学习。') + notice(esc(state.error), 'error') + empty('暂时无法读取学习数据', '请检查后端启动情况与本地会话令牌。你的真实数据仍保留在后端。', button('连接设置', 'settings', 'button button-primary', 'connection') + ' ' + button('重试', 'refresh', 'button button-secondary', 'refresh'), 'connection');
@@ -425,10 +431,20 @@ function bindGraphDrag() {
 
 document.addEventListener('click', async event => {
   if (event.target.closest('.skip-link')) { event.preventDefault(); main.focus(); return; }
+  const jump = event.target.closest('[data-learning-jump]');
+  if (jump) {
+    event.preventDefault();
+    const section = document.getElementById(jump.dataset.learningJump);
+    if (section) { section.scrollIntoView({ block: 'start' }); section.setAttribute('tabindex', '-1'); section.focus({ preventScroll: true }); }
+    return;
+  }
   const element = event.target.closest('[data-action]');
   if (!element) { if (event.target.closest('a[href^="#/"]') && modal.open) closeModal(); return; }
   const action = element.dataset.action, id = element.dataset.id;
   const actions = {
+    'learning-start': () => learning.start(), 'learning-resume': () => learning.resume(),
+    'learning-finalize': () => learning.finalize(), 'learning-evolution': () => learning.loadEvolution(),
+    'learning-replay': () => learning.replay(),
     'close-modal': closeModal, search: searchModal, help: helpModal,
     settings: () => { settingsModal(); if (state.mode === 'demo') $('.modal-body', modal).insertAdjacentHTML('beforeend', '<div style="margin-top:23px">' + button('恢复初始示例', 'reset-demo', 'text-link') + '</div>'); },
     'reset-demo': () => openModal('恢复初始示例？', '<p class="modal-intro">将移除你在此浏览器中新增的示例空间、示例资料和任务修改，并恢复内置示例。真实后端数据不会改变。</p><div class="form-actions">' + button('取消', 'close-modal', 'button button-secondary') + button('确认恢复示例', 'confirm-reset-demo', 'button button-primary') + '</div>'),
@@ -463,6 +479,17 @@ document.addEventListener('click', async event => {
 
 document.addEventListener('submit', async event => {
   const form = event.target; event.preventDefault();
+  if (form.id === 'learning-answer-form' || form.id === 'learning-comparison-form') {
+    const values = new FormData(form);
+    if (form.id === 'learning-answer-form') {
+      await learning.answer(values.get('answer'));
+      if (route().name === 'learning' && !learning.snapshot().error) $('#learning-answer-form input, #learning-answer-form textarea, [data-action=learning-finalize]')?.focus();
+    } else {
+      try { await learning.compare(comparisonPayload(values.get('budgets'), values.get('horizon'))); }
+      catch (error) { const box = $('[data-learning-error]', form); if (box) { box.textContent = error.message; box.hidden = false; } }
+    }
+    return;
+  }
   const submit = $('button[type=submit]', form);
   await busy(submit, async () => {
     const error = $('[data-form-error]', form); if (error) error.hidden = true;
@@ -471,7 +498,7 @@ document.addEventListener('submit', async event => {
     if (form.id === 'connection-form') {
       const previous = token; token = new FormData(form).get('token').trim();
       try { await api.spaces(); } catch (error) { token = previous; throw error; }
-      state.chatController?.abort(); state.mode = 'live'; state.error = ''; state.selected = ''; state.graph = null; state.graphSpace = ''; state.topics.clear(); state.plans.clear(); state.messages.clear(); state.chats.clear(); state.pendingJob = null;
+      learning.clear(); state.chatController?.abort(); state.mode = 'live'; state.error = ''; state.selected = ''; state.graph = null; state.graphSpace = ''; state.topics.clear(); state.plans.clear(); state.messages.clear(); state.chats.clear(); state.pendingJob = null;
       storageWrite(session, TOKEN_KEY, token); storageWrite(session, MODE_KEY, 'live'); closeModal(); await refreshData(); toast('已连接本地服务，正在使用真实学习数据。');
     }
     if (form.id === 'scope-form') {
@@ -514,7 +541,7 @@ document.addEventListener('dragover', event => { const zone = event.target.close
 document.addEventListener('dragleave', event => { const zone = event.target.closest('#upload-zone'); if (zone && !zone.contains(event.relatedTarget)) zone.classList.remove('dragging'); });
 document.addEventListener('drop', async event => { const zone = event.target.closest('#upload-zone'); if (zone) { event.preventDefault(); zone.classList.remove('dragging'); try { await uploadFiles(event.dataTransfer.files); } catch (error) { toast(error.message, true); } } });
 window.addEventListener('hashchange', () => { state.query = ''; if (modal.open) closeModal(); render(); main.focus({ preventScroll: true }); window.scrollTo(0, 0); void loadRoute(); });
-window.addEventListener('beforeunload', () => { state.chatController?.abort(); clearInterval(state.timerInterval); });
+window.addEventListener('beforeunload', () => { learning.dispose(); state.chatController?.abort(); clearInterval(state.timerInterval); });
 state.selected = storageRead(session, `knowpath-selected-${state.mode}`, '') || data().spaces[0]?.id || '';
 render();
 if (state.mode === 'live') void refreshData();

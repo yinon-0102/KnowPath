@@ -9,7 +9,7 @@ test('static server serves only public assets and rejects foreign hosts', async 
   server.listen(0, '127.0.0.1'); await once(server, 'listening');
   t.after(() => { server.closeAllConnections(); server.close(); });
   const port = server.address().port, base = `http://127.0.0.1:${port}`;
-  for (const path of ['/', '/src/app.js', '/src/styles.css', '/assets/knowledge-orbit.svg']) {
+  for (const path of ['/', '/src/app.js', '/src/learning.js', '/src/styles.css', '/assets/knowledge-orbit.svg']) {
     const response = await fetch(base + path); assert.equal(response.status, 200, path);
     assert.equal(response.headers.get('x-content-type-options'), 'nosniff');
   }
