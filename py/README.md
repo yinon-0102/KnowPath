@@ -228,3 +228,141 @@ uv run python scripts/accept_learning_backend.py --live
 脱敏后的 JSON 报告默认写入 `%TEMP%/knowpath-live-acceptance.json`。
 可通过 `--report PATH` 指定其他报告位置。HTTP 路由通过 FastAPI 的 `TestClient`
 进行验证，不涵盖反向代理或浏览器界面。
+
+## 后端日志与问题定位
+
+API、模型 worker、图谱 worker 使用统一的标准库日志。正常启动后，控制台的
+stderr 显示单行事件；文件始终使用 UTF-8 JSONL，每行一条 JSON，便于按字段筛选。
+默认文件位于本项目的 py/logs，文件名分别为 api-<PID>.jsonl、
+model-worker-<PID>.jsonl、graph-worker-<PID>.jsonl。默认路径与启动工作目录无关。
+两个 worker 的 --once 仍只向 stdout 输出原有 job_claimed JSON，诊断日志不会混入。
+
+| 环境变量 | 默认值 | 用途 |
+| --- | --- | --- |
+| KNOWPATH_LOG_LEVEL | INFO | DEBUG / INFO / WARNING / ERROR / CRITICAL |
+| KNOWPATH_LOG_FORMAT | text | 控制台 text 或 json；文件格式固定为 JSONL |
+| KNOWPATH_LOG_DIR | 本项目 py/logs | 自定义目录；显式空值关闭文件日志，相对路径基于进程工作目录 |
+| KNOWPATH_LOG_MAX_BYTES | 10485760 | 单文件轮转阈值，默认 10 MiB，允许 256 字节至 1 GiB |
+| KNOWPATH_LOG_BACKUPS | 5 | 每进程文件的备份数，允许 1–100 |
+
+在 py/.env 中调整这些配置后重启 API 和对应 worker。临时排查可设置
+KNOWPATH_LOG_LEVEL=DEBUG；希望控制台也输出 JSON 时设置 KNOWPATH_LOG_FORMAT=json。
+正常健康检查、Run 查询和空闲轮询只写 DEBUG，失败仍然可见。worker 连续轮询失败时，
+记录首次及每第 15 次失败；恢复时记录累计次数，避免存储不可用时反复刷屏。
+文件创建失败会写 logging.file.unavailable 并继续使用控制台。
+
+### 从请求追踪到后台任务
+
+1. 从响应头 X-Request-ID 或错误响应的 error.request_id 获取请求编号。
+2. 查找同一 request_id 的 http.request.* 与 command.* 事件，定位操作、HTTP 状态、
+   安全错误码、耗时，以及命令返回的 run_id。
+3. 按 run_id / job_id 检索 model-worker 或 graph-worker 日志，检查 attempt、
+   observed_status、error_code、backoff_seconds 和 duration_ms。
+   新任务会把原始 request_id 持久化到 outbox，重启及解析→图谱交接后仍可关联；
+   已存在的旧任务可能没有 request_id，此时使用 run_id / job_id。
+
+在项目根目录使用 PowerShell 搜索（替换示例编号）：
+
+~~~powershell
+Get-ChildItem .\py\logs\*.jsonl* | Select-String -SimpleMatch '你的 request_id 或 run_id'
+Get-ChildItem .\py\logs\*.jsonl* | Get-Content -Encoding utf8 |
+  ForEach-Object { $_ | ConvertFrom-Json } |
+  Where-Object { $_.level -in @('ERROR', 'WARNING') } |
+  Select-Object timestamp, service, event, request_id, run_id, job_id, error_code
+~~~
+
+主要事件：
+
+| 事件 | 说明 |
+| --- | --- |
+| api.build.* / api.started / api.shutdown.* / api.stopped | API 装配与生命周期 |
+| http.request.completed / failed / disconnected | 请求整体生命周期，含 SSE 最后一个响应块、断连和后台处理 |
+| command.completed / failed / replayed | 命令执行、错误和幂等重放；不记录幂等键或输入 |
+| model.http.* / model.generate.* / model.generate_json.* / model.stream.* | HTTP 尝试次数、状态、模型名称、耗时以及生成校验结果 |
+| worker.attempt.started / finished / failed | 任务编号、资源编号、尝试次数、执行后观察到的 outbox 状态 |
+| worker.retry.* / worker.failure.requested / worker.lease.renewal_failed | 重试、退避、终止失败与续租异常 |
+| material.parse.* / graph.prepare.* / material.cleanup.failed | 资料解析、图谱准备、外部清理 |
+| rag.retrieve.* / rag.rerank.* / rag.verify.* / rag.answer.* | 检索、重排、生成及验证、整体 RAG 的耗时和失败位置 |
+| rag.stage / rag.result | 候选数、重排数、上下文数、引用数和回答状态 |
+
+时间戳使用 UTC ISO 8601，耗时单位为毫秒。所有事件均带 service、pid、logger、level。
+request_id、run_id、job_id 仅在对应上下文存在时提供。路由记录模板，不记录查询参数、
+原始 URL、客户端地址或文件名；在路由匹配前被认证等中间件拒绝时显示 <unmatched>。
+HTTP status_code 在响应头成功发送前为空；response_bytes 统计已交给 ASGI send 的字节，
+response_complete 表示最后一个响应块已发送，不能替代业务成功状态。流式响应即使已有
+200 响应头，后续异常仍记录 http.request.failed。
+
+worker.attempt.finished 只表示本次执行已返回，成功与否应看 observed_status。
+pending 表示等待重试，processing 表示仍受租约控制，superseded 表示已被新尝试接管。
+无法读取状态时记 unavailable，不据此重试业务或覆盖结果。command.completed 出现在事务
+正常退出之后；任务内部 *.requested 事件可能先于事务提交，日志不作为事务审计凭据。
+
+### 模型与工具动作追踪
+
+模型动作统一使用 `model.call.*`，工具动作统一使用 `tool.call.*`。这些事件默认 INFO
+可见；失败为 ERROR，超时、拒绝及结果未知为 WARNING。原有 `model.http.*`、
+`model.generate.*` 和 RAG 阶段事件继续保留，用于观察整体业务操作；统计模型调用次数时
+只按 `model.call.started` 的 `model_call_id` 去重，不把阶段事件重复计数。
+
+| 字段 / 事件 | 含义 |
+| --- | --- |
+| span_id / parent_span_id | 当前操作及父操作编号；阶段、模型、工具可串成调用链 |
+| action_id / model_call_id / tool_call_id | 系统生成的动作编号；同一次动作的开始和结束共用编号，不使用供应商返回的工具 ID |
+| observation_scope=http | 直接 HTTP 适配器或 RAG journal 观察到的一次请求尝试；应用重试产生新编号 |
+| observation_scope=sdk | 通用 MyLLM 或函数调用 Agent 的一次 SDK 调用；SDK 内部自动重试不展开，不能据此推算真实 HTTP 次数 |
+| attempt / retry_reason | 普通模型重试次数；Agent 因空响应且长度受限而追加调用时，记录新编号及 empty_length_limit |
+| revision_index / stage_call_index | RAG 初稿为第 0 轮、修订为第 1 轮；生成与验证分别从 1 计数，传递到 HTTP 事件并保留在 journal |
+| usage / usage_status | 仅保留供应商实际返回的非负整数 token 计数；observed 表示至少一个计数可用，缺少的项仍未知 |
+| finish_reason | 供应商返回且通过白名单的停止原因；缺失时不猜测 |
+| model.call.completed / failed / cancelled / unknown | 调用边界的完成、异常、取消或结果未知；completed 不代表答案正确或已发布 |
+| model.call.validation | RAG 对同一模型调用的后续校验；content_passed 只表示内容 JSON 可用，passed/failed 表示后续契约检查结果 |
+| model.operation.* / model.embedding.* / model.reranking.* | 本地输入检查、解析和返回结果校验的操作结果；可在没有实际模型请求时失败 |
+| tool.call.approval | 是否需要审批及 approved / denied / not_required / callback_unavailable；描述现有审批流程，不改变审批策略 |
+| tool.call.executing | 实际开始执行；可与执行前被拒绝的动作区分 |
+| tool.call.completed | 工具函数返回；result_status=returned 不保证业务成功，既有 ❌ 返回约定记为 error_reported |
+| tool.call.rejected / failed / timed_out / cancelled / unknown | 拒绝、抛出异常、超时、批次中止且未提交执行，或批次中止后结果未知 |
+| origin_model_call_id | 产生这次工具调度的模型调用编号；无法关联时为空，绝不编造 |
+
+未提供 usage 时记录 `usage_status=unknown` 和空对象，不能把未知当成零消耗；估算输入量、
+预算预留也不能当成供应商账单。SDK 内部重试、未完成流和超时请求的最终计费仍需供应商侧核对。
+汇总用量时也应按 model_call_id 去重，取该调用最新可用的计数；validation 事件再次携带的
+usage 属于同一次调用，不可与完成事件重复累加。
+工具超时记录 `execution_may_continue=true`，表示后台执行可能继续；日志不会声称已强制终止。
+同一动作最多一个终态，超时或 journal 封口后的迟到结果不会覆盖终态或补写为成功。
+批次中止时，已提交线程池的排队动作也可能继续执行，统一记 unknown；不会把“尚未开始”
+误记为“已取消”。通用工具直接调用仍记录实际抛出的异常。
+
+RAG 的请求线程、复用 HTTP 线程以及并行工具线程只传递日志元数据；不会复制数据库事务、
+SQL 会话或其他 ContextVar。复用线程逐次绑定与恢复上下文，避免不同请求的编号串线。
+独立调用模型、工具时若没有 HTTP 请求上下文，request_id / run_id 可以不存在。
+
+例如，在项目根目录检索某次模型调用及其关联工具（替换动作编号）：
+
+~~~powershell
+$callId = '日志中的 model_call_id'
+Get-ChildItem .\py\logs\*.jsonl* | Get-Content -Encoding utf8 |
+  ForEach-Object { $_ | ConvertFrom-Json } |
+  Where-Object { $_.model_call_id -eq $callId -or $_.origin_model_call_id -eq $callId } |
+  Select-Object timestamp, event, model_call_id, tool_call_id, origin_model_call_id,
+                stage, revision_index, duration_ms, usage_status, result_status
+~~~
+
+此处追踪的是动作、耗时、状态和安全计数，不保存模型思维链、提示词、回答、工具参数或工具
+结果全文。原有 CLI 实时文本输出仍保持既有行为；动作事件不把这些文本复制进日志。
+
+### 隐私、轮转与扩展
+
+新增业务事件只记录明确挑选的 ID、枚举、计数和耗时，不记录用户问题、答案、资料正文、
+提示词、请求体、响应体、HTTP 头、密钥或租约令牌。异常保留类型和调用位置（文件、行号、
+函数），不记录异常消息、源码行或局部变量。已知依赖的自由文本消息会被省略，避免 SQL、
+HTTP、PDF 解析或 Uvicorn 预格式化回溯泄露内容；原始日志级别与 logger 仍保留。
+旧式普通日志会做凭据脱敏，但新增代码仍应使用 observability.log_event / span 并明确
+选择安全字段，不能依赖正则识别任意正文。DEBUG 也不会开启请求或模型内容输出。
+
+每个进程单独轮转，避免多进程同时重命名同一文件。轮转限制仅作用于同一个 PID 的文件；
+重启遗留的旧 PID 文件不会自动删除，长期运行需由运维按保留期归档或清理。
+日志目录应限制访问权限，日志采集器可直接读取 JSONL；本次未引入日志查询 UI 或远端平台。
+配置只由三个生产入口执行；直接调用 create_app 的测试/嵌入场景由宿主配置 handler。
+已有宿主 handler 会保留，它们的输出格式和脱敏策略仍由宿主负责。
+程序内调用 Alembic 时沿用宿主已有的根日志 handler；独立迁移命令也不会禁用已经加载的
+应用 logger，避免执行迁移后模型及业务日志静默消失。
