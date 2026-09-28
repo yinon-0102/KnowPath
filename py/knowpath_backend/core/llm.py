@@ -1,4 +1,6 @@
 import os
+import logging
+from knowpath_backend.observability.actions import model_call, collect_response_metrics, usage_metrics
 from typing import Optional
 
 from anthropic import Anthropic
@@ -8,6 +10,7 @@ from google.genai import types as genai_types
 from openai import OpenAI
 
 load_dotenv()
+logger = logging.getLogger(__name__)
 
 
 class MyLLM:
@@ -261,39 +264,45 @@ class MyLLM:
         if self.max_tokens is not None:
             request_kwargs["max_tokens"] = self.max_tokens
 
-        response = self.client.chat.completions.create(**request_kwargs)
+        with model_call(logger, provider=self.provider, model=self.model, stage='agent',
+                        observation_scope='sdk') as fields:
+            response = self.client.chat.completions.create(**request_kwargs)
 
-        if stream:
-            collected_content = []
-            collected_reasoning = []
-            for chunk in response:
-                if not chunk.choices:
-                    continue
-                delta = chunk.choices[0].delta
-                content = delta.content or ""
-                if content:
-                    print(content, end="", flush=True)
-                    collected_content.append(content)
-                # thinking 模型 (MiMo / Qwen3 / DeepSeek-R1) 单独的 reasoning 通道：
-                # 暂不流式打印，仅在 content 整段为空时兜底输出，避免双通道交错刷屏。
-                reasoning = getattr(delta, "reasoning_content", "") or ""
-                if reasoning:
-                    collected_reasoning.append(reasoning)
-            print()
-            if collected_content:
-                return "".join(collected_content)
-            if collected_reasoning:
-                fallback = "".join(collected_reasoning)
-                print(fallback)
-                return fallback
-            return ""
+            if not stream:
+                collect_response_metrics(fields, response)
 
-        msg = response.choices[0].message
-        content = (msg.content or "").strip()
-        if content:
-            return content
-        reasoning = (getattr(msg, "reasoning_content", "") or "").strip()
-        return reasoning
+            if stream:
+                collected_content = []
+                collected_reasoning = []
+                for chunk in response:
+                    collect_response_metrics(fields, chunk)
+                    if not chunk.choices:
+                        continue
+                    delta = chunk.choices[0].delta
+                    content = delta.content or ""
+                    if content:
+                        print(content, end="", flush=True)
+                        collected_content.append(content)
+                    # thinking 模型 (MiMo / Qwen3 / DeepSeek-R1) 单独的 reasoning 通道：
+                    # 暂不流式打印，仅在 content 整段为空时兜底输出，避免双通道交错刷屏。
+                    reasoning = getattr(delta, "reasoning_content", "") or ""
+                    if reasoning:
+                        collected_reasoning.append(reasoning)
+                print()
+                if collected_content:
+                    return "".join(collected_content)
+                if collected_reasoning:
+                    fallback = "".join(collected_reasoning)
+                    print(fallback)
+                    return fallback
+                return ""
+
+            msg = response.choices[0].message
+            content = (msg.content or "").strip()
+            if content:
+                return content
+            reasoning = (getattr(msg, "reasoning_content", "") or "").strip()
+            return reasoning
 
     def _think_anthropic(
         self,
@@ -311,16 +320,19 @@ class MyLLM:
         if system_prompt:
             request_kwargs["system"] = system_prompt
 
-        response = self.client.messages.create(**request_kwargs)
+        with model_call(logger, provider=self.provider, model=self.model, stage='agent',
+                        observation_scope='sdk') as fields:
+            response = self.client.messages.create(**request_kwargs)
 
-        text_parts = []
-        for block in response.content:
-            if getattr(block, "type", None) == "text":
-                text_parts.append(block.text)
+            fields.update(usage_metrics(getattr(response, 'usage', None)))
+            text_parts = []
+            for block in response.content:
+                if getattr(block, "type", None) == "text":
+                    text_parts.append(block.text)
 
-        result = "".join(text_parts)
-        print(result)
-        return result
+            result = "".join(text_parts)
+            print(result)
+            return result
 
     def _think_gemini(
         self,
@@ -335,14 +347,21 @@ class MyLLM:
         if system_prompt:
             config_kwargs["system_instruction"] = system_prompt
 
-        response = self.client.models.generate_content(
-            model=self.model,
-            contents=user_prompt,
-            config=genai_types.GenerateContentConfig(**config_kwargs),
-        )
-        result = getattr(response, "text", "") or ""
-        print(result)
-        return result
+        with model_call(logger, provider=self.provider, model=self.model, stage='agent',
+                        observation_scope='sdk') as fields:
+            response = self.client.models.generate_content(
+                model=self.model,
+                contents=user_prompt,
+                config=genai_types.GenerateContentConfig(**config_kwargs),
+            )
+            usage = getattr(response, 'usage_metadata', None)
+            fields.update(usage_metrics({
+                'input_tokens': getattr(usage, 'prompt_token_count', None),
+                'output_tokens': getattr(usage, 'candidates_token_count', None),
+                'total_tokens': getattr(usage, 'total_token_count', None)}))
+            result = getattr(response, "text", "") or ""
+            print(result)
+            return result
 
     def invoke(
         self,
@@ -375,24 +394,27 @@ class MyLLM:
             }
             if self.max_tokens is not None:
                 request_kwargs["max_tokens"] = self.max_tokens
-            response = self.client.chat.completions.create(**request_kwargs)
-            yielded_any = False
-            reasoning_buf = []
-            for chunk in response:
-                if not chunk.choices:
-                    continue
-                delta = chunk.choices[0].delta
-                content = delta.content or ""
-                if content:
-                    yielded_any = True
-                    yield content
-                reasoning = getattr(delta, "reasoning_content", "") or ""
-                if reasoning:
-                    reasoning_buf.append(reasoning)
-            # content 通道整段为空时，把 reasoning 一次性吐出来兜底
-            if not yielded_any and reasoning_buf:
-                yield "".join(reasoning_buf)
-            return
+            with model_call(logger, provider=self.provider, model=self.model, stage='agent',
+                            observation_scope='sdk') as fields:
+                response = self.client.chat.completions.create(**request_kwargs)
+                yielded_any = False
+                reasoning_buf = []
+                for chunk in response:
+                    collect_response_metrics(fields, chunk)
+                    if not chunk.choices:
+                        continue
+                    delta = chunk.choices[0].delta
+                    content = delta.content or ""
+                    if content:
+                        yielded_any = True
+                        yield content
+                    reasoning = getattr(delta, "reasoning_content", "") or ""
+                    if reasoning:
+                        reasoning_buf.append(reasoning)
+                # content 通道整段为空时，把 reasoning 一次性吐出来兜底
+                if not yielded_any and reasoning_buf:
+                    yield "".join(reasoning_buf)
+                return
 
         # 非 OpenAI 兼容 provider 没有统一的流式接口，整体返回一次。
         yield self.think(normalized, temperature=actual_temperature, stream=False)

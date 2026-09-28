@@ -5,6 +5,10 @@ import copy
 import hashlib
 import json
 import time
+import logging
+from knowpath_backend.observability import observed, span as log_span, log_event
+
+logger = logging.getLogger(__name__)
 
 from .context import assemble_context, explicit_anchor_rows, anchor_repacking_plan
 from .contracts import Candidate, Citation, RetrievalBudget, RetrievalRequest, SourceSpan
@@ -131,6 +135,8 @@ class RagPipeline:
     def _snapshot(self, **fields):
         snapshot = {**(self.last_retrieval_snapshot or {}), **copy.deepcopy(fields)}
         self.last_retrieval_snapshot = snapshot
+        counts = {name + '_count': len(fields[name + '_ids']) for name in ('candidate', 'reranked', 'context') if name + '_ids' in fields}
+        log_event(logger, 'rag.stage', stage=fields.get('stage'), **counts)
         if self.retrieval_snapshot_callback is not None:
             self.retrieval_snapshot_callback(copy.deepcopy(snapshot))
 
@@ -196,6 +202,7 @@ class RagPipeline:
             raise VerificationError("RAG_SOURCE_INVALID")
         return rows
 
+    @observed('rag.answer', ids=('space_id',))
     def answer(self, question, *, space_id, expected_scope_version=None, expected_bindings=None, cancelled=None, history=()):
         self.last_retrieval_snapshot = None
         started = time.monotonic()
@@ -241,7 +248,8 @@ class RagPipeline:
         self._guard(scope, deadline, cancelled)
         if hasattr(plugin, 'for_sources'):
             plugin = plugin.for_sources(rows)
-        retrieved = plugin.retrieve(request)
+        with log_span(logger, 'rag.retrieve'):
+            retrieved = plugin.retrieve(request)
         self._guard(scope, deadline, cancelled)
         if retrieved.status != 'ready':
             raise VerificationError(retrieved.error_code or 'PLUGIN_RETRIEVAL_FAILED')
@@ -264,7 +272,8 @@ class RagPipeline:
         if retrieval_trace.get("rerank_mode") == "unit_atomic" or atomic_groups:
             group_rows = authoritative_rerank_groups(atomic_groups, selected, by_id)
             by_group = {row["chunk_id"]: row for row in group_rows}
-            ranked_groups = self.reranker.rerank(resolved_question, copy.deepcopy(group_rows), deadline=deadline) if group_rows else []
+            with log_span(logger, 'rag.rerank'):
+                ranked_groups = self.reranker.rerank(resolved_question, copy.deepcopy(group_rows), deadline=deadline) if group_rows else []
             self._guard(scope, deadline, cancelled)
             if (not isinstance(ranked_groups, (list, tuple)) or len(ranked_groups) != len(group_rows)
                     or any(not isinstance(row, dict) or not isinstance(row.get("chunk_id"), str)
@@ -280,7 +289,8 @@ class RagPipeline:
                 ordered = [{**r, 'atomic_group': packet_membership[r['chunk_id']]} if r['chunk_id'] in packet_membership
                            else r for r in ordered]
         else:
-            ranked = self.reranker.rerank(resolved_question, selected, deadline=deadline) if selected else []
+            with log_span(logger, 'rag.rerank'):
+                ranked = self.reranker.rerank(resolved_question, selected, deadline=deadline) if selected else []
             self._guard(scope, deadline, cancelled)
             if len(ranked) != len(selected) or {r["chunk_id"] for r in ranked} != {r["chunk_id"] for r in selected}:
                 raise VerificationError("RAG_RERANK_INVALID")
@@ -306,9 +316,10 @@ class RagPipeline:
             context_hash=hashlib.sha256(json.dumps(context, ensure_ascii=False, sort_keys=True, separators=(',', ':')).encode()).hexdigest())
         if context and getattr(self.verifier, 'capacity', None) is not None:
             self.verifier.capacity.admit_initial(resolved_question, context, deadline=deadline)
-        result = self.verifier.answer(resolved_question, context, deadline=deadline,
-            max_generation_calls=self.budget.max_generation_calls,
-            max_verification_calls=self.budget.max_verification_calls)
+        with log_span(logger, 'rag.verify'):
+            result = self.verifier.answer(resolved_question, context, deadline=deadline,
+                max_generation_calls=self.budget.max_generation_calls,
+                max_verification_calls=self.budget.max_verification_calls)
         if capacity_trace is not None:
             result['trace']['protocol_capacity'] = capacity_trace
         if anchor_repacking is not None:
@@ -330,6 +341,8 @@ class RagPipeline:
             citations.append(Citation(material_id=source["material_id"], material_version_id=source["material_version_id"],
                 retrieval_version_id=source["retrieval_version_id"], chunk_id=identifier,
                 source_spans=source["source_spans"]).model_dump(mode="json"))
+        log_event(logger, 'rag.result', status=result.get('status'), citation_count=len(citations),
+                  context_count=len(context), candidate_count=len(candidates))
         return {**result, "citations": citations, "sources": context,
                 "trace": {**result["trace"], "retrieval": retrieval_trace, 'query': prepared,
                     'rerank_usage': getattr(self.reranker, 'last_usage', None),

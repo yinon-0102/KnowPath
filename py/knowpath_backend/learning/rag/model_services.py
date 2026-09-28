@@ -9,6 +9,11 @@ from copy import deepcopy
 from hashlib import sha256
 
 import httpx
+import logging
+from knowpath_backend.observability import bind_context, span, usage_metrics
+from knowpath_backend.observability.actions import model_post
+
+logger = logging.getLogger(__name__)
 
 from knowpath_backend.learning.config import LearningSettings
 from .verification import CLAIM_ID_POOL, VerificationError
@@ -168,6 +173,13 @@ class BudgetedJsonModel:
         return body
 
     def generate_json(self, messages, *, deadline, response_schema=None):
+        with bind_context(provider=self.settings.chat_provider, model=self.settings.chat_model, stage=self.stage):
+            with span(logger, 'model.operation') as metrics:
+                result = self._generate_with_journal(messages, deadline=deadline, response_schema=response_schema)
+                metrics.update(usage_metrics(self.last_usage), validation='content_passed')
+                return result
+
+    def _generate_with_journal(self, messages, *, deadline, response_schema=None):
         previous_calls = self.journal.snapshot()['physical_calls'] if self.journal else 0
         try:
             result = self._generate_json(messages, deadline=deadline, response_schema=response_schema)
@@ -224,7 +236,8 @@ class BudgetedJsonModel:
         try:
             try:
                 timeout = _remaining_timeout(deadline, self.settings.chat_timeout_seconds, VerificationError)
-                response = client.post(self.settings.chat_base_url.rstrip("/") + "/chat/completions",
+                response = model_post(logger, client, self.settings.chat_base_url.rstrip("/") + "/chat/completions",
+                    provider=self.settings.chat_provider, model=self.settings.chat_model, stage=self.stage,
                     json=body, headers={"Authorization": f"Bearer {key}"}, timeout=timeout, follow_redirects=False,
                     extensions={'rag_stage_deadline': deadline})
                 response.raise_for_status()

@@ -2,6 +2,7 @@ import logging
 from typing import Any, Callable, Optional, Dict
 
 from knowpath_backend.tools.base import Tool
+from knowpath_backend.observability.tool_actions import ToolAction, tool_dispatch
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +44,15 @@ class ToolRegistry:
 
     def execute_tool(self, name: str, params: Any) -> str:
         """执行工具。params 可以是 dict 或 str。"""
+        with tool_dispatch(self, name) as observed:
+            if observed:
+                return self._execute_tool(name, params)
+            action = ToolAction(self, name)
+            result = action.invoke(self, name, params)
+            action.returned(result)
+            return result
+
+    def _execute_tool(self, name: str, params: Any) -> str:
         if name in self._functions:
             func = self._functions[name]["func"]
             if isinstance(params, dict):

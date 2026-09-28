@@ -5,6 +5,8 @@ import math
 from threading import RLock
 import time
 import zlib
+import logging
+from knowpath_backend.observability import Action, usage_metrics, context_fields
 
 import httpx
 
@@ -16,12 +18,14 @@ FAILURES = {'connect_timeout', 'read_timeout', 'write_timeout', 'pool_timeout', 
     'input_budget', 'context_budget', 'output_budget', 'finish_reason', 'response_json',
     'response_shape', 'response_refused', 'content_json', 'content_shape', 'usage_invalid', 'response_schema'}
 USAGE_KEYS = {'prompt_tokens', 'completion_tokens', 'input_tokens', 'output_tokens', 'total_tokens'}
+logger = logging.getLogger(__name__)
 
 
 def safe_metadata(value):
     if not isinstance(value, dict): return {}
     output = {}
-    for key in ('input_bound', 'input_limit', 'output_limit', 'context_limit', 'draft_limit_bytes'):
+    for key in ('input_bound', 'input_limit', 'output_limit', 'context_limit', 'draft_limit_bytes',
+                'revision_index', 'stage_call_index'):
         if type(value.get(key)) is int and value[key] >= 0: output[key] = value[key]
     for key, allowed in {
         'count_kind': {'conservative_upper_bound', 'tokenizer_estimate'},
@@ -83,6 +87,10 @@ def safe_journal_snapshot(value):
             return {}
         item = {key: row[key] for key in ('call_index', 'stage', 'status', 'billing_status', 'elapsed_ms')}
         item['usage'] = safe_usage(row.get('usage'))
+        for key in ('model_call_id', 'span_id', 'parent_span_id'):
+            identifier = row.get(key)
+            if isinstance(identifier, str) and len(identifier) == 32 and all(c in '0123456789abcdef' for c in identifier):
+                item[key] = identifier
         item.update(safe_metadata(row))
         if row.get('failure_kind') in FAILURES: item['failure_kind'] = row['failure_kind']
         if type(row.get('http_status')) is int and 100 <= row['http_status'] <= 599:
@@ -99,6 +107,7 @@ class RequestJournal:
         self._lock = RLock()
         self._value = {'schema_version': 1, 'stage': 'queue', 'status': 'running', 'physical_calls': 0, 'calls': []}
         self._starts = {}
+        self._actions = {}
         self._deadline = deadline if type(deadline) in (int, float) and math.isfinite(deadline) else None
 
     def set_stage(self, stage, metadata=None):
@@ -120,6 +129,10 @@ class RequestJournal:
                     row['usage'] = validated
                     row['billing_status'] = 'usage_observed'
                 if failure in FAILURES: row['failure_kind'] = failure
+                action = self._actions.get(row['call_index'])
+                if action is not None:
+                    action.record('validation', validation=row.get('validation'),
+                                  failure_kind=row.get('failure_kind'), **usage_metrics(row['usage']))
 
     def fail_phase(self, kind):
         with self._lock:
@@ -138,6 +151,14 @@ class RequestJournal:
                 'usage': {}, 'elapsed_ms': 0, 'billing_status': 'unknown' if billed else 'not_applicable',
                 **safe_metadata(self._value.get('phase_metadata'))})
             self._value['physical_calls'] = identifier
+            action = Action(logger, 'dependency.call' if stage == 'retrieval' else 'model.call',
+                            stage=stage, call_index=identifier, observation_scope='http')
+            self._actions[identifier] = action
+            row = self._value['calls'][-1]
+            row.update(span_id=action.context['span_id'], parent_span_id=action.context['parent_span_id'])
+            row.update(safe_metadata(context_fields()))
+            if 'model_call_id' in action.fields:
+                row['model_call_id'] = action.fields['model_call_id']
             return identifier
 
     def finish_call(self, identifier, *, status, usage=None, http_status=None, failure=None):
@@ -150,6 +171,8 @@ class RequestJournal:
             if row['usage']: row['billing_status'] = 'usage_observed'
             if http_status is not None: row['http_status'] = http_status
             if failure in FAILURES: row['failure_kind'] = failure
+            self._actions[identifier].finish({'succeeded':'completed', 'failed':'failed', 'unknown':'unknown'}[status],
+                status_code=http_status, failure_kind=row.get('failure_kind'), **usage_metrics(row['usage']))
 
     def snapshot(self):
         with self._lock:
@@ -170,6 +193,8 @@ class RequestJournal:
                             end = min(end, self._deadline)
                         row.update(status='unknown', elapsed_ms=round(
                             max(0.0, end - self._starts[row['call_index']]) * 1000, 3))
+                        self._actions[row['call_index']].finish('unknown', failure_kind='deadline' if status == 'deadline' else None,
+                                                               **usage_metrics(row['usage']))
                 self._value['status'] = status
                 if status == 'deadline': self._value['failure_kind'] = 'deadline'
             return self.snapshot()

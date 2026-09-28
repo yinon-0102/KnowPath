@@ -8,6 +8,9 @@
 import json
 import logging
 import time
+from knowpath_backend.observability import bind_context, context_fields, run_with_log_context, observed
+from knowpath_backend.observability.tool_actions import ToolAction
+from knowpath_backend.observability.actions import model_call, response_metrics
 from types import SimpleNamespace
 from typing import Any, Callable, Dict, List, Optional, Union
 
@@ -97,6 +100,7 @@ class MyFunctionCallAgent(Agent):
             self.convergence_judge = None
             self.checker_runner = None
 
+    @observed("agent.turn")
     def run(self,
             input_text: str,
             tool_choice: Union[str, dict] = "auto",
@@ -256,12 +260,13 @@ class MyFunctionCallAgent(Agent):
                 ],
             })
 
-            tool_call_count += self._execute_tool_calls(
-                tool_calls, messages,
-                on_tool_call=on_tool_call,
-                on_permission_request=on_permission_request,
-                on_tool_result=on_tool_result,
-            )
+            with bind_context(origin_model_call_id=getattr(response, '_model_call_id', None)):
+                tool_call_count += self._execute_tool_calls(
+                    tool_calls, messages,
+                    on_tool_call=on_tool_call,
+                    on_permission_request=on_permission_request,
+                    on_tool_result=on_tool_result,
+                )
 
         # 验证开启且主循环耗尽预算却没 break:返回全程最优的已验证候选,
         # 而不是再做一次"无验证"的兜底调用(否则丢掉 best、违背"始终返回 best")。
@@ -484,35 +489,68 @@ class MyFunctionCallAgent(Agent):
         return (f"⏱️ 工具 '{name}' 执行超时(>{timeout}s),已放弃等待;"
                 f"线程可能仍在后台运行,其结果将被忽略。")
 
-    def _run_single_tool(self, name: str, args: Any, timeout: Optional[float] = None):
+    def _run_single_tool(self, name: str, args: Any, timeout: Optional[float] = None, *, action=None):
         """执行单个工具,返回 (result, elapsed_sec)。
 
         timeout 非 None 时,超过即放弃等待并返回超时文案。底层线程不被强杀
         (shutdown(wait=False)),会在后台继续跑完,但其返回值被忽略。
         """
         t = time.monotonic()
+        action = action or ToolAction(self.tool_registry, name, supervised=True)
         if timeout is None:
-            result = self.tool_registry.execute_tool(name, args)
+            try:
+                result = action.invoke(self.tool_registry, name, args)
+            except BaseException as error:
+                action.finish('failed', exc=error)
+                raise
+            action.returned(result)
             return result, time.monotonic() - t
 
         from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
         ex = ThreadPoolExecutor(max_workers=1)
-        fut = ex.submit(self.tool_registry.execute_tool, name, args)
+        fut = ex.submit(run_with_log_context, action.log_context(), action.invoke, self.tool_registry, name, args)
         try:
             result = fut.result(timeout=timeout)
+            action.returned(result)
         except FuturesTimeout:
+            action.finish('timed_out', execution_may_continue=True)
             result = self._tool_timeout_message(name, timeout)
+        except BaseException as error:
+            action.finish('failed', exc=error)
+            raise
         finally:
             ex.shutdown(wait=False)
         return result, time.monotonic() - t
 
-    def _execute_tool_calls(self,
+    def _execute_tool_calls(self, tool_calls, messages, *, on_tool_call,
+                            on_permission_request, on_tool_result):
+        plans = []
+        try:
+            return self._execute_tool_calls_observed(
+                tool_calls, messages, on_tool_call=on_tool_call,
+                on_permission_request=on_permission_request, on_tool_result=on_tool_result,
+                plans=plans)
+        except BaseException:
+            for plan in plans:
+                action = plan['action']
+                future = plan.get('_future')
+                if future is not None and future.done():
+                    try:
+                        action.returned(future.result())
+                    except BaseException as error:
+                        action.finish('failed', exc=error)
+                may_continue = future is not None or action.fields['execution_started']
+                action.finish('unknown' if may_continue else 'cancelled',
+                              reason='batch_aborted', execution_may_continue=may_continue)
+            raise
+
+    def _execute_tool_calls_observed(self,
                             tool_calls,
                             messages: List[Dict[str, Any]],
                             *,
                             on_tool_call: Optional[ToolCallCallback],
                             on_permission_request: Optional[PermissionCallback],
-                            on_tool_result: Optional[ToolResultCallback]) -> int:
+                            on_tool_result: Optional[ToolResultCallback], plans) -> int:
         """同一轮多个 tool_call 的三阶段调度,返回"尝试次数"(含被拒绝)。
 
         A. 串行(原顺序):parse/类型转换/on_tool_call/审批,产出执行计划。
@@ -522,7 +560,6 @@ class MyFunctionCallAgent(Agent):
         审批是对人 IO,必须在 A 阶段串行、按序进行;并行只发生在 B 阶段且仅限白名单工具。
         """
         # ── Phase A:串行产出计划 ──
-        plans: List[Dict[str, Any]] = []
         attempts = 0
         for tc in tool_calls:
             name = tc.function.name
@@ -535,7 +572,9 @@ class MyFunctionCallAgent(Agent):
                     logger.exception("on_tool_call 回调异常,忽略不影响主流程")
 
             plan = {"tc": tc, "name": name, "args": args,
-                    "result": None, "elapsed": 0.0, "execute": True, "report": True}
+                    "result": None, "elapsed": 0.0, "execute": True, "report": True,
+                    "action": ToolAction(self.tool_registry, name, supervised=True)}
+            plans.append(plan)
 
             tool_obj = self.tool_registry.get_tool(name)
             # 审批判定:工具若提供 approval_required_for(args) 则按命令内容动态决定
@@ -560,15 +599,21 @@ class MyFunctionCallAgent(Agent):
                 except Exception:
                     logger.exception("on_permission_request 异常,默认拒绝")
                     allowed = False
+                plan['action'].record('approval', required=True, decision='approved' if allowed else 'denied')
                 if not allowed:
                     plan["result"] = f"用户拒绝了对 {name} 的调用"
                     plan["execute"] = False
                     plan["report"] = False  # 被拒绝不算一次真正执行,不上报 on_tool_result
                     attempts += 1
-            plans.append(plan)
+            else:
+                plan['action'].record('approval', required=_needs_approval,
+                    decision='callback_unavailable' if _needs_approval else 'not_required')
 
         # ── 结构闸门:否决"边执行改动边预先打勾"(看到结果前不许标 completed)──
         self._veto_premature_completions(plans)
+        for plan in plans:
+            if not plan['execute']:
+                plan['action'].finish('rejected', reason='permission_denied' if not plan['report'] else 'completion_gate')
 
         # ── Phase B:执行。白名单并行,其余按原顺序串行 ──
         timeout = getattr(self, "tool_timeout", None)
@@ -584,7 +629,7 @@ class MyFunctionCallAgent(Agent):
             self._turn_mutation_count = getattr(self, "_turn_mutation_count", 0) + len(_mutating)
 
         for p in serial:
-            p["result"], p["elapsed"] = self._run_single_tool(p["name"], p["args"], timeout)
+            p["result"], p["elapsed"] = self._run_single_tool(p["name"], p["args"], timeout, action=p["action"])
             attempts += 1
 
         if parallel:
@@ -592,13 +637,16 @@ class MyFunctionCallAgent(Agent):
                 ThreadPoolExecutor, as_completed, wait as futures_wait)
             ex = ThreadPoolExecutor(max_workers=min(len(parallel), 8))
             t0 = time.monotonic()
-            futs = {ex.submit(self.tool_registry.execute_tool, p["name"], p["args"]): p
+            futs = {ex.submit(run_with_log_context, p["action"].log_context(), p["action"].invoke, self.tool_registry, p["name"], p["args"]): p
                     for p in parallel}
+            for future, plan in futs.items():
+                plan["_future"] = future
             try:
                 if timeout is None:
                     for fut in as_completed(futs):
                         p = futs[fut]
                         p["result"] = fut.result()
+                        p["action"].returned(p["result"])
                         p["elapsed"] = time.monotonic() - t0
                 else:
                     # 整批共享一个 deadline(它们同时起跑);未完成的回喂超时文案,
@@ -608,9 +656,12 @@ class MyFunctionCallAgent(Agent):
                         if fut in done:
                             try:
                                 p["result"] = fut.result()
+                                p["action"].returned(p["result"])
                             except Exception as e:
+                                p['action'].finish('failed', exc=e)
                                 p["result"] = f"❌ 工具 '{p['name']}' 执行异常: {e}"
                         else:
+                            p["action"].finish("timed_out", execution_may_continue=True)
                             p["result"] = self._tool_timeout_message(p["name"], timeout)
                         p["elapsed"] = time.monotonic() - t0
             finally:
@@ -694,8 +745,9 @@ class MyFunctionCallAgent(Agent):
             **request_kwargs,
         )
 
-        response = self._stream_chat_completion(
-            client, base_request, on_text_chunk, on_reasoning_chunk, should_cancel=should_cancel)
+        with bind_context(provider=getattr(self.llm, 'provider', 'unknown'), attempt=1):
+            response = self._stream_chat_completion(
+                client, base_request, on_text_chunk, on_reasoning_chunk, should_cancel=should_cancel)
 
         # 自救：撞 max_tokens 上限、content 又是空（thinking 模型把预算吃在
         # reasoning 阶段最常见的失败形态）→ 把预算翻倍重试一次。
@@ -711,13 +763,27 @@ class MyFunctionCallAgent(Agent):
                 "finish_reason=length 且响应为空，max_tokens %s→%s 重试",
                 current_budget, bumped_request["max_tokens"],
             )
-            response = self._stream_chat_completion(
-                client, bumped_request, on_text_chunk, on_reasoning_chunk, should_cancel=should_cancel)
+            with bind_context(provider=getattr(self.llm, 'provider', 'unknown'), attempt=2,
+                              retry_reason='empty_length_limit'):
+                response = self._stream_chat_completion(
+                    client, bumped_request, on_text_chunk, on_reasoning_chunk, should_cancel=should_cancel)
 
         return response
 
     @staticmethod
-    def _stream_chat_completion(
+    def _stream_chat_completion(client, base_request, on_text_chunk,
+                                on_reasoning_chunk=None, should_cancel=None):
+        with model_call(logger, model=base_request.get('model'), stage='agent',
+                        observation_scope='sdk') as fields:
+            response = MyFunctionCallAgent._stream_chat_completion_raw(
+                client, base_request, on_text_chunk, on_reasoning_chunk, should_cancel)
+            fields.update(response_metrics(response))
+            fields['cancelled'] = response._cancelled
+            response._model_call_id = fields['model_call_id']
+            return response
+
+    @staticmethod
+    def _stream_chat_completion_raw(
         client,
         base_request: Dict[str, Any],
         on_text_chunk: Optional[TextChunkCallback],
@@ -749,9 +815,11 @@ class MyFunctionCallAgent(Agent):
         finish_reason: Optional[str] = None
         usage = None  # 最后一帧的 usage,部分 provider 可能不返回
 
+        cancelled = False
         stream = client.chat.completions.create(**stream_request)
         for chunk in stream:
             if should_cancel is not None and should_cancel():
+                cancelled = True
                 break
             # usage 帧 (有的 provider 把它放在 choices 为空的最后一帧)
             chunk_usage = getattr(chunk, "usage", None)
@@ -823,6 +891,7 @@ class MyFunctionCallAgent(Agent):
         return SimpleNamespace(
             choices=[SimpleNamespace(message=message, finish_reason=finish_reason)],
             usage=usage,
+            _cancelled=cancelled,
         )
 
     @staticmethod

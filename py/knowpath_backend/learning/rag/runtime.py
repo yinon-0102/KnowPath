@@ -7,6 +7,7 @@ import os
 import math
 import time
 from copy import deepcopy
+from knowpath_backend.observability import context_fields, run_with_log_context, bind_context
 
 import httpx
 from qdrant_client import QdrantClient
@@ -37,6 +38,7 @@ class _Exchange:
         self.events = Queue(maxsize=2)
         self.cancelled = Event()
         self.identifier = None
+        self.log_context = context_fields()
 
     def send(self, event):
         while not self.cancelled.is_set():
@@ -124,7 +126,7 @@ class DeadlineTransport(httpx.BaseTransport):
             if not slots.acquire(timeout=max(0, deadline-time.monotonic())):
                 raise VerificationError('RAG_DEADLINE_EXCEEDED')
             try:
-                worker = Thread(target=self._run, args=(slots,), daemon=True, name='rag-http')
+                worker = Thread(target=run_with_log_context, args=({}, self._run, slots), daemon=True, name='rag-http')
                 worker.start()
                 self._started = True
             except BaseException:
@@ -140,44 +142,45 @@ class DeadlineTransport(httpx.BaseTransport):
                 except Empty:
                     continue
                 self._active = exchange
-                response = None
-                try:
-                    if self._stop.is_set() or exchange.cancelled.is_set() or time.monotonic() >= exchange.deadline:
-                        continue
-                    if transport is None:
-                        transport = httpx.HTTPTransport(retries=0)
-                    if self._stop.is_set() or exchange.cancelled.is_set() or time.monotonic() >= exchange.deadline:
-                        continue
-                    if self.spending is not None:
-                        self.spending.reserve(request)
-                    if self._stop.is_set() or exchange.cancelled.is_set() or time.monotonic() >= exchange.deadline:
-                        continue
-                    if self.journal:
-                        exchange.identifier = self.journal.begin_call(stage, billed=stage != 'retrieval')
-                    response = transport.handle_request(request)
-                    if exchange.cancelled.is_set() or time.monotonic() >= exchange.deadline:
-                        continue
-                    if response.is_stream_consumed:
-                        exchange.send(('response', response))
-                        continue
-                    if not exchange.send(('headers', response.status_code, response.headers, response.extensions)):
-                        continue
-                    for chunk in response.stream:
-                        if not exchange.send(('chunk', chunk)):
-                            break
-                    else:
-                        exchange.send(('end',))
-                except Exception as error:
-                    exchange.send(('error', error))
-                finally:
-                    # Only this owner touches the actual response/transport.
-                    # Slow close cannot delay the caller or create more threads.
-                    if response is not None:
-                        try:
-                            response.close()
-                        except Exception:
-                            pass
-                    self._active = None
+                with bind_context(**exchange.log_context):
+                    response = None
+                    try:
+                        if self._stop.is_set() or exchange.cancelled.is_set() or time.monotonic() >= exchange.deadline:
+                            continue
+                        if transport is None:
+                            transport = httpx.HTTPTransport(retries=0)
+                        if self._stop.is_set() or exchange.cancelled.is_set() or time.monotonic() >= exchange.deadline:
+                            continue
+                        if self.spending is not None:
+                            self.spending.reserve(request)
+                        if self._stop.is_set() or exchange.cancelled.is_set() or time.monotonic() >= exchange.deadline:
+                            continue
+                        if self.journal:
+                            exchange.identifier = self.journal.begin_call(stage, billed=stage != 'retrieval')
+                        response = transport.handle_request(request)
+                        if exchange.cancelled.is_set() or time.monotonic() >= exchange.deadline:
+                            continue
+                        if response.is_stream_consumed:
+                            exchange.send(('response', response))
+                            continue
+                        if not exchange.send(('headers', response.status_code, response.headers, response.extensions)):
+                            continue
+                        for chunk in response.stream:
+                            if not exchange.send(('chunk', chunk)):
+                                break
+                        else:
+                            exchange.send(('end',))
+                    except Exception as error:
+                        exchange.send(('error', error))
+                    finally:
+                        # Only this owner touches the actual response/transport.
+                        # Slow close cannot delay the caller or create more threads.
+                        if response is not None:
+                            try:
+                                response.close()
+                            except Exception:
+                                pass
+                        self._active = None
         finally:
             try:
                 if transport is not None:
@@ -300,7 +303,7 @@ class ConfiguredPipeline:
                 outcome.append((False, error))
             finally:
                 _REQUEST_SLOTS.release()
-        worker = Thread(target=execute, daemon=True, name='rag-request')
+        worker = Thread(target=run_with_log_context, args=(context_fields(), execute), daemon=True, name='rag-request')
         worker.start()
         worker.join(max(0, deadline-time.monotonic()))
         if worker.is_alive() or time.monotonic() >= deadline:

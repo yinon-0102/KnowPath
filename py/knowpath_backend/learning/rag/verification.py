@@ -7,6 +7,7 @@ import re
 import hashlib
 from copy import deepcopy
 from decimal import Decimal
+from knowpath_backend.observability import bind_context
 
 
 def numeric_values(text, *, known_ids=()):
@@ -723,8 +724,9 @@ class AnswerVerifier:
             raw = None
             try:
                 trace["generation_calls"] += 1
-                raw = _generate(self.generator, _messages(self.generator, data, 'generation', short_ids),
-                                deadline, WireDraft)
+                with bind_context(revision_index=attempt, stage_call_index=trace['generation_calls']):
+                    raw = _generate(self.generator, _messages(self.generator, data, 'generation', short_ids),
+                                    deadline, WireDraft)
                 diagnostic('generation', 'raw', raw)
                 # Stage the canonical checklist with the entire draft; failed
                 # citation or shape validation cannot commit new requirements.
@@ -802,8 +804,9 @@ class AnswerVerifier:
             try:
                 trace["verification_calls"] += 1
                 check_data = {**base_data, 'draft':draft.model_dump(exclude_none=True)}
-                raw = _generate(self.checker, _messages(self.checker, check_data, 'verification', short_ids),
-                                deadline, WireVerdict)
+                with bind_context(revision_index=attempt, stage_call_index=trace['verification_calls']):
+                    raw = _generate(self.checker, _messages(self.checker, check_data, 'verification', short_ids),
+                                    deadline, WireVerdict)
                 diagnostic('verification', 'raw', raw)
                 verdict = (_wire_verdict(raw, required, full_ids, sources) if _v2(self.checker)
                            else Verdict.model_validate(raw))

@@ -1,4 +1,5 @@
 from logging.config import fileConfig
+import logging
 import os
 from pathlib import Path
 
@@ -11,8 +12,10 @@ from knowpath_backend.learning.persistence.db import Base
 config = context.config
 backend = Path(config.config_file_name).resolve().parent if config.config_file_name else Path(__file__).resolve().parents[1]
 load_dotenv(backend / ".env", override=False)
-if config.config_file_name:
-    fileConfig(config.config_file_name)
+if config.config_file_name and not logging.getLogger().handlers:
+    # Programmatic migration callers own their handlers. CLI configuration
+    # must also preserve any application loggers imported before this script.
+    fileConfig(config.config_file_name, disable_existing_loggers=False)
 database_url = os.getenv("DATABASE_URL", "").strip()
 if database_url:
     config.set_main_option("sqlalchemy.url", database_url.replace("%", "%%"))

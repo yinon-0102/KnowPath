@@ -2,17 +2,21 @@
 from __future__ import annotations
 
 import math
+import logging
 import os
 import time
 
 import httpx
 
 from knowpath_backend.learning.config import LearningSettings
+from knowpath_backend.observability.actions import model_post
+from knowpath_backend.observability import observed
 from .model_services import _encoded_size, _remaining_timeout, _strict_json, _usage_fields
 from .retrieval import RetrievalError
 
 DEFAULT_RERANK_ENDPOINT = "https://dashscope.aliyuncs.com/api/v1/services/rerank/text-rerank/text-rerank"
 DEFAULT_RERANK_MODEL = "gte-rerank-v2"
+logger = logging.getLogger(__name__)
 
 
 class DashScopeReranker:
@@ -34,6 +38,7 @@ class DashScopeReranker:
         self.max_candidates, self.max_input_tokens = max_candidates, max_input_tokens
         self.last_usage = None
 
+    @observed('model.reranking')
     def rerank(self, query, chunks, *, deadline):
         self.last_usage = None
         started = time.monotonic()
@@ -62,7 +67,8 @@ class DashScopeReranker:
         try:
             try:
                 timeout = _remaining_timeout(deadline, self.settings.chat_timeout_seconds, RetrievalError)
-                response = client.post(self.endpoint, json=body, headers={"Authorization": f"Bearer {key}"},
+                response = model_post(logger, client, self.endpoint, provider='dashscope', model=self.model,
+                                       stage='reranking', json=body, headers={"Authorization": f"Bearer {key}"},
                                        timeout=timeout, follow_redirects=False)
                 response.raise_for_status()
             except (httpx.HTTPError, httpx.InvalidURL, ValueError, OSError):

@@ -1,9 +1,13 @@
 """Provider-neutral model ports and the default compatible DashScope adapter."""
 from contextlib import contextmanager
 import json
+import logging
 import os
 from typing import Protocol, Iterator
 import httpx
+from knowpath_backend.observability import observed, span, log_event, model_call, response_metrics, usage_metrics
+
+logger = logging.getLogger(__name__)
 
 
 class ModelError(Exception):
@@ -53,24 +57,39 @@ class DashScopeChatAdapter:
         return {"model": self.settings.chat_model, "enable_thinking": False, "messages": messages, **options}
 
     def _request(self, messages, **options):
+        with span(logger, 'model.http', provider=self.settings.chat_provider, model=self.settings.chat_model) as metrics:
+            return self._request_attempts(messages, metrics, **options)
+
+    def _request_attempts(self, messages, metrics, **options):
         headers = self._headers()
         with self._client() as client:
             for attempt in range(3):
+                metrics.update(attempt=attempt + 1, status_code=None)
                 try:
-                    response = client.post(self.settings.chat_base_url.rstrip("/") + "/chat/completions",
-                        json=self._body(messages, **options), headers=headers,
-                        timeout=self.settings.chat_timeout_seconds, follow_redirects=False)
-                    if response.status_code in {429, 500, 502, 503, 504} and attempt < 2:
-                        continue
-                    if response.status_code == 429:
-                        raise ModelError("RATE_LIMITED")
-                    response.raise_for_status()
-                    choice = response.json()["choices"][0]
-                    if not isinstance(choice, dict):
-                        raise ValueError()
-                    return choice
-                except (httpx.TimeoutException, httpx.NetworkError):
+                    with model_call(logger, provider=self.settings.chat_provider, model=self.settings.chat_model,
+                                    stage='generation', attempt=attempt + 1, observation_scope='http') as action:
+                        response = client.post(self.settings.chat_base_url.rstrip("/") + "/chat/completions",
+                            json=self._body(messages, **options), headers=headers,
+                            timeout=self.settings.chat_timeout_seconds, follow_redirects=False)
+                        metrics['status_code'] = response.status_code
+                        action['status_code'] = response.status_code
+                        if response.status_code in {429, 500, 502, 503, 504} and attempt < 2:
+                            log_event(logger, 'model.http.retry', level=logging.WARNING, attempt=attempt + 1,
+                                      status_code=response.status_code, provider=self.settings.chat_provider, model=self.settings.chat_model)
+                            continue
+                        if response.status_code == 429:
+                            raise ModelError("RATE_LIMITED")
+                        response.raise_for_status()
+                        payload = response.json()
+                        action.update(response_metrics(payload))
+                        choice = payload["choices"][0]
+                        if not isinstance(choice, dict):
+                            raise ValueError()
+                        return choice
+                except (httpx.TimeoutException, httpx.NetworkError) as exc:
                     if attempt < 2:
+                        log_event(logger, 'model.http.retry', level=logging.WARNING, exc=exc, attempt=attempt + 1,
+                                  provider=self.settings.chat_provider, model=self.settings.chat_model)
                         continue
                     raise ModelError("MODEL_UNAVAILABLE") from None
                 except (httpx.HTTPError, httpx.InvalidURL):
@@ -78,12 +97,14 @@ class DashScopeChatAdapter:
                 except (ValueError, KeyError, IndexError, TypeError):
                     raise ModelError("MODEL_INVALID_RESPONSE") from None
 
+    @observed('model.generate')
     def generate(self, messages, *, tools=None):
         result = self._request(messages, **({"tools": tools} if tools else {}))
         if result.get("finish_reason") not in {None, "stop", "tool_calls"} or not isinstance(result.get("message"), dict):
             raise ModelError("MODEL_INVALID_RESPONSE")
         return result["message"]
 
+    @observed('model.generate_json')
     def generate_json(self, messages):
         result = self._request(messages, response_format={"type": "json_object"})
         try:
@@ -97,12 +118,19 @@ class DashScopeChatAdapter:
             raise ModelError("MODEL_INVALID_RESPONSE") from None
 
     def stream(self, messages):
+        with span(logger, 'model.stream', provider=self.settings.chat_provider, model=self.settings.chat_model):
+            yield from self._stream(messages)
+
+    def _stream(self, messages):
         headers = self._headers()
         try:
-            with self._client() as client:
+            with self._client() as client, model_call(
+                    logger, provider=self.settings.chat_provider, model=self.settings.chat_model,
+                    stage='generation', streaming=True, observation_scope='http') as metrics:
                 with client.stream("POST", self.settings.chat_base_url.rstrip("/") + "/chat/completions",
-                                   json=self._body(messages, stream=True), headers=headers,
+                                   json=self._body(messages, stream=True, stream_options={"include_usage": True}), headers=headers,
                                    timeout=self.settings.chat_timeout_seconds, follow_redirects=False) as response:
+                    metrics['status_code'] = response.status_code
                     if response.status_code == 429:
                         raise ModelError("RATE_LIMITED")
                     response.raise_for_status()
@@ -113,7 +141,11 @@ class DashScopeChatAdapter:
                         if data == "[DONE]":
                             return
                         chunk = json.loads(data)
+                        if isinstance(chunk, dict) and chunk.get('usage') is not None:
+                            metrics.update(usage_metrics(chunk['usage']))
                         for choice in chunk.get("choices", []):
+                            if choice.get('finish_reason') in {'stop','tool_calls'}:
+                                metrics['finish_reason'] = choice['finish_reason']
                             if choice.get("finish_reason") not in {None, "stop", "tool_calls"}:
                                 raise ModelError("MODEL_INVALID_RESPONSE")
                             content = choice.get("delta", {}).get("content")

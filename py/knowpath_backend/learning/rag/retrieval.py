@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import json
 import math
 import os
@@ -13,6 +14,10 @@ import httpx
 from qdrant_client import QdrantClient, models
 
 from knowpath_backend.learning.config import LearningSettings
+from knowpath_backend.observability.actions import model_post
+from knowpath_backend.observability import observed
+
+logger = logging.getLogger(__name__)
 
 
 class RetrievalError(Exception):
@@ -68,6 +73,7 @@ class DashScopeEmbedder:
     def model_version(self):
         return self.settings.embedding_model
 
+    @observed('model.embedding')
     def embed(self, texts, *, query=False):
         self.last_usage = None
         started = time.monotonic()
@@ -89,7 +95,8 @@ class DashScopeEmbedder:
                 body = {"model": self.settings.embedding_model, "input": batch,
                         "dimensions": self.settings.embedding_dimension, "encoding_format": "float"}
                 try:
-                    response = client.post(base + "/embeddings", json=body,
+                    response = model_post(logger, client, base + "/embeddings", json=body,
+                        provider=self.settings.embedding_provider, model=self.model_version, stage='embedding',
                         headers={"Authorization": f"Bearer {key}"}, timeout=60.0, follow_redirects=False)
                     if response.status_code == 429:
                         raise RetrievalError("RATE_LIMITED")
