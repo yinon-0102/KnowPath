@@ -11,6 +11,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from ..config import LearningSettings
 from .contract import request_id_context
 from .errors import _error_response
+from .request_logging import RequestLoggingMiddleware
+from knowpath_backend.observability.events import record_http_error
 
 
 def install_middleware(app: FastAPI, settings: LearningSettings) -> None:
@@ -21,7 +23,7 @@ def install_middleware(app: FastAPI, settings: LearningSettings) -> None:
 
     @app.middleware("http")
     async def idempotency_guard(request: Request, call_next):
-        request_id = str(uuid4())
+        request_id = request_id_context.get() or str(uuid4())
         token = request_id_context.set(request_id)
         origin = request.headers.get("Origin")
         try:
@@ -36,7 +38,8 @@ def install_middleware(app: FastAPI, settings: LearningSettings) -> None:
             else:
                 try:
                     response = await call_next(request)
-                except Exception:
+                except Exception as exc:
+                    record_http_error('INTERNAL_ERROR', exc)
                     response = _error_response(500, "INTERNAL_ERROR", "服务内部错误，请提供 request_id 以便排查")
             response.headers["X-Request-ID"] = request_id
             if origin in settings.allowed_origins:
@@ -46,6 +49,8 @@ def install_middleware(app: FastAPI, settings: LearningSettings) -> None:
             return response
         finally:
             request_id_context.reset(token)
+
+    app.add_middleware(RequestLoggingMiddleware)
 
 
 def _requires_idempotency(path: str) -> bool:

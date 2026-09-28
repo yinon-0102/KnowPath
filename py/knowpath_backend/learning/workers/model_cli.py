@@ -1,8 +1,11 @@
 """Consume durable assessment/message jobs without resetting unrelated Runs."""
 import argparse
 import json
-import sys
+import logging
 import time
+
+from knowpath_backend.observability import configure_logging, shutdown_logging, log_event
+
 
 from dotenv import load_dotenv
 
@@ -10,6 +13,8 @@ from knowpath_backend.learning.persistence.db import create_db_engine
 from knowpath_backend.learning.workers.model_tasks import ModelTaskWorker
 from knowpath_backend.learning.persistence.material_repository import SqlAlchemyMaterialRepository
 from knowpath_backend.learning.state import LearningState
+
+logger = logging.getLogger(__name__)
 
 
 def main(argv=None):
@@ -30,6 +35,9 @@ def main(argv=None):
     if not 1 <= args.max_execution_seconds <= 3600:
         parser.error("--max-execution-seconds must be between 1 and 3600")
     load_dotenv()
+    configure_logging('model-worker')
+    failures = 0
+    ready = False
     engine = state = materials = None
     try:
         engine = create_db_engine()
@@ -38,13 +46,18 @@ def main(argv=None):
         worker = ModelTaskWorker(state.assessment_service, state.message_service,
                                  lease_seconds=args.lease_seconds, max_attempts=args.max_attempts,
                                  max_execution_seconds=args.max_execution_seconds)
+        ready = True
+        log_event(logger, 'worker.started', poll_seconds=args.poll_seconds)
         while True:
             try:
                 handled = worker.run_once()
-            except Exception:
-                # Provider/connection errors may contain credentials; keep stdout
-                # machine-readable and diagnostics independent of exception text.
-                print("MODEL_WORKER_STORAGE_UNAVAILABLE", file=sys.stderr)
+                if failures:
+                    log_event(logger, 'worker.poll.recovered', consecutive_failures=failures)
+                failures = 0
+            except Exception as exc:
+                failures += 1
+                if failures == 1 or failures % 15 == 0:
+                    log_event(logger, 'worker.poll.failed', level=logging.ERROR, exc=exc, consecutive_failures=failures)
                 if args.once:
                     return 1
                 handled = False
@@ -52,25 +65,33 @@ def main(argv=None):
                 print(json.dumps({"job_claimed": handled}))
                 return 0
             if not handled:
+                log_event(logger, 'worker.idle', level=logging.DEBUG)
                 time.sleep(args.poll_seconds)
     except KeyboardInterrupt:
         return 0
-    except Exception:
-        print("MODEL_WORKER_START_FAILED", file=sys.stderr)
+    except Exception as exc:
+        log_event(logger, 'worker.runtime.failed' if ready else 'worker.start.failed', level=logging.ERROR, exc=exc)
         return 1
     finally:
         try:
-            if state is not None:
-                close = getattr(state.message_service.retriever, "close", None)
-                if close is not None:
-                    close()
-        finally:
             try:
-                if materials is not None:
-                    materials.close()
+                if state is not None:
+                    close = getattr(state.message_service.retriever, "close", None)
+                    if close is not None:
+                        close()
             finally:
-                if engine is not None:
-                    engine.dispose()
+                try:
+                    if materials is not None:
+                        materials.close()
+                finally:
+                    if engine is not None:
+                        engine.dispose()
+        except Exception as exc:
+            log_event(logger, 'worker.shutdown.failed', level=logging.ERROR, exc=exc)
+            return 1
+        finally:
+            log_event(logger, 'worker.stopped')
+            shutdown_logging()
 
 
 if __name__ == "__main__":

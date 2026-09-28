@@ -1,6 +1,10 @@
 """Fenced graph.prepare consumer; preparers separately fence external writes."""
 from __future__ import annotations
 
+import logging
+from knowpath_backend.observability import job_observed, log_event, span
+
+
 import copy
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
@@ -8,6 +12,8 @@ from uuid import uuid4
 
 from knowpath_backend.learning.errors import DomainNotFound, DomainConflict
 from knowpath_backend.learning.knowledge.reconciliation import digest
+
+logger = logging.getLogger(__name__)
 
 
 class LeaseLost(Exception):
@@ -116,6 +122,10 @@ class GraphWorker:
 
     def _fail(self, event, revision, *, terminal=False, error_code="GRAPH_PREPARATION_FAILED"):
         terminal = terminal or event["attempts"] >= self.max_attempts
+        log_event(logger, 'worker.failure.requested', level=logging.ERROR if terminal else logging.WARNING,
+                  job_id=event['id'], run_id=revision['run_id'], terminal=terminal, error_code=error_code,
+                  attempt=event['attempts'], max_attempts=self.max_attempts,
+                  backoff_seconds=None if terminal else min(300, 2 ** min(event['attempts'], 8)))
         event.update(status="failed" if terminal else "pending", lease_token=None, lease_until=None,
                      available_at=None if terminal else (self.clock() + timedelta(seconds=min(300, 2 ** min(event["attempts"], 8)))).isoformat())
         self.repository.put_record("outbox", event)
@@ -127,6 +137,7 @@ class GraphWorker:
                 correction["status"] = "failed"
                 self.repository.put_record("corrections", correction)
 
+    @job_observed
     def execute(self, claimed):
         def heartbeat():
             if not self.heartbeat(claimed):
@@ -136,7 +147,8 @@ class GraphWorker:
             revision = self.repository.get_record("graph_revisions", claimed["aggregate_id"], lock=False)
             if digest(revision["snapshot"]) != revision["snapshot_hash"]:
                 raise ValueError("invalid immutable snapshot")
-            receipt = self.preparer.prepare(preparation_manifest(revision), heartbeat)
+            with span(logger, 'graph.prepare'):
+                receipt = self.preparer.prepare(preparation_manifest(revision), heartbeat)
             if not receipt_valid(revision, receipt):
                 raise ValueError("invalid preparation receipt")
             with self._locked(claimed["id"]) as (event, current):
@@ -166,6 +178,7 @@ class GraphWorker:
         except (LeaseLost, DomainNotFound):
             return False
         except Exception as exc:
+            log_event(logger, 'worker.processing.failed', level=logging.WARNING, exc=exc)
             # Never expose provider messages, URLs, credentials or source text.
             try:
                 with self._locked(claimed["id"]) as (event, revision):

@@ -10,8 +10,12 @@ from threading import Event, Thread
 from time import monotonic as monotonic_time
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
+import logging
 
 from knowpath_backend.learning.errors import DomainNotFound
+from knowpath_backend.observability import context_fields, job_observed, log_event
+
+logger = logging.getLogger(__name__)
 
 EVENTS = {"assessment.generate": "assessments", "message.generate": "messages"}
 TRANSIENT_ERRORS = frozenset({"MODEL_UNAVAILABLE", "EMBEDDING_UNAVAILABLE", "VECTOR_UNAVAILABLE", "VECTOR_INDEX_NOT_READY", "RATE_LIMITED"})
@@ -24,6 +28,8 @@ def enqueue(repository, kind, resource):
              "status": "pending", "attempts": 0, "lease_token": None,
              "lease_until": None, "available_at": None,
              "created_at": datetime.now(timezone.utc).isoformat()}
+    if context_fields().get('request_id'):
+        event['payload']['request_id'] = context_fields()['request_id']
     repository.put_record("outbox", event)
     return event["id"]
 
@@ -127,7 +133,9 @@ class ModelLease:
             try:
                 if not self.renew():
                     return
-            except Exception:
+            except Exception as exc:
+                log_event(logger, 'worker.lease.renewal_failed', level=logging.WARNING, exc=exc,
+                          job_id=self.event['id'], run_id=self.event['payload']['run_id'])
                 # Storage errors can contain credentials. Stop renewing and
                 # discard output; lease expiry allows a healthy worker to retry.
                 self.lost.set()
@@ -172,6 +180,9 @@ class ModelJob:
         event.update(status="pending", lease_token=None, lease_until=None,
                      available_at=(self.worker.clock() + timedelta(seconds=min(300, 2 ** min(event["attempts"], 9)))).isoformat())
         self.worker.repository.put_record("outbox", event)
+        log_event(logger, 'worker.retry.requested', level=logging.WARNING, error_code=error['code'],
+                  attempt=event['attempts'], max_attempts=self.worker.max_attempts,
+                  backoff_seconds=min(300, 2 ** min(event['attempts'], 9)))
         return True
 
     def settle(self):
@@ -275,6 +286,8 @@ class ModelTaskWorker:
                     event.update(status="failed", lease_token=None, lease_until=None)
                     event["payload"]["last_error"] = error
                     self.repository.put_record("outbox", event)
+                    log_event(logger, 'worker.retry.exhausted', level=logging.ERROR, job_id=event['id'],
+                              run_id=run['id'], attempt=event['attempts'], error_code=error['code'])
                     return None
                 if run["status"] == "queued":
                     self.runs.start(run["id"])
@@ -301,6 +314,7 @@ class ModelTaskWorker:
             event.update(status="cancelled", lease_token=None, lease_until=None, available_at=None)
             self.repository.put_record("outbox", event)
 
+    @job_observed
     def execute(self, event):
         lease = ModelLease(self, event)
         job = ModelJob(self, event, lease)

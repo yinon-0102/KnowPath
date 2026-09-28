@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+import logging
+from knowpath_backend.observability import log_event, span
+
 
 from fastapi import FastAPI
 
@@ -22,6 +25,8 @@ from .errors import install_error_handlers
 from .middleware import install_middleware
 from .routers import health, materials, graphs, runs, spaces, assessments, plans_sessions, messages, knowledge, exports
 from .routers import diagnostics, evolution, plan_comparisons, policy_replays
+
+logger = logging.getLogger(__name__)
 
 
 def create_app(
@@ -52,16 +57,19 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(app):
+        log_event(logger, 'api.started')
         try:
             yield
         finally:
-            close_store = getattr(service.repository, 'close', None)
-            if close_store is not None:
-                close_store()
-            if source_retriever is None:
-                close = getattr(state.message_service.retriever, "close", None)
-                if close is not None:
-                    close()
+            with span(logger, 'api.shutdown'):
+                close_store = getattr(service.repository, 'close', None)
+                if close_store is not None:
+                    close_store()
+                if source_retriever is None:
+                    close = getattr(state.message_service.retriever, "close", None)
+                    if close is not None:
+                        close()
+            log_event(logger, 'api.stopped')
 
     app = FastAPI(title="Keel Learning", version="0.1.0", lifespan=lifespan)
     app.state.learning_state = state

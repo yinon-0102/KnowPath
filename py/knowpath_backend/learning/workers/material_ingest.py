@@ -1,6 +1,10 @@
 """Durable original-file parsing with fenced atomic graph handoff."""
 from __future__ import annotations
 
+import logging
+from knowpath_backend.observability import job_observed, log_event, span
+
+
 import copy
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
@@ -9,6 +13,8 @@ from uuid import uuid4
 
 from knowpath_backend.learning.errors import DomainNotFound
 from knowpath_backend.learning.materials.service import MaterialParser, MaterialParseError
+
+logger = logging.getLogger(__name__)
 
 
 class MaterialParseWorker:
@@ -85,6 +91,10 @@ class MaterialParseWorker:
 
     def _fail(self, event, material, version, *, terminal=False, code="MATERIAL_PARSE_FAILED"):
         terminal = terminal or event["attempts"] >= self.max_attempts
+        log_event(logger, 'worker.failure.requested', level=logging.ERROR if terminal else logging.WARNING,
+                  job_id=event['id'], run_id=event['payload']['run_id'], terminal=terminal, error_code=code,
+                  attempt=event['attempts'], max_attempts=self.max_attempts,
+                  backoff_seconds=None if terminal else min(300, 2 ** min(event['attempts'], 8)))
         event.update(status="failed" if terminal else "pending", lease_token=None, lease_until=None,
             available_at=None if terminal else (self.clock() + timedelta(seconds=min(300, 2 ** min(event["attempts"], 8)))).isoformat())
         self.repository.put_record("outbox", event)
@@ -93,6 +103,7 @@ class MaterialParseWorker:
             self.graph.runs.fail(event["payload"]["run_id"], {"code": code,
                 "message": "资料解析失败，请检查原文件后重试", "details": {}, "retryable": code == "MATERIAL_PARSE_FAILED"})
 
+    @job_observed
     def execute(self, claimed):
         try:
             with self._locked(claimed["id"]) as (event, material, version):
@@ -103,7 +114,9 @@ class MaterialParseWorker:
             content = self.graph.materials.get_raw(claimed["aggregate_id"])
             if content is None or sha256(content).hexdigest() != content_hash or content_hash != claimed["payload"]["content_hash"]:
                 raise MaterialParseError("original unavailable", code="MATERIAL_SOURCE_MISSING")
-            chunks = self.parser.parse(content, filename=filename)
+            with span(logger, 'material.parse', input_bytes=len(content)) as metrics:
+                chunks = self.parser.parse(content, filename=filename)
+                metrics['chunk_count'] = len(chunks)
             with self._locked(claimed["id"]) as (event, material, version):
                 if not self._owned(event, claimed) or self._cancelled(event, material, version):
                     return False
@@ -121,6 +134,7 @@ class MaterialParseWorker:
         except DomainNotFound:
             return False
         except Exception as exc:
+            log_event(logger, 'worker.processing.failed', level=logging.WARNING, exc=exc)
             try:
                 with self._locked(claimed["id"]) as (event, material, version):
                     if self._owned(event, claimed) and not self._cancelled(event, material, version):

@@ -6,11 +6,13 @@ from uuid import uuid4
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastapi.routing import APIRoute
+from knowpath_backend.observability.events import record_http_error
 
 request_id_context = ContextVar("learning_request_id", default=None)
 
 
 def error_response(status_code, code, message, details=None):
+    record_http_error(code)
     return JSONResponse(status_code=status_code, content={"error": {
         "code": code, "message": message, "details": details or {},
         "retryable": status_code >= 500, "request_id": request_id_context.get() or str(uuid4())}})

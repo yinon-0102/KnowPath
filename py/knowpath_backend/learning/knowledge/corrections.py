@@ -1,4 +1,6 @@
 """Append-only correction candidates and explicit, durable publication requests."""
+from knowpath_backend.observability.events import origin_fields
+
 import copy
 from uuid import uuid4
 from knowpath_backend.learning.knowledge.correction_schemas import CreateCorrection, ConfirmCorrection
@@ -133,6 +135,6 @@ class CorrectionService:
             self.repository.put_record('outbox', {'id': str(uuid4()), 'aggregate_type': 'graph_revision',
                 'aggregate_id': revision['id'], 'event_type': 'graph.prepare', 'status': 'pending',
                 'payload': {'material_id': revision['material_id'], 'space_id': space_id, 'correction_id': correction_id,
-                            'snapshot_hash': revision['snapshot_hash']}, 'created_at': now()})
+                            'run_id': correction['run_id'], **origin_fields(), 'snapshot_hash': revision['snapshot_hash']}, 'created_at': now()})
             return {'run_id': correction['run_id'], 'status': 'queued', 'candidate_revision_id': revision['id']}
         return self.commands._execute('correction.confirm', space_id, {'correction_id': correction_id, **payload}, key, change)

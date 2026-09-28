@@ -1,6 +1,9 @@
 """Durable source-bound messages; model I/O occurs outside database locks."""
 import copy
 import re
+import logging
+from knowpath_backend.observability import log_event, span
+
 from uuid import uuid4
 
 from knowpath_backend.learning.errors import DomainConflict, DomainNotFound
@@ -14,6 +17,8 @@ from knowpath_backend.learning.config import LearningSettings
 from knowpath_backend.learning.conversations.context import bound_snapshot, project_memory, delivery_source_refs, message_source_refs
 from knowpath_backend.learning.rag.verification import VerificationError, safe_error_details
 from knowpath_backend.learning.materials.source_access import SourceAccessService, AssistanceDeliveryChanged
+
+logger = logging.getLogger(__name__)
 
 
 def uid():
@@ -237,13 +242,19 @@ class MessageService:
         except LeaseLost:
             raise
         except VerificationError as exc:
+            log_event(logger, 'message.generation.failed', level=logging.WARNING, exc=exc, error_code=exc.code,
+                      message_id=identifier, run_id=current['run_id'], space_id=current['space_id'])
             error = exc.code
             error_details = safe_error_details(exc.details)
             from knowpath_backend.learning.rag.diagnostics import safe_journal_snapshot
             snapshot['rag_failure_journal'] = safe_journal_snapshot(getattr(exc, 'call_journal', None))
         except (MessageGenerationError, RetrievalError) as exc:
+            log_event(logger, 'message.generation.failed', level=logging.WARNING, exc=exc, error_code=exc.code,
+                      message_id=identifier, run_id=current['run_id'], space_id=current['space_id'])
             error = exc.code
-        except Exception:
+        except Exception as exc:
+            log_event(logger, 'message.generation.failed', level=logging.ERROR, exc=exc, error_code='MODEL_UNAVAILABLE',
+                      message_id=identifier, run_id=current['run_id'], space_id=current['space_id'])
             # Custom providers must not leak request/credential details.
             error = "MODEL_UNAVAILABLE"
         self._publish_answer(initial, identifier, snapshot, text if error is None else None,
@@ -255,7 +266,8 @@ class MessageService:
         retriever = KeywordRetriever() if snapshot["hint"] else self.retriever
         retrieval_sources = snapshot.get("retrieval_sources", snapshot["sources"])
         try:
-            selected = retriever.select(snapshot["message"], copy.deepcopy(retrieval_sources), limit=8)
+            with span(logger, 'message.retrieve', message_id=identifier):
+                selected = retriever.select(snapshot["message"], copy.deepcopy(retrieval_sources), limit=8)
         except RetrievalError:
             raise
         except Exception:

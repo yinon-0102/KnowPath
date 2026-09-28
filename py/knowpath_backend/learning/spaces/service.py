@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import copy
 import json
+import logging
 from datetime import datetime, timezone
 from hashlib import sha256
 from uuid import uuid4
@@ -11,6 +12,9 @@ from sqlalchemy.exc import IntegrityError, OperationalError
 
 from knowpath_backend.learning.errors import DomainConflict, DomainNotFound
 from knowpath_backend.learning.knowledge.relations import structural_topics, apply_prerequisites
+from knowpath_backend.observability import bind_context, span, log_event
+
+logger = logging.getLogger(__name__)
 
 
 def now():
@@ -28,6 +32,13 @@ class SpaceService:
         self.graphs = None
 
     def _execute(self, operation, space_id, payload, key, change):
+        with bind_context(operation=operation, resource_id=space_id), span(logger, 'command') as details:
+            result = self._execute_command(operation, space_id, payload, key, change)
+            if isinstance(result, dict):
+                details.update({name: result[name] for name in ('id', 'run_id', 'assessment_id', 'session_id', 'message_id') if name in result})
+            return result
+
+    def _execute_command(self, operation, space_id, payload, key, change):
         fingerprint = sha256(json.dumps([operation, space_id, payload], sort_keys=True,
                                         separators=(",", ":"), ensure_ascii=False).encode()).hexdigest()
         for attempt in range(3):
@@ -36,6 +47,7 @@ class SpaceService:
                     if key:
                         replay = self.repository.replay(key, fingerprint)
                         if replay is not None:
+                            log_event(logger, 'command.replayed', level=logging.DEBUG)
                             return replay
                     result = change()
                     if key:
@@ -55,6 +67,8 @@ class SpaceService:
             except OperationalError as exc:
                 if attempt == 2 or not exc.orig.args or exc.orig.args[0] not in {1205, 1213}:
                     raise
+                log_event(logger, 'command.database.retry', level=logging.WARNING,
+                          attempt=attempt + 1, error_code=exc.orig.args[0])
         raise AssertionError("unreachable")
 
     def create(self, payload, key=None, *, require_published=False):

@@ -6,6 +6,9 @@ import base64
 from datetime import datetime, timezone
 from hashlib import sha256
 import json
+import logging
+from knowpath_backend.observability import span
+
 from uuid import uuid4
 
 from knowpath_backend.learning.assessments.schemas import CreateAssessment, RecordAttempt, FinalizeAssessment, ResetState
@@ -20,6 +23,8 @@ from knowpath_backend.learning.assessments.generation import DashScopeQuestionGe
 from knowpath_backend.learning.spaces.service import SpaceService, now
 from knowpath_backend.learning.materials.source_access import apply_source_assistance
 from knowpath_backend.learning.workers.model_tasks import ModelTaskWorker, TRANSIENT_ERRORS, enqueue
+
+logger = logging.getLogger(__name__)
 
 
 def uid():
@@ -120,8 +125,10 @@ class AssessmentService:
         snapshot = assessment["snapshot"]
         error = None
         try:
-            raw = self.generator.generate(snapshot["topics"], snapshot["request"])
-            questions = validate_questions(raw, snapshot["topics"], snapshot["request"])
+            with span(logger, 'assessment.generate', assessment_id=assessment_id) as metrics:
+                raw = self.generator.generate(snapshot["topics"], snapshot["request"])
+                questions = validate_questions(raw, snapshot["topics"], snapshot["request"])
+                metrics['question_count'] = len(questions)
         except QuestionGenerationError as exc:
             error = {"code": exc.code, "message": str(exc), "details": {}, "retryable": exc.code in TRANSIENT_ERRORS}
         except Exception:

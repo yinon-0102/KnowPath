@@ -1,6 +1,12 @@
 """Transactional material erasure and a durable, idempotent external cleanup job."""
 from __future__ import annotations
 
+import logging
+from knowpath_backend.observability import job_observed, log_event
+
+
+from knowpath_backend.observability.events import origin_fields
+
 import copy
 import re
 from datetime import datetime, timedelta, timezone
@@ -15,6 +21,8 @@ from knowpath_backend.learning.assessments.mastery import aggregate
 from knowpath_backend.learning.materials.schemas import DeleteMaterial
 from knowpath_backend.learning.workers.model_tasks import EVENTS as MODEL_EVENTS
 from knowpath_backend.learning.spaces.service import SpaceService, now
+
+logger = logging.getLogger(__name__)
 
 
 def references(value, material_id):
@@ -194,7 +202,7 @@ class MaterialDeletionService:
             self.materials.delete_material(material_id)
             run = self.runs.create('material_delete')
             event = {'id': str(uuid4()), 'event_type': 'material.delete', 'aggregate_type': 'material',
-                     'aggregate_id': material_id, 'payload': {'material_id': material_id, 'run_id': run['id'],
+                     'aggregate_id': material_id, 'payload': {'material_id': material_id, 'run_id': run['id'], **origin_fields(),
                          'revision_ids': [r['id'] for r in histories], 'collections': sorted(collections),
                          **({'raw_objects': raw_objects} if raw_objects else {}),
                          **rag_cleanup}, 'status': 'pending', 'attempts': 0,
@@ -239,6 +247,7 @@ class MaterialDeletionWorker:
                 self.service.runs.start(event['payload']['run_id'])
             return copy.deepcopy(event)
 
+    @job_observed
     def execute(self, claimed):
         succeeded = False
         try:
@@ -255,8 +264,8 @@ class MaterialDeletionWorker:
             if objects:
                 self.service.materials.delete_raw_objects(objects)
             succeeded = True
-        except Exception:
-            pass  # Persist retry metadata, never credentials or source content.
+        except Exception as exc:
+            log_event(logger, 'material.cleanup.failed', level=logging.WARNING, exc=exc)
         with self.repository.transaction():
             event = self.repository.get_record('outbox', claimed['id'])
             if event['status'] != 'processing' or event['lease_token'] != claimed['lease_token']:

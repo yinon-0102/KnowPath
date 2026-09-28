@@ -1,6 +1,8 @@
 """Durable graph candidates, reviewed publication and pinned snapshot reads."""
 from __future__ import annotations
 
+from knowpath_backend.observability.events import origin_fields
+
 import copy
 import json
 from dataclasses import replace
@@ -123,7 +125,7 @@ class GraphReconciliationService:
         self.repository.put_record("outbox", {"id": str(uuid4()), "aggregate_type": "material_version",
             "aggregate_id": version_id, "event_type": "material.parse", "status": "pending", "created_at": now(),
             "payload": {"material_id": material_id, "material_version_id": version_id,
-                        "run_id": run["id"], "content_hash": version.content_hash}})
+                        "run_id": run["id"], **origin_fields(), "content_hash": version.content_hash}})
         return {"run_id": run["id"], "status": "queued", "candidate_revision_id": None}
 
     def reconcile(self, material_id, payload, key):
@@ -165,7 +167,7 @@ class GraphReconciliationService:
         self.repository.put_record("outbox", {"id": str(uuid4()), "aggregate_type": "graph_revision",
             "aggregate_id": revision_id, "event_type": "graph.prepare", "status": "pending", "created_at": timestamp,
             "payload": {"revision_id": revision_id, "material_id": material_id, "material_version_id": version.id,
-                        "run_id": run["id"], "snapshot_hash": revision["snapshot_hash"]}})
+                        "run_id": run["id"], **origin_fields(), "snapshot_hash": revision["snapshot_hash"]}})
         return self._response(revision)
 
     def diff(self, material_id, revision_id=None, include_unchanged=False):
