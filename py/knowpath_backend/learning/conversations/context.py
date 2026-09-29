@@ -9,6 +9,7 @@ from knowpath_backend.memory.item import MemoryItem
 from knowpath_backend.memory.summary import SummaryMemory
 from knowpath_backend.learning.materials.source_access import original_source_refs
 from knowpath_backend.learning.errors import DomainConflict
+from .document_scope import filter_document_sources
 
 
 def _excerpt(text, limit=320):
@@ -25,15 +26,21 @@ def _relevant_excerpt(text, query, limit=600):
     return max(windows, key=lambda part: bigram_relevance(part.casefold(), query.casefold()))
 
 
-def project_memory(rows, space, conversation_id, query):
+def project_memory(rows, space, conversation_id, query, *, request_scope=None):
     """Only original completed turns enter the index; projections never recurse."""
     eligible = [r for r in rows if r["space_id"] == space["id"] and r["status"] == "completed"
                 and r.get("response") and r["snapshot"].get("scope_version") == space["scope_version"]
                 and r["snapshot"].get("bindings") == space["bindings"]]
+    if request_scope is not None:
+        eligible = [r for r in eligible if (
+            r['snapshot'].get('request_scope', {}).get('request_scope_id') == request_scope['request_scope_id']
+            or ('request_scope' not in r['snapshot'] and request_scope['mode'] == 'all'))]
     source_refs, safe = {}, []
     for row in eligible:
         try:
-            message_source_refs(row, eligible, memo=source_refs)
+            refs = message_source_refs(row, eligible, memo=source_refs)
+            if request_scope is not None and filter_document_sources(refs, request_scope) != refs:
+                continue
             safe.append(row)
         except DomainConflict:
             # Old context with missing provenance must not silently enter a

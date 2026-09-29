@@ -60,7 +60,7 @@ class MessageService:
                 if message["status"] in {"pending", "generating"} and self.runs.get(message["run_id"])["status"] in ACTIVE_STATUSES:
                     raise DomainConflict("MESSAGE_IN_PROGRESS", "该会话已有生成中的消息")
             context = project_memory(self.repository.records("messages", space_id=space_id),
-                                     space, conversation["id"], payload["message"])
+                                     space, conversation["id"], payload["message"], request_scope=request_scope)
             hint = self._hint(assessments, payload["message"])
             run = self.runs.create("message", status="queued" if durable else "running")
             identifier = uid()
@@ -254,6 +254,7 @@ class MessageService:
                 text, citations, snapshot = self._legacy_answer(identifier, snapshot, job=job)
                 if text is None:
                     return
+                answer_status = snapshot.get('query_status')
         except LeaseLost:
             raise
         except VerificationError as exc:
@@ -277,6 +278,14 @@ class MessageService:
                              error_details=error_details, job=job)
 
     def _legacy_answer(self, identifier, snapshot, *, job=None):
+        if snapshot.get('request_scope', {}).get('mode') == 'selected' and not snapshot['hint']:
+            from knowpath_backend.learning.rag.queries import prepare_query
+            prepared = prepare_query(snapshot['message'], snapshot.get('history', []))
+            if prepared['status'] == 'clarify':
+                snapshot = {**snapshot, 'sources': [], 'query_status': 'clarify'}
+                if not self._record_sources(identifier, snapshot, job=job):
+                    return None, None, snapshot
+                return '请明确本轮问题指向的对象或资料范围。', [], snapshot
         # Active assessment hints remain deterministic and require no provider.
         retriever = KeywordRetriever() if snapshot["hint"] else self.retriever
         retrieval_sources = snapshot.get("retrieval_sources", snapshot["sources"])
