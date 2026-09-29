@@ -19,7 +19,7 @@ class ModelError(Exception):
 class ChatModel(Protocol):
     def generate(self, messages: list[dict], *, tools=None) -> dict: ...
     def generate_json(self, messages: list[dict]) -> dict: ...
-    def stream(self, messages: list[dict]) -> Iterator[str]: ...
+    def stream(self, messages: list[dict], *, response_format=None) -> Iterator[str]: ...
 
 
 class EmbeddingModel(Protocol):
@@ -117,18 +117,19 @@ class DashScopeChatAdapter:
         except (ValueError, KeyError, TypeError):
             raise ModelError("MODEL_INVALID_RESPONSE") from None
 
-    def stream(self, messages):
+    def stream(self, messages, *, response_format=None):
         with span(logger, 'model.stream', provider=self.settings.chat_provider, model=self.settings.chat_model):
-            yield from self._stream(messages)
+            yield from self._stream(messages, response_format=response_format)
 
-    def _stream(self, messages):
+    def _stream(self, messages, *, response_format=None):
         headers = self._headers()
         try:
             with self._client() as client, model_call(
                     logger, provider=self.settings.chat_provider, model=self.settings.chat_model,
                     stage='generation', streaming=True, observation_scope='http') as metrics:
                 with client.stream("POST", self.settings.chat_base_url.rstrip("/") + "/chat/completions",
-                                   json=self._body(messages, stream=True, stream_options={"include_usage": True}), headers=headers,
+                                   json=self._body(messages, stream=True, stream_options={"include_usage": True},
+                                                   **({"response_format": response_format} if response_format else {})), headers=headers,
                                    timeout=self.settings.chat_timeout_seconds, follow_redirects=False) as response:
                     metrics['status_code'] = response.status_code
                     if response.status_code == 429:

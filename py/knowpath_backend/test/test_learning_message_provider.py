@@ -4,7 +4,7 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 from knowpath_backend.learning.api import create_app
-from knowpath_backend.learning.conversations.generation import DashScopeAnswerGenerator, MessageGenerationError, validate_answer
+from knowpath_backend.learning.conversations.generation import DashScopeAnswerGenerator, MessageGenerationError, validate_answer, partial_json_text
 from knowpath_backend.test.test_learning_messages import FixedAnswer
 
 
@@ -25,6 +25,30 @@ def test_provider_request_and_source_validation(monkeypatch):
         raw = DashScopeAnswerGenerator(client=client).generate(snapshot())
     text, refs = validate_answer(raw, snapshot()["sources"])
     assert text == "Explanation" and "text" not in refs[0]
+
+
+def test_provider_streams_text_before_json_is_complete(monkeypatch):
+    monkeypatch.setenv("DASHSCOPE_API_KEY", "test-secret")
+    payload = json.dumps({"text": "逐步回答", "citation_ids": ["chunk-1"]}, ensure_ascii=False)
+    chunks = [payload[:12], payload[12:18], payload[18:]]
+    def handle(request):
+        assert json.loads(request.content)["stream"] is True
+        body = ''.join(f'data: {json.dumps({"choices":[{"delta":{"content": chunk}}]})}\n\n' for chunk in chunks)
+        return httpx.Response(200, headers={"content-type": "text/event-stream"}, content=(body + "data: [DONE]\n\n").encode())
+    seen = []
+    with httpx.Client(transport=httpx.MockTransport(handle)) as client:
+        raw = DashScopeAnswerGenerator(client=client).stream(snapshot(), on_text=seen.append)
+    assert raw["text"] == "逐步回答"
+    assert ''.join(seen) == "逐步回答"
+
+
+@pytest.mark.parametrize("raw,expected", [
+    ('{"text":"abc', "abc"),
+    ('{"text":"a\\n', "a\n"),
+    ('{"text":"中文", "citation_ids":', "中文"),
+])
+def test_partial_json_text_decodes_available_text(raw, expected):
+    assert partial_json_text(raw) == expected
 
 
 @pytest.mark.parametrize("response", [httpx.Response(401, text="test-secret"), httpx.Response(302, headers={"location": "https://example.invalid/steal"})])

@@ -13,6 +13,13 @@ class FixedAnswer:
         return {"text": "Functions group reusable behavior.", "citation_ids": [snapshot["sources"][0]["chunk_id"]]}
 
 
+class StreamingAnswer(FixedAnswer):
+    def stream(self, snapshot, on_text):
+        for part in ("流", "式回", "答"):
+            on_text(part)
+        return {"text": "流式回答", "citation_ids": [snapshot["sources"][0]["chunk_id"]]}
+
+
 def service(factory):
     state = factory()
     generator = FixedAnswer()
@@ -54,6 +61,19 @@ def test_message_rejects_invented_citations_without_publishing_text(workspace):
     assert run["status"] == "failed"
     assert run["error"]["code"] == "MESSAGE_VALIDATION_FAILED"
     assert not any(e["event"].startswith("message.") for e in run["events"])
+
+
+def test_legacy_message_persists_stream_deltas_before_completion(workspace):
+    factory, space_id, _, _ = workspace
+    state = factory()
+    state.message_service.generator = StreamingAnswer()
+    response = state.send_message(space_id, {"message": "Explain functions"})
+    events = factory().get_run(response["run_id"])["events"]
+    names = [event["event"] for event in events]
+    assert "message.delta" in names and names.index("message.delta") < names.index("message.completed")
+    deltas = [event for event in events if event["event"] == "message.delta"]
+    assert "".join(event["data"]["delta"] for event in deltas) == "流式回答"
+    assert all(event["data"]["provisional"] is True for event in deltas)
 
 
 def test_message_scope_change_discards_model_output(workspace):
