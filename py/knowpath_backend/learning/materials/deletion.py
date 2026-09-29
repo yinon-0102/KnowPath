@@ -117,6 +117,15 @@ class MaterialDeletionService:
             snapshot['history'] = []
             snapshot.pop('memory', None)
             snapshot.pop('context_report', None)
+            # A selection is an immutable historical boundary. Erasure
+            # invalidates it; never silently reinterpret its remainder as all.
+            if 'request_scope' in snapshot:
+                snapshot.pop('request_scope')
+                snapshot['request_scope_invalidated'] = True
+            if isinstance(snapshot.get('rag_trace'), dict):
+                snapshot['rag_trace'].pop('request_scope', None)
+            if isinstance(message.get('response'), dict):
+                message['response'].pop('request_scope', None)
             if message['status'] in {'pending', 'generating'}:
                 self._cancel_generation(message)
                 message.update(status='cancelled', response=None)
