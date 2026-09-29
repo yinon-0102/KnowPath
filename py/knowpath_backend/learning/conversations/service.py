@@ -161,9 +161,12 @@ class MessageService:
             return self.runs.get(run_id) if include_run else self.runs.events_for(run_id, after_id=after_id)
         def has_help(value):
             events = value["events"] if include_run else value
-            return any(event["event"] in {"message.delta", "message.completed"}
-                       and event.get("data") and (event["data"].get("text") or event["data"].get("delta"))
-                       for event in events)
+            def disclosed(event):
+                data = event.get("data") or {}
+                if event["event"] == "message.completed":
+                    return bool(data.get("text"))
+                return event["event"] == "message.delta" and not data.get("provisional") and bool(data.get("delta"))
+            return any(disclosed(event) for event in events)
         def sources(message):
             snapshot = message["snapshot"]
             originals = (self.repository.records("messages", space_id=message["space_id"], lock=False)
@@ -251,7 +254,9 @@ class MessageService:
                     return
                 text, citations, answer_status = result["text"], result["citations"], result["status"]
             else:
-                text, citations, snapshot = self._legacy_answer(identifier, snapshot, job=job)
+                on_delta = lambda delta: self.runs.append_event(
+                    current["run_id"], "message.delta", {"delta": delta, "provisional": True})
+                text, citations, snapshot = self._legacy_answer(identifier, snapshot, job=job, on_delta=on_delta)
                 if text is None:
                     return
                 answer_status = snapshot.get('query_status')
@@ -277,7 +282,7 @@ class MessageService:
                              citations if error is None else None, error, answer_status,
                              error_details=error_details, job=job)
 
-    def _legacy_answer(self, identifier, snapshot, *, job=None):
+    def _legacy_answer(self, identifier, snapshot, *, job=None, on_delta=None):
         if (snapshot.get('request_scope', {}).get('mode') == 'selected' or snapshot.get('context_scope_changed')) and not snapshot['hint']:
             from knowpath_backend.learning.rag.queries import prepare_query
             prepared = prepare_query(snapshot['message'], snapshot.get('history', []))
@@ -310,7 +315,10 @@ class MessageService:
             raw = {"text": "先在引用资料中定位相关概念，列出题目的已知条件，再逐步检查自己的推理。这里提供学习提示，不直接给出活动测验答案。",
                    "citation_ids": [snapshot["sources"][0]["chunk_id"]]}
         else:
-            raw = self.generator.generate(copy.deepcopy(snapshot))
+            if on_delta is not None and hasattr(self.generator, "stream"):
+                raw = self.generator.stream(copy.deepcopy(snapshot), on_text=on_delta)
+            else:
+                raw = self.generator.generate(copy.deepcopy(snapshot))
         text, citations = validate_answer(raw, snapshot["sources"])
         return text, citations, snapshot
 
@@ -405,8 +413,11 @@ class MessageService:
                         response['request_scope'] = copy.deepcopy(snapshot['request_scope'])
                     if answer_status is not None:
                         response["answer_status"] = answer_status
-                    for offset in range(0, len(text), 256):
-                        self.runs.append_event(current["run_id"], "message.delta", {"delta": text[offset:offset + 256]})
+                    existing_deltas = [event for event in self.runs.events_for(current["run_id"])
+                                       if event["event"] == "message.delta"]
+                    if not existing_deltas:
+                        for offset in range(0, len(text), 256):
+                            self.runs.append_event(current["run_id"], "message.delta", {"delta": text[offset:offset + 256]})
                     self.runs.append_event(current["run_id"], "message.completed", response)
                     self.runs.complete(current["run_id"], {"type": "message", "id": identifier, "space_id": current["space_id"]})
                     current.update(status="completed", response=response)
