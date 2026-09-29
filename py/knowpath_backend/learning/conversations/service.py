@@ -278,11 +278,13 @@ class MessageService:
                              error_details=error_details, job=job)
 
     def _legacy_answer(self, identifier, snapshot, *, job=None):
-        if snapshot.get('request_scope', {}).get('mode') == 'selected' and not snapshot['hint']:
+        if (snapshot.get('request_scope', {}).get('mode') == 'selected' or snapshot.get('context_scope_changed')) and not snapshot['hint']:
             from knowpath_backend.learning.rag.queries import prepare_query
             prepared = prepare_query(snapshot['message'], snapshot.get('history', []))
             if prepared['status'] == 'clarify':
-                snapshot = {**snapshot, 'sources': [], 'query_status': 'clarify'}
+                snapshot = {**snapshot, 'sources': [], 'query_status': 'clarify', 'history': [],
+                            'memory': {'summary': {}, 'recall': []},
+                            'context_provenance': {'history': [], 'summary': [], 'recall': {}}}
                 if not self._record_sources(identifier, snapshot, job=job):
                     return None, None, snapshot
                 return '请明确本轮问题指向的对象或资料范围。', [], snapshot

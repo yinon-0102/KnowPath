@@ -1,6 +1,7 @@
 from knowpath_backend.test.test_message_document_scope import documents
 from knowpath_backend.learning.conversations.context import project_memory
 from knowpath_backend.learning.conversations.document_scope import resolve_document_scope
+import pytest
 
 
 def test_history_recall_and_summary_do_not_cross_document_selection(documents):
@@ -25,6 +26,8 @@ def test_scope_switch_cannot_resolve_pronouns_from_other_document(documents):
     response = next(e['data'] for e in state.events_for(job['run_id']) if e['event'] == 'message.completed')
     assert response['answer_status'] == 'clarify'
     assert response['citations'] == []
+    record = state.message_service.repository.get_record('messages', response['message_id'])
+    assert record['snapshot'].get('delivered_source_refs') == []
 
 
 def test_long_term_recall_and_summary_cannot_reintroduce_other_document(documents):
@@ -58,5 +61,23 @@ def test_explicit_all_and_default_share_effective_scope(documents):
     first = state.send_message(space['id'], {'message': 'Explain all', 'material_ids': ids})
     state.send_message(space['id'], {'message': 'Another question', 'session_id': first['session_id']})
     assert len(generator.calls[-1]['history']) == 2
+
+
+@pytest.mark.parametrize('destination', ['previous', 'all'])
+def test_scope_switch_followup_does_not_jump_to_older_same_scope_turn(documents, destination):
+    state, space, uploads, generator = documents
+    a, b = [u.material.id for u in uploads[:2]]
+    first = state.send_message(space['id'], {'message': 'Explain Alpha', 'material_ids': [a]})
+    state.send_message(space['id'], {'message': 'Explain Beta', 'session_id': first['session_id'], 'material_ids': [b]})
+    body = {'message': '继续 Alpha', 'session_id': first['session_id']}
+    if destination == 'previous':
+        body['material_ids'] = [a]
+    job = state.send_message(space['id'], body)
+    assert len(generator.calls) == 2
+    response = next(e['data'] for e in state.events_for(job['run_id']) if e['event'] == 'message.completed')
+    assert response['answer_status'] == 'clarify'
+    assert response['citations'] == []
+    record = state.message_service.repository.get_record('messages', response['message_id'])
+    assert record['snapshot'].get('delivered_source_refs') == []
 
 
