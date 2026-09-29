@@ -45,6 +45,8 @@ def test_full_openapi_matches_pre_refactor_contract():
     app = isolated_app()
 
     actual = app.openapi()
+    message_scope = json.loads((FIXTURES / 'learning_message_scope_openapi.json').read_text(encoding='utf-8'))
+    assert actual['components']['schemas']['SendMessage']['properties'].pop('material_ids') == message_scope['material_ids_property']
     # Preserve historical contracts; freeze each additive review operation and
     # its request schema separately from the original pre-refactor snapshot.
     reviews = json.loads((FIXTURES / 'learning_question_reviews_openapi.json').read_text(encoding='utf-8'))

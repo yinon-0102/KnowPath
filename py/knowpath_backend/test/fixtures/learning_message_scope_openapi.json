@@ -1,0 +1,14 @@
+{
+  "material_ids_property": {
+    "anyOf": [
+      {
+        "items": {"maxLength": 128, "minLength": 1, "type": "string"},
+        "maxItems": 5,
+        "minItems": 1,
+        "type": "array"
+      },
+      {"type": "null"}
+    ],
+    "title": "Material Ids"
+  }
+}
