@@ -232,7 +232,9 @@ uv run python scripts/accept_learning_backend.py --live
 ## 后端日志与问题定位
 
 API、模型 worker、图谱 worker 使用统一的标准库日志。正常启动后，控制台的
-stderr 显示单行事件；文件始终使用 UTF-8 JSONL，每行一条 JSON，便于按字段筛选。
+stderr 默认显示中文单行日志，先说明正在做什么、处理结果和必要的耗时/数量，
+再附请求或任务编号；不再把线程、调用链等全部参数堆到正文里。
+文件始终使用 UTF-8 JSONL，每行一条 JSON，保留原有字段并新增中文 `message`，便于阅读和按字段筛选。
 默认文件位于本项目的 py/logs，文件名分别为 api-<PID>.jsonl、
 model-worker-<PID>.jsonl、graph-worker-<PID>.jsonl。默认路径与启动工作目录无关。
 两个 worker 的 --once 仍只向 stdout 输出原有 job_claimed JSON，诊断日志不会混入。
@@ -251,6 +253,34 @@ KNOWPATH_LOG_LEVEL=DEBUG；希望控制台也输出 JSON 时设置 KNOWPATH_LOG_
 记录首次及每第 15 次失败；恢复时记录累计次数，避免存储不可用时反复刷屏。
 文件创建失败会写 logging.file.unavailable 并继续使用控制台。
 
+### 不熟悉系统时怎么看
+
+每行依次为「UTC 时间、级别、服务、中文说明、追踪编号」。`注意` 表示原来的 WARNING，
+`错误` 表示 ERROR；模型任务服务负责模型相关后台任务，知识图谱服务负责整理知识关系。
+先看中文说明即可了解工作进展；需要排查时，再用行尾的完整编号和 `事件` 搜索 JSONL。
+
+以下为示意，省略时间及编号：
+
+~~~text
+信息 [接口服务] 查找候选资料；找到候选资料：12
+信息 [接口服务] 模型已返回响应（尚未校验答案）；模型：qwen-plus；耗时：1.25 秒；用量：未提供（不代表零消耗）
+注意 [模型任务服务] 本次未完成，等待重试；任务内容：生成问答回复；第 2 次尝试
+注意 [接口服务] 等待工具结果超时；后台执行可能仍在继续，请先核对结果，避免重复操作
+~~~
+
+- 「已返回响应」只表示收到了模型响应，不保证答案正确；后续校验和问答结果会单独说明。
+- 「问答流程已结束」不等于回答完整；资料依据不足、只能回答部分问题、需要澄清都会分别解释。
+- 「已申请重试」表示发出了状态变更请求，最终是否生效仍以任务记录为准；不会把重试写成已完成。
+- 模型用量仅展示实际提供的计数。部分计数缺失时显示「总量未知」，不会估算费用或把未知补成零。
+- 文本只展示常用指标与关联编号；原有 `event`、`span_id`、`parent_span_id`、异常位置等仍保留在 JSONL。
+  `message` 是由已脱敏的元数据生成的阅读辅助，不是新的状态判定依据，也不应拿来统计调用次数。
+- 需要在控制台查看完整字段时仍使用 `KNOWPATH_LOG_FORMAT=json`；无需新增配置。
+  未识别的新事件显示中性的「系统事件」和原事件名，不会仅凭名称猜测业务已成功。
+
+常见错误会解释含义，并在已知情况下提示检查方向；不会调用模型解释日志，也不会读取或输出问题、
+答案或文档正文。既有普通日志保留原文脱敏行为；第三方组件的原始消息仍按原策略省略。
+变更仅影响重启后的新日志，已有日志文件不会被改写。
+
 ### 从请求追踪到后台任务
 
 1. 从响应头 X-Request-ID 或错误响应的 error.request_id 获取请求编号。
@@ -268,7 +298,7 @@ Get-ChildItem .\py\logs\*.jsonl* | Select-String -SimpleMatch '你的 request_id
 Get-ChildItem .\py\logs\*.jsonl* | Get-Content -Encoding utf8 |
   ForEach-Object { $_ | ConvertFrom-Json } |
   Where-Object { $_.level -in @('ERROR', 'WARNING') } |
-  Select-Object timestamp, service, event, request_id, run_id, job_id, error_code
+  Select-Object timestamp, service, message, event, request_id, run_id, job_id, error_code
 ~~~
 
 主要事件：
