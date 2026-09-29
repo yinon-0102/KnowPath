@@ -8,6 +8,12 @@ class SendMessage(Contract):
     message: Annotated[str, Field(min_length=1, max_length=8000)]
     session_id: Identifier | None = None
     stream: StrictBool = True
+    material_ids: Annotated[list[Identifier], Field(min_length=1, max_length=5)] | None = None
+
+    @field_validator('material_ids')
+    @classmethod
+    def canonical_material_ids(cls, value):
+        return sorted(set(value)) if value is not None else None
 
     @field_validator("stream")
     @classmethod

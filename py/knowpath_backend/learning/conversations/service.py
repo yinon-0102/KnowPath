@@ -8,6 +8,7 @@ from uuid import uuid4
 
 from knowpath_backend.learning.errors import DomainConflict, DomainNotFound
 from knowpath_backend.learning.conversations.schemas import SendMessage
+from knowpath_backend.learning.conversations.document_scope import resolve_document_scope, filter_document_sources
 from knowpath_backend.learning.conversations.generation import DashScopeAnswerGenerator, MessageGenerationError, validate_answer
 from knowpath_backend.learning.workers.runs import ACTIVE_STATUSES
 from knowpath_backend.learning.workers.model_tasks import ModelTaskWorker, TRANSIENT_ERRORS, LeaseLost, enqueue
@@ -37,12 +38,20 @@ class MessageService:
 
     def send(self, space_id, payload, key=None, *, dispatch=None, durable=False):
         payload = SendMessage.model_validate(payload).model_dump()
+        # Preserve hashes of pre-selection idempotent requests.
+        if payload.get('material_ids') is None:
+            payload.pop('material_ids', None)
         created = []
         def prepare():
             # Hint requests must serialize with grading before taking space locks.
             assessments = self.repository.records("assessments", space_id=space_id)
             space = self.spaces.repository.get(space_id)
-            sources = self._sources(space)
+            try:
+                request_scope = resolve_document_scope(space, payload.get('material_ids'))
+            except DomainConflict as exc:
+                log_event(logger, 'message.scope.rejected', space_id=space_id, error_code=exc.code)
+                raise
+            sources = filter_document_sources(self._sources(space), request_scope)
             if not sources:
                 raise DomainConflict("NO_LEARNING_SOURCES", "当前学习范围没有可引用的资料")
             conversation = self._conversation(space_id, payload["session_id"])
@@ -56,11 +65,15 @@ class MessageService:
             run = self.runs.create("message", status="queued" if durable else "running")
             identifier = uid()
             snapshot = {"message": payload["message"], "sources": sources, **context,
-                        "scope_version": space["scope_version"], "bindings": copy.deepcopy(space["bindings"]), "hint": hint}
+                        "scope_version": space["scope_version"], "bindings": copy.deepcopy(space["bindings"]), "hint": hint,
+                        "request_scope": request_scope}
             record = {"id": identifier, "space_id": space_id, "conversation_id": conversation["id"],
                       "run_id": run["id"], "status": "pending", "message": payload["message"],
                       "sequence": len(previous) + 1, "snapshot": snapshot, "response": None, "created_at": now()}
             self.repository.put_record("messages", record)
+            log_event(logger, 'message.scope.frozen', message_id=identifier, run_id=run['id'], space_id=space_id,
+                      request_scope_id=request_scope['request_scope_id'], material_ids=request_scope['material_ids'],
+                      source_count=len(sources))
             event_id = enqueue(self.repository, "message", record) if durable else None
             created.append((identifier, run["id"], event_id))
             return {"run_id": run["id"], "session_id": conversation["id"], "status": "queued" if durable else "running"}
@@ -230,7 +243,9 @@ class MessageService:
                     return self.runs.get(current["run_id"])["status"] not in {"queued", "running"}
                 result = self.rag_pipeline.answer(snapshot["message"], space_id=current["space_id"],
                     expected_scope_version=snapshot["scope_version"], expected_bindings=snapshot["bindings"],
-                    cancelled=cancelled, history=copy.deepcopy(snapshot.get('history', [])))
+                    cancelled=cancelled, history=copy.deepcopy(snapshot.get('history', [])),
+                    **({'material_ids': snapshot['request_scope']['material_ids']}
+                       if snapshot.get('request_scope', {}).get('mode') == 'selected' else {}))
                 snapshot = {**snapshot, "sources": result["sources"], "rag_trace": result["trace"]}
                 if not self._record_sources(identifier, snapshot, job=job):
                     return
@@ -375,6 +390,8 @@ class MessageService:
                         kind="message", delivery_id=identifier, space_id=current["space_id"])
                     current["snapshot"]["delivered_source_refs"] = delivery_plan["sources"]
                     response = {"message_id": identifier, "session_id": current["conversation_id"], "text": text, "citations": citations}
+                    if snapshot.get('request_scope'):
+                        response['request_scope'] = copy.deepcopy(snapshot['request_scope'])
                     if answer_status is not None:
                         response["answer_status"] = answer_status
                     for offset in range(0, len(text), 256):
@@ -393,6 +410,12 @@ class MessageService:
     def _context_error(self, space, current, snapshot):
         if space["scope_version"] != snapshot["scope_version"] or space["bindings"] != snapshot["bindings"]:
             return "STALE_LEARNING_CONTEXT"
+        request_scope = current['snapshot'].get('request_scope')
+        if request_scope is not None:
+            if snapshot.get('request_scope') != request_scope:
+                return 'RETRIEVAL_SCOPE_INVALID'
+            if filter_document_sources(snapshot['sources'], request_scope) != snapshot['sources']:
+                return 'RETRIEVAL_SCOPE_INVALID'
         conversation = self.repository.get_record("conversations", current["conversation_id"])
         if conversation.get("learning_session_id"):
             learning = self.repository.get_record("sessions", conversation["learning_session_id"])

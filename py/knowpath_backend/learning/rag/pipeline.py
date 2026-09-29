@@ -20,6 +20,7 @@ from .plugins import OrdinaryPlugin
 from .registry import create_plugin
 from .units import build_unit
 from ..errors import DomainConflict, DomainNotFound
+from ..conversations.document_scope import resolve_document_scope, filter_document_sources
 from ..persistence.rag_repository import RagIntegrityError, RagConflict
 
 
@@ -203,11 +204,16 @@ class RagPipeline:
         return rows
 
     @observed('rag.answer', ids=('space_id',))
-    def answer(self, question, *, space_id, expected_scope_version=None, expected_bindings=None, cancelled=None, history=()):
+    def answer(self, question, *, space_id, expected_scope_version=None, expected_bindings=None, cancelled=None, history=(), material_ids=None):
         self.last_retrieval_snapshot = None
         started = time.monotonic()
         deadline = started + self.timeout_seconds
         scope = self._scope(space_id)
+        try:
+            request_scope = resolve_document_scope({'id': scope.space_id, 'scope_version': scope.scope_version,
+                'bindings': [b.model_dump() for b in scope.bindings]}, material_ids)
+        except DomainConflict:
+            raise VerificationError('RETRIEVAL_SCOPE_INVALID') from None
         if expected_scope_version is not None and scope.scope_version != expected_scope_version:
             raise VerificationError("STALE_LEARNING_CONTEXT")
         if expected_bindings is not None:
@@ -219,6 +225,9 @@ class RagPipeline:
             manifests = self.lifecycle.pin(scope, require_b1=self.require_b1)
         except (RagIntegrityError, RagConflict):
             raise VerificationError("RAG_INDEX_NOT_READY") from None
+        # Publication integrity remains space-wide; a request only narrows inputs.
+        selected_versions = {b['material_version_id'] for b in request_scope['bindings']}
+        manifests = [m for m in manifests if m['material_version_id'] in selected_versions]
         plugin = self.plugin
         if isinstance(plugin, OrdinaryPlugin):
             implementation = plugin
@@ -238,13 +247,16 @@ class RagPipeline:
             self._guard(scope, deadline, cancelled)
             return {'status': 'clarify', 'text': '请明确本轮问题指向的对象或资料范围。', 'citations': [],
                 'citation_ids': [], 'claims': [], 'sources': [], 'trace': {'query': prepared,
-                'scope_snapshot_id': scope.scope_snapshot_id, 'manifest_ids': [m['manifest_id'] for m in manifests],
+                'scope_snapshot_id': scope.scope_snapshot_id, 'request_scope': request_scope,
+                'manifest_ids': [m['manifest_id'] for m in manifests],
                 'retrieval_versions': [m['retrieval_version_id'] for m in manifests], 'generation_calls': 0,
                 'verification_calls': 0, 'revisions': 0, 'elapsed_seconds': time.monotonic()-started}}
         resolved_question = prepared['query']
         request = RetrievalRequest(query=resolved_question, original_query=question, scope_snapshot_id=scope.scope_snapshot_id,
             manifest_ids=tuple(m["manifest_id"] for m in manifests), budget=self.budget, deadline=deadline)
-        rows = self._originals(scope, manifests)
+        rows = filter_document_sources(self._originals(scope, manifests), request_scope)
+        log_event(logger, 'rag.scope.applied', request_scope_id=request_scope['request_scope_id'],
+                  material_ids=request_scope['material_ids'], source_count=len(rows))
         self._guard(scope, deadline, cancelled)
         if hasattr(plugin, 'for_sources'):
             plugin = plugin.for_sources(rows)
@@ -264,7 +276,7 @@ class RagPipeline:
                 original["material_version_id"], original["retrieval_version_id"]):
                 raise VerificationError("RAG_CANDIDATES_INVALID")
         selected = [by_id[c.chunk_id] for c in candidates]
-        self._snapshot(stage='candidate', scope_snapshot_id=scope.scope_snapshot_id,
+        self._snapshot(stage='candidate', scope_snapshot_id=scope.scope_snapshot_id, request_scope=request_scope,
             manifest_ids=list(request.manifest_ids), retrieval_versions=[m['retrieval_version_id'] for m in manifests],
             candidate_ids=[c.chunk_id for c in candidates], retrieval=retrieval_trace,
             candidate_sources=[{'chunk_id': r['chunk_id'], 'source_spans': r['source_spans']} for r in selected])
@@ -342,7 +354,9 @@ class RagPipeline:
                 retrieval_version_id=source["retrieval_version_id"], chunk_id=identifier,
                 source_spans=source["source_spans"]).model_dump(mode="json"))
         log_event(logger, 'rag.result', status=result.get('status'), citation_count=len(citations),
-                  context_count=len(context), candidate_count=len(candidates))
+                  context_count=len(context), candidate_count=len(candidates),
+                  request_scope_id=request_scope['request_scope_id'],
+                  cited_material_ids=sorted({c['material_id'] for c in citations}))
         return {**result, "citations": citations, "sources": context,
                 "trace": {**result["trace"], "retrieval": retrieval_trace, 'query': prepared,
                     'rerank_usage': getattr(self.reranker, 'last_usage', None),
@@ -353,7 +367,7 @@ class RagPipeline:
                         for c in candidates],
                     'reranked_sources': [{'chunk_id': r['chunk_id'], 'source_spans': r['source_spans']}
                         for r in ranked_leaf_rows],
-                    "scope_snapshot_id": scope.scope_snapshot_id, "manifest_ids": list(request.manifest_ids),
+                    "scope_snapshot_id": scope.scope_snapshot_id, 'request_scope': request_scope, "manifest_ids": list(request.manifest_ids),
                     "retrieval_versions": [m["retrieval_version_id"] for m in manifests],
                     "reranked_ids": [r["chunk_id"] for r in ranked_leaf_rows], "context_ids": [r["chunk_id"] for r in context],
                     "elapsed_seconds": time.monotonic() - started}}
