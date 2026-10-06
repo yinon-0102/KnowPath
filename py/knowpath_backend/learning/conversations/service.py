@@ -297,8 +297,10 @@ class MessageService:
         retriever = KeywordRetriever() if snapshot["hint"] else self.retriever
         retrieval_sources = snapshot.get("retrieval_sources", snapshot["sources"])
         try:
-            with span(logger, 'message.retrieve', message_id=identifier):
+            with span(logger, 'message.retrieve', message_id=identifier, candidate_count=len(retrieval_sources)) as metrics:
                 selected = retriever.select(snapshot["message"], copy.deepcopy(retrieval_sources), limit=8)
+                if isinstance(selected, list):
+                    metrics['context_count'] = len(selected)
         except RetrievalError:
             raise
         except Exception:

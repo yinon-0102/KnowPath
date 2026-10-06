@@ -28,8 +28,8 @@ def test_default_text_explains_activity_without_dumping_system_parameters():
     assert '模型已返回响应' in line and '尚未校验答案' in line
     assert '模型：qwen-plus' in line and '耗时：1.25 秒' in line
     assert '用量：未提供' in line
-    assert '请求编号：request-one' in line and '模型调用编号：call-one' in line
-    assert '事件：model.call.completed' in line
+    assert 'request-one' not in line and 'call-one' not in line
+    assert '模型调用编号：call-one' not in line
     assert all(value not in line for value in ('{', 'thread', 'logger', 'span_id', 'internal-span'))
 
 
@@ -69,7 +69,7 @@ def test_worker_completion_is_based_on_observed_status(status, expected):
 ])
 def test_common_events_have_truthful_plain_language(event, fields, expected):
     line = render(event, **fields)
-    assert expected in line and f'事件：{event}' in line
+    assert expected in line
 
 
 def test_json_keeps_existing_diagnostic_fields_and_adds_explanation():
@@ -104,7 +104,7 @@ def test_summaries_use_sanitized_metadata_and_do_not_print_payloads(monkeypatch)
 
 def test_unknown_event_is_neutral_and_preserves_event_identifier():
     line = render('future.workflow.completed', mystery={'value':'internal-data'})
-    assert '系统事件' in line and 'future.workflow.completed' in line
+    assert '未翻译的事件' in line and 'future.workflow.completed' in line
     assert '成功' not in line and 'internal-data' not in line
 
 
@@ -129,7 +129,7 @@ def test_default_console_and_json_file_share_readable_message(tmp_path):
         log_event(logging.getLogger('knowpath_backend.test'), 'worker.attempt.finished',
                   observed_status='pending', request_id='req', run_id='run', attempt=1)
         line, = stream.getvalue().splitlines()
-        assert '等待重试' in line and '请求编号：req' in line
+        assert '等待重试' in line and 'req' not in line
         path, = tmp_path.glob('*.jsonl')
         document = json.loads(path.read_text(encoding='utf-8'))
         assert document['message'] in line and document['observed_status'] == 'pending'

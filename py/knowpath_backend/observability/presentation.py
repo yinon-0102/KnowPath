@@ -12,6 +12,8 @@ SERVICES = {'api': '接口服务', 'model-worker': '模型任务服务', 'graph-
 LEVELS = {'DEBUG': '调试', 'INFO': '信息', 'WARNING': '注意', 'ERROR': '错误', 'CRITICAL': '严重错误'}
 
 _ACTIVITIES = {
+    'graph.write': '写入知识图谱并回读核验', 'index.embedding': '生成检索向量',
+    'index.write': '写入检索索引', 'index.verify': '核验全部检索索引',
     'agent.turn': '本轮智能助手处理',
     'api.build': '初始化接口服务', 'api.shutdown': '关闭接口服务',
     'message.retrieve': '查找与问题相关的资料', 'assessment.generate': '生成测评题目',
@@ -58,6 +60,12 @@ _FINISH_REASONS = {
     'tool_calls': '模型请求使用工具', 'function_call': '模型请求使用工具', 'tool_use': '模型请求使用工具',
 }
 _EVENTS = {
+    'index.batch.completed': '本批向量和索引写入完成（尚未发布）',
+    'material.parse.handoff': '解析结果已保存，已进入图谱处理队列',
+    'graph.review.ready': '图谱和索引已准备好，等待审核发布；尚未对检索生效',
+    'graph.publication.completed': '知识图谱已发布',
+    'message.validation.failed': '回复未通过校验，不能作为正式回答发布',
+    'message.validation.completed': '回复正文与引用检查通过',
     'api.started': '接口服务已启动', 'api.stopped': '接口服务已停止',
     'api.configuration': '已读取服务配置',
     'worker.started': '后台任务服务已启动，开始等待任务',
@@ -87,6 +95,11 @@ _EVENTS = {
     'logging.file.unavailable': '无法写入日志文件，控制台仍继续输出；请检查日志目录权限和磁盘空间',
 }
 _ERRORS = {
+    'MESSAGE_VALIDATION_FAILED': '回复正文或引用不符合要求',
+    'GRAPH_PREPARATION_FAILED': '图谱或检索索引准备失败',
+    'MATERIAL_SOURCE_MISSING': '原文件缺失或与上传内容不一致',
+    'SCANNED_PDF_UNSUPPORTED': 'PDF 缺少可提取文字，当前解析器不支持扫描件',
+    'ENCRYPTED_PDF': 'PDF 已加密，无法解析',
     'RATE_LIMITED': '请求过于频繁或服务额度受限，可稍后重试并检查服务额度',
     'MODEL_UNAVAILABLE': '模型服务暂不可用，可检查服务连接与配置',
     'MODEL_TIMEOUT': '等待模型响应超时', 'MODEL_INVALID_RESPONSE': '模型返回的数据不符合要求',
@@ -104,6 +117,9 @@ _HTTP_ERRORS = {
     502: '上游服务返回异常', 503: '服务暂不可用', 504: '等待上游服务响应超时',
 }
 _COUNTS = {
+    'source_count': '来源片段数', 'topic_variants': '知识节点版本数',
+    'relation_count': '语义关系数', 'vector_count': '生成向量数',
+    'text_chars': '正文字符数', 'input_bytes': '原文件字节数',
     'candidate_count': '找到候选资料', 'reranked_count': '筛选后资料',
     'context_count': '用于回答的资料', 'citation_count': '引用资料',
     'chunk_count': '解析片段', 'question_count': '生成题目',
@@ -182,11 +198,15 @@ def _headline(item):
         return '问答流程已结束，回答是否完整请看问答结果'
     if event in _EVENTS:
         return _EVENTS[event]
+    if event == 'command.completed' and item.get('operation') == 'material.ingest':
+        return '资料处理任务已提交，请查看后续后台处理进展'
+    if event == 'command.completed' and item.get('operation') == 'graph.publish':
+        return '知识图谱发布操作已完成'
     base, _, state = event.rpartition('.')
     activity = _label(_OPERATIONS, item.get('operation'), '处理业务操作') if base == 'command' else _ACTIVITIES.get(base)
     if activity and state in {'started', 'completed', 'failed', 'cancelled'}:
         return activity + '：' + {'started': '开始', 'completed': '已完成', 'failed': '失败', 'cancelled': '已取消'}[state]
-    return '系统事件'
+    return '未翻译的事件：' + event
 
 
 def _usage(item):
@@ -206,6 +226,20 @@ def _usage(item):
 def describe(item):
     """Render sanitized document fields without modifying the document or record."""
     parts = [_headline(item)]
+    if _number(item.get('task_age_seconds')) and item.get('event') == 'worker.attempt.started':
+        parts.append(f"提交至本次执行：{item['task_age_seconds']:.2f} 秒（含先前尝试与等待）")
+    if _count(item.get('graph_version')):
+        parts.append(f"发布版本：{item['graph_version']}")
+    for done, total, label in (('completed_count', 'total_count', '已处理片段'),
+                               ('batch_number', 'batch_total', '批次')):
+        if _count(item.get(done)) and _count(item.get(total)):
+            parts.append(f'{label}：{item[done]}/{item[total]}')
+    reasons = {'invalid_structure': '返回字段不符合约定', 'invalid_text': '正文为空、类型错误或超过长度限制',
+               'missing_citations': '没有提供有效的引用列表', 'unknown_citation': '引用了检索结果以外的资料',
+               'duplicate_citation': '引用资料重复'}
+    reason = _label(reasons, item.get('reason'), None)
+    if reason:
+        parts.append('校验原因：' + reason)
     event = item.get('event', '')
     if isinstance(event, str) and event.startswith('http.request.'):
         route = item.get('route')

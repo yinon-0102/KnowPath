@@ -35,7 +35,7 @@ class SpaceService:
         with bind_context(operation=operation, resource_id=space_id), span(logger, 'command') as details:
             result = self._execute_command(operation, space_id, payload, key, change)
             if isinstance(result, dict):
-                details.update({name: result[name] for name in ('id', 'run_id', 'assessment_id', 'session_id', 'message_id') if name in result})
+                details.update({name: result[name] for name in ('id', 'run_id', 'assessment_id', 'session_id', 'message_id', 'graph_version') if name in result})
             return result
 
     def _execute_command(self, operation, space_id, payload, key, change):

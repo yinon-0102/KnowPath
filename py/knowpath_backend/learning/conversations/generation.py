@@ -2,6 +2,8 @@
 import json
 import os
 import httpx
+import logging
+from knowpath_backend.observability import log_event
 from knowpath_backend.learning.config import LearningSettings
 
 
@@ -71,17 +73,27 @@ class DashScopeAnswerGenerator:
 
 
 def validate_answer(raw, sources):
+    def reject(reason):
+        log_event(logging.getLogger(__name__), 'message.validation.failed', level=logging.WARNING,
+                  reason=reason, error_code='MESSAGE_VALIDATION_FAILED')
+        raise MessageGenerationError('MESSAGE_VALIDATION_FAILED')
+
     if not isinstance(raw, dict) or set(raw) != {"text", "citation_ids"}:
-        raise MessageGenerationError("MESSAGE_VALIDATION_FAILED")
+        reject('invalid_structure')
     text, identifiers = raw["text"], raw["citation_ids"]
     allowed = {row["chunk_id"]: row for row in sources}
-    if (not isinstance(text, str) or not text.strip() or len(text) > 16000
-            or not isinstance(identifiers, list) or not identifiers
-            or any(not isinstance(value, str) or value not in allowed for value in identifiers)
-            or len(set(identifiers)) != len(identifiers)):
-        raise MessageGenerationError("MESSAGE_VALIDATION_FAILED")
+    if not isinstance(text, str) or not text.strip() or len(text) > 16000:
+        reject('invalid_text')
+    if not isinstance(identifiers, list) or not identifiers:
+        reject('missing_citations')
+    if any(not isinstance(value, str) or value not in allowed for value in identifiers):
+        reject('unknown_citation')
+    if len(set(identifiers)) != len(identifiers):
+        reject('duplicate_citation')
     citations = [{k: v for k, v in allowed[identifier].items() if k not in {"text", "topic_id", "topic_name"}}
                  for identifier in identifiers]
+    log_event(logging.getLogger(__name__), 'message.validation.completed',
+              text_chars=len(text.strip()), citation_count=len(citations))
     return text.strip(), citations
 
 

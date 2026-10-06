@@ -75,7 +75,16 @@ class TextFormatter(JsonFormatter):
         level = LEVELS.get(item['level'], item['level'])
         service = SERVICES.get(item['service'], item['service'])
         message = item['message'] if hasattr(record, 'event') else describe(item)
-        return one_line(f"{item['timestamp']} {level} [{service}] {message} ｜ {correlation(item)}")
+        # Keep full correlation in JSON; one stable short label distinguishes
+        # concurrent operations without repeating every internal identifier.
+        identifier = next((item[k] for k in ('run_id', 'request_id', 'material_id')
+                           if isinstance(item.get(k), str) and item[k]), None)
+        if identifier:
+            from hashlib import sha256
+            tag = sha256(identifier.encode()).hexdigest()[:8]
+            service += f' · {tag}'
+        detail = ' ｜ ' + correlation(item) if record.levelno <= logging.DEBUG else ''
+        return one_line(f"{item['timestamp']} {level} [{service}] {message}{detail}")
 
 
 class _NoiseFilter(logging.Filter):
