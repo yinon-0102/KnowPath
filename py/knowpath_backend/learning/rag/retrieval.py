@@ -15,7 +15,7 @@ from qdrant_client import QdrantClient, models
 
 from knowpath_backend.learning.config import LearningSettings
 from knowpath_backend.observability.actions import model_post
-from knowpath_backend.observability import observed
+from knowpath_backend.observability import observed, span
 
 logger = logging.getLogger(__name__)
 
@@ -238,7 +238,11 @@ class VectorRetriever:
         # Bounded writes; failed later batches leave an incomplete, rebuildable index.
         for start in range(0, len(sources), 10):
             batch = sources[start:start + 10]
-            self.backend.upsert(batch, self.embedder.embed([s["text"] for s in batch]))
+            with span(logger, 'index.embedding', source_count=len(batch)) as metrics:
+                vectors = self.embedder.embed([s["text"] for s in batch])
+                metrics['vector_count'] = len(vectors)
+            with span(logger, 'index.write', source_count=len(batch)):
+                self.backend.upsert(batch, vectors)
         return {"collection": self.backend.collection, "indexed_chunks": len(sources)}
 
     def select(self, message, sources, *, limit=8):

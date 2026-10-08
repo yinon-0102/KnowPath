@@ -10,6 +10,7 @@ import re
 from time import perf_counter
 from asyncio import CancelledError
 from uuid import uuid4
+from datetime import datetime, timezone
 
 _context = ContextVar('knowpath_log_context', default=None)
 http_outcome = ContextVar('knowpath_http_outcome', default=None)
@@ -129,7 +130,9 @@ def span(logger, event, **fields):
 def _timed_span(logger, event, **fields):
     started = perf_counter()
     details = dict(fields)
-    log_event(logger, event + '.started', level=logging.DEBUG, **details)
+    visible = event in {'material.parse', 'graph.prepare', 'graph.write', 'index.embedding',
+                        'index.write', 'index.verify', 'message.retrieve'}
+    log_event(logger, event + '.started', level=logging.INFO if visible else logging.DEBUG, **details)
     try:
         yield details
     except BaseException as exc:
@@ -171,6 +174,12 @@ def job_observed(function):
         fields = {'job_id': event['id'], 'run_id': payload.get('run_id'), 'job_type': event.get('event_type'),
                   'attempt': event.get('attempts'), 'resource_id': event.get('aggregate_id')}
         fields.update({key: payload[key] for key in ('space_id','material_id','request_id') if key in payload})
+        # On retries this is task age, not pure queue latency.
+        try:
+            created = datetime.fromisoformat(event['created_at'])
+            fields['task_age_seconds'] = max(0, (datetime.now(timezone.utc) - created).total_seconds())
+        except (KeyError, ValueError, TypeError):
+            pass
         started = perf_counter()
         with bind_context(**fields):
             log_event(logger, 'worker.attempt.started')

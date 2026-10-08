@@ -130,6 +130,7 @@ class MaterialParseWorker:
                     run_kind="material_ingest", run_id=event["payload"]["run_id"])
                 event.update(status="completed", lease_token=None, lease_until=None)
                 self.repository.put_record("outbox", event)
+            log_event(logger, 'material.parse.handoff', chunk_count=len(chunks))
             return True
         except DomainNotFound:
             return False

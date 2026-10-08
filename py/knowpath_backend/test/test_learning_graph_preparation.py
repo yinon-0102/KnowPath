@@ -20,7 +20,9 @@ class GraphBackend:
         return {"verified": True}
 
 
-def test_prepare_writes_and_checks_vectors_and_both_conflict_sides():
+def test_prepare_writes_and_checks_vectors_and_both_conflict_sides(caplog):
+    import logging
+    caplog.set_level(logging.INFO)
     from knowpath_backend.learning.knowledge.preparation import GraphPreparer
     from knowpath_backend.learning.workers.graph import preparation_manifest
     from knowpath_backend.learning.knowledge.reconciliation import digest
@@ -45,6 +47,11 @@ def test_prepare_writes_and_checks_vectors_and_both_conflict_sides():
         assert {s["material_version_id"] for s in graph.sources} == {old.version.id, newer.version.id}
         vectors.backend.require_index(graph.sources)
         assert len(heartbeats) >= 3
+        progress = [r for r in caplog.records if getattr(r, 'event', '') == 'index.batch.completed']
+        assert progress[-1].fields['completed_count'] == 2
+        assert progress[-1].fields['total_count'] == 2
+        assert any(getattr(r, 'event', '') == 'index.verify.completed' for r in caplog.records)
+        assert 'Old source.' not in str([getattr(r, 'fields', {}) for r in caplog.records])
         # Corruption must be rejected before external writes.
         manifest["snapshot"]["sources"][0]["content_hash"] = "wrong"
         manifest["snapshot_hash"] = digest(manifest["snapshot"])
