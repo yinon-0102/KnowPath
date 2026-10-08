@@ -3,6 +3,45 @@ import assert from 'node:assert/strict';
 import { createApi, ApiError } from '../src/api.js';
 
 const json = value => new Response(JSON.stringify(value), { headers: { 'Content-Type': 'application/json' } });
+test('topic lookup uses frozen material versions and rejects inconsistent graph snapshots', async t => {
+  const bindings = [{ material_id: 'm1', material_version_id: 'v1', graph_version: 3 }];
+  let graphVersion = 3, captured;
+  t.mock.method(globalThis, 'fetch', async url => { captured = url; return json({ material_id: 'm1', version_id: 'v1', graph_version: graphVersion, items: [{ id: 't1' }] }); });
+  const api = createApi(() => '');
+  assert.deepEqual(await api.topics({ bindings }), [{ id: 't1' }]);
+  assert.ok(captured.endsWith('/materials/m1/topics?version_id=v1'));
+  graphVersion = 4;
+  await assert.rejects(() => api.topics({ bindings }), error => error.code === 'STALE_KNOWLEDGE');
+});
+test('material graph can load before a learning space exists', async t => {
+  const calls = [];
+  t.mock.method(globalThis, 'fetch', async url => {
+    calls.push(url);
+    if (url.includes('/topics?')) return json({ material_id: 'm1', version_id: 'v1', graph_version: 0, items: [
+      { id: 't1', name: '第一章', level: 1, source_refs: [] },
+      { id: 't2', name: '第二章', level: 1, parent_id: 't1', source_refs: [] },
+    ] });
+    return json({ nodes: [{ id: 't1' }, { id: 't2' }], edges: [{ id: 'e1', type: 'contains', from_id: 't1', to_id: 't2' }] });
+  });
+  const graph = await createApi(() => '').materialGraph({ id: 'm1', current_version_id: 'v1' });
+  assert.deepEqual(graph.nodes.map(node => node.id), ['t1', 't2']);
+  assert.equal(graph.edges[0].id, 'e1');
+  assert.ok(calls[0].endsWith('/materials/m1/topics?version_id=v1'));
+});
+test('polling preserves terminal run error code and task identity', async t => {
+  const mock = t.mock.method(globalThis, 'fetch', async () => json({ status: 'failed', error: {
+    code: 'QUESTION_VALIDATION_FAILED', message: 'Generated questions failed validation.', details: { cause: 'invalid' },
+  } }));
+  await assert.rejects(() => createApi(() => '').waitRun('r1'), error => {
+    assert.equal(error.code, 'QUESTION_VALIDATION_FAILED');
+    assert.equal(error.status, 200);
+    assert.deepEqual(error.details, { cause: 'invalid', runId: 'r1', runStatus: 'failed' });
+    return true;
+  });
+  mock.mock.mockImplementation(async () => json({ status: 'cancelled' }));
+  await assert.rejects(() => createApi(() => '').waitRun('r2'), error => error.code === 'RUN_CANCELLED' && error.details.runStatus === 'cancelled');
+});
+
 const stream = text => new Response(new ReadableStream({ start(controller) {
   const bytes = new TextEncoder().encode(text);
   // Deliberately split inside Chinese UTF-8 code points and SSE boundaries.
