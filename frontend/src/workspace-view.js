@@ -1,5 +1,6 @@
 import { esc, dateText } from './store.js';
-import { workspacePath } from './workspace.js';
+import { workspacePath, workspaceSection } from './workspace.js';
+import { taskAssessmentContext } from './workbench.js';
 
 const rows = value => Array.isArray(value) ? value : [];
 const title = row => row?.name || row?.title || row?.section_path?.join(' / ') || '未命名知识项';
@@ -61,7 +62,7 @@ function assessmentView(page, id, item, data) {
   const results = rows(data.result.question_results), questions = rows(data.assessment.questions);
   const question = questions.find(q => q.id === item);
   const result = results.find(q => q.question_id === item);
-  if (page === 'assessment-result') return panel(`<div class="panel-title"><div><h2>本轮作答反馈</h2><p class="subtle">${dateText(data.result.graded_at)} · ${results.length} 道题</p></div>${link('题目复核记录', 'assessment-reviews', id)}</div>` + (results.length ? results.map((result, index) => {
+  if (page === 'assessment-result') return panel((data.result.notes?.chapter_id ? `<p><a class="button button-secondary" href="#/space/${encodeURIComponent(data.space.id)}/notes?chapter=${encodeURIComponent(data.result.notes.chapter_id)}">查看本次学习笔记</a></p>` : '') + `<div class="panel-title"><div><h2>本轮作答反馈</h2><p class="subtle">${dateText(data.result.graded_at)} · ${results.length} 道题</p></div>${link('题目复核记录', 'assessment-reviews', id)}</div>` + (results.length ? results.map((result, index) => {
     const question = questions.find(q => q.id === result.question_id), answer = rows(data.assessment.answers).find(a => a.question_id === result.question_id);
     const answerText = rows(question?.options).find(option => option.id === answer?.answer)?.text || answer?.answer || '未作答';
     const blocked = ['pending', 'invalid'].includes(result.question_review_status);
@@ -85,13 +86,14 @@ function spaceView(page, id, data, filters) {
   const space = data.space;
   if (page === 'space-settings') return panel(menu([
     ['空间名称', '让学习目标更容易识别', 'space-name', id], ['目标与偏好', '调整学习目标与讲解方式', 'space-profile', id],
-    ['学习范围', '选择要学习及暂时排除的主题', 'space-scope', id], ['知识更新', '查看资料的新知识版本及影响', 'knowledge-updates', id],
-    ['学习状态', '查看各主题的状态与证据', 'learning-state', id], ['学习证据', '按主题、类型和时间追溯记录', 'evidence', id], ['变更记录', '查看知识和学习范围的调整', 'knowledge-changes', id], ['导出记录', '下载包含学习空间数据的 ZIP', 'export', id],
+    ['导出记录', '下载包含学习空间数据的 ZIP', 'export', id], ['重置学习状态', '选择需要重新积累证据的主题', 'learning-reset', id],
   ]));
   if (page === 'space-name') return panel(form(field('空间名称', 'name', space.name, 'required maxlength="100"')));
   if (page === 'space-profile') {
     const profile = data.profile.profile || {}, value = key => profile[key]?.value, preferences = value('preferences') || {};
-    return panel(form(area('学习目标', 'goal', value('goal') || space.goal || '', 'required maxlength="1000"') + `<fieldset class="form-field"><legend>讲解偏好</legend>${check('example_first', 'on', '先举例，再解释概念', preferences.example_first)}${check('concise_explanations', 'on', '解释简洁，突出重点', preferences.concise_explanations)}</fieldset>`, '保存目标与偏好'));
+    return panel(form(area('学习目标', 'goal', value('goal') || space.goal || '', 'required maxlength="1000"')
+      + `<div class="field-row">${field('每周学习时间（分钟，选填）', 'weekly_minutes', value('weekly_minutes') ?? '', 'type="number" min="15" max="2400" step="1"')}${field('目标日期（选填）', 'target_date', value('target_date') || '', 'type="date"')}</div>`
+      + `<fieldset class="form-field"><legend>讲解偏好</legend>${check('example_first', 'on', '先举例，再解释概念', preferences.example_first)}${check('concise_explanations', 'on', '解释简洁，突出重点', preferences.concise_explanations)}</fieldset>`, '保存目标与偏好'));
   }
   if (page === 'space-scope') return panel(form(`<p class="subtle">选中想学习的主题；“暂时排除”用于控制前置主题的自动纳入。</p>${table(['知识主题', '纳入学习', '暂时排除'], rows(data.topics).map(topic => `<tr><th scope="row">${esc(title(topic))}</th><td>${check('topic_ids', topic.id, '<span class="screenreader">纳入 ' + esc(title(topic)) + '</span>', rows(space.topic_ids).includes(topic.id))}</td><td>${check('excluded_topic_ids', topic.id, '<span class="screenreader">排除 ' + esc(title(topic)) + '</span>', rows(space.excluded_topic_ids).includes(topic.id))}</td></tr>`).join(''))}${check('prerequisites', 'on', '自动纳入必要的前置知识', true)}`, '保存学习范围'));
   if (page === 'knowledge-updates') {
@@ -121,22 +123,37 @@ function correctionView(data) {
   return panel(form(note('先核对原文，再提交纠错候选。下一步会显示变更，确认后才发布。') + select('知识点或关系', 'target', [['', '请选择'], ...choices], '', 'required data-workspace-target') + select('纠错方式', 'action', [['replace', '更正内容'], ['reject', '拒绝这个知识项']]) + '<div data-workspace-correction-fields>' + empty('选择后可查看来源并填写更正内容。') + '</div>' + reasonField(), '生成纠错候选'));
 }
 function taskView(page, id, item, data) {
-  const task = data.task;
-  const heading = `<h2>${esc(task.title || task.name || rows(task.topic_ids).map(id => topicName(data, id)).join('、') || '学习任务')}</h2><p class="subtle">${label(task.status)} · ${esc(task.estimated_minutes ?? task.minutes ?? '—')} 分钟</p>`;
-  if (page === 'task') return panel(heading + form(select('处理方式', 'status', [['completed', '标记完成'], ['skipped', '跳过这次任务'], ['deferred', '延期安排']], ['completed', 'skipped', 'deferred'].includes(task.status) ? task.status : 'completed') + `<div data-ws-when="status:deferred">${field('延期到', 'defer_until', localDate(task.defer_until), 'type="datetime-local" required')}</div>` + area('原因（跳过时必填）', 'reason', task.reason || '', 'maxlength="2000"') + area('学习备注（选填）', 'note', task.note || '', 'maxlength="2000"'), '保存任务') + `<div class="workspace-related">${link('开始任务学习', 'session', id, item)}</div>`);
+  const task = data.task, plan = data.plan;
+  const historical = task.historical || task.context?.historical || !['ready', 'needs_replan'].includes(plan.status);
+  const canStart = !historical && plan.status === 'ready' && ['pending', 'in_progress'].includes(task.status);
+  const heading = `<h2>${esc(task.title || task.name || task.context?.title || rows(task.topic_ids).map(id => topicName(data, id)).join('、') || '学习任务')}</h2><p class="subtle">${label(task.status)} · ${esc(task.estimated_minutes ?? task.minutes ?? '—')} 分钟</p>`;
+  if (page === 'task') {
+    if (historical) return panel(heading + note('这是历史任务，保留当时的状态与学习记录。') + `<p>${esc(task.note || '未记录学习备注。')}</p>`);
+    return panel(heading + form(select('处理方式', 'status', [['completed', '标记完成'], ['skipped', '跳过这次任务'], ['deferred', '延期安排']], ['completed', 'skipped', 'deferred'].includes(task.status) ? task.status : 'completed') + `<div data-ws-when="status:deferred">${field('延期到', 'defer_until', localDate(task.defer_until), 'type="datetime-local" required')}</div>` + area('原因（跳过时必填）', 'reason', task.reason || '', 'maxlength="2000"') + area('学习备注（选填）', 'note', task.note || '', 'maxlength="2000"'), '保存任务') + (canStart ? `<div class="workspace-related">${link('开始任务学习', 'session', id, item)}</div>` : ''));
+  }
   const session = data.session, same = session?.task_id === item && session?.plan_id === id;
   if (session?.status === 'active' && !same) return panel(heading + note('当前空间还有一个进行中的学习会话，请先返回该会话。') + `<a class="button button-primary" href="${esc(session.route)}">返回当前会话</a>`);
-  if (same && session.status === 'finished') return panel(heading + note(`本次会话已保存，起止间隔 ${Math.max(0, Math.round(Number(session.elapsed_seconds || 0) / 60))} 分钟。该时间包含暂停，不等同于专注时长。`) + link('记录任务完成情况', 'task', id, item, 'button button-primary') + action('再开始一次学习', 'session-start'));
-  if ((!same || session.status !== 'active') && ['completed', 'skipped', 'deferred'].includes(task.status)) return panel(heading + empty('当前任务已完成、跳过或延期，不能启动新的学习会话。') + link('查看任务安排', 'task', id, item));
-  if (!same || session.status !== 'active') return panel(heading + empty('开始后，查看资料、请求讲解及暂停操作会记录到这个任务。结束时保存会话。') + action('开始学习并记录', 'session-start', '', 'button button-primary'));
+  if (same && session.status === 'finished') {
+    let assessment;
+    try { assessment = taskAssessmentContext(plan, item, { sessionId: session.session_id || session.id }); } catch { /* History retains records without offering new assessments. */ }
+    const duration = session.elapsed_seconds == null ? '未记录起止间隔。' : `起止间隔 ${Math.max(0, Math.round(Number(session.elapsed_seconds) / 60))} 分钟。该时间包含暂停，不等同于专注时长。`;
+    return panel(heading + note(`本次会话已保存，${duration}`) + `<div class="workspace-links">${assessment ? `<button type="button" class="button button-primary" data-action="task-assessment" data-plan="${esc(id)}" data-task="${esc(item)}" data-session="${esc(session.session_id || session.id || '')}" data-kind="${assessment.kind}" data-topics="${esc(JSON.stringify(rows(task.topic_ids)))}">${assessment.kind === 'retest' ? '复测本次学习' : '测评本次学习'}</button>` : ''}${!historical ? link('记录任务完成情况', 'task', id, item, 'button button-secondary') : ''}${canStart ? action('再开始一次学习', 'session-start') : ''}</div>`);
+  }
+  if (!same || session.status !== 'active') {
+    if (!canStart) return panel(heading + empty('当前任务不能启动新的学习会话，请查看历史记录或重新规划。') + link('查看任务安排', 'task', id, item));
+    return panel(heading + empty('开始后，查看资料、请求讲解及暂停操作会记录到这个任务。结束时保存会话。') + action('开始学习并记录', 'session-start', '', 'button button-primary'));
+  }
   return panel(heading + `<div class="workspace-session"><span class="workspace-session-dot ${session.paused ? 'paused' : ''}"></span><h3>${session.paused ? '已暂停' : '正在学习'}</h3><p>开始于 ${dateText(session.started_at)}</p></div><div class="workspace-links">${action(session.paused ? '继续学习' : '暂停', 'session-event', session.paused ? 'resume' : 'pause')}${action('结束并保存', 'session-finish', '', 'button button-primary')}</div><div class="workspace-session-resources"><h3>学习支持</h3><div class="workspace-links">${action('打开任务资料', 'session-event', 'open_material')}${action('请求讲解', 'session-event', 'request_explanation')}${action('获得提示', 'session-event', 'request_hint')}</div></div><p class="subtle">离开此页后，可从空间内的学习安排入口回到会话；关闭标签页前请结束并保存。</p>`);
 }
-export function renderWorkspace(view) {
+export function renderWorkspace(view, { returnPath = view.returnPath } = {}) {
   const { page, id, item } = view.route, data = view.data;
+  const deletionPending = page === 'material-delete' && Boolean(view.pendingRun) && !data;
   const heading = workspaceTitles[page] || '功能页面';
-  const back = page === 'material' ? '#/materials' : page.startsWith('material') ? workspacePath('material', id) : page.startsWith('assessment') && page !== 'assessment-result' ? workspacePath('assessment-result', id) : page.startsWith('assessment') ? (data?.space?.id ? '#/space/' + encodeURIComponent(data.space.id) : '#/spaces') : ['task', 'session'].includes(page) ? (data?.space?.id ? '#/space/' + encodeURIComponent(data.space.id) : '#/spaces') : page === 'health' ? '#/overview' : '#/space/' + encodeURIComponent(id);
+  const spaceId = data?.space?.id || (!page.startsWith('assessment') && !['task', 'session'].includes(page) ? id : '');
+  const back = returnPath || (page === 'material' ? '#/materials' : page.startsWith('material') ? workspacePath('material', id) : page === 'health' ? '#/overview'
+    : spaceId ? '#/space/' + encodeURIComponent(spaceId) + '/' + workspaceSection(page) : '#/spaces');
   let content = '';
-  if (view.mode !== 'live') content = panel(note('此功能使用真实学习数据，请先连接本地服务。') + '<button class="button button-primary" data-action="settings">连接本地服务</button>');
+  if (deletionPending) content = panel(note('删除请求已受理。资料记录已经移出资料库，后台正在清理原文件、解析索引和知识图谱。', 'warning') + '<p class="subtle">清理完成前请不要重复提交删除；如果长时间没有完成，请启动 graph worker 后点击“查看原任务结果”。</p>');
   else if (!data) content = panel(view.busy ? '<div class="loading-block" role="status">正在读取…</div>' : empty('暂未读取到内容，可点击刷新重试。'));
   else if (page.startsWith('material')) content = materialView(page, id, data);
   else if (page.startsWith('assessment')) content = assessmentView(page, id, item, data);
@@ -144,9 +161,10 @@ export function renderWorkspace(view) {
   else if (page === 'knowledge-correct') content = correctionView(data);
   else if (page === 'health') {
     const health = data.health, deps = health.dependencies;
-    content = panel(`<h2>本地服务 · ${label(health.status)}</h2>` + (!deps ? note('服务可连接，但未返回依赖详情。请检查连接令牌。') : table(['服务', '状态', '说明'], [['mysql', '学习数据'], ['neo4j', '知识图谱'], ['qdrant', '资料检索'], ['llm', '出题与问答'], ['embedding', '文本向量']].map(([key, name]) => { const value = deps[key]; return `<tr><td>${name}</td><td>${label(typeof value === 'object' ? value?.status : value)}</td><td>${typeof value === 'object' ? esc([value.provider, value.model].filter(Boolean).join(' · ')) : '—'}</td></tr>`; }).join('')) + '<p class="subtle">模型“已配置”表示已设置凭据，不代表本轮出题一定成功。</p>'));
+    content = panel(`<h2>本地服务 · ${label(health.status)}</h2>` + (!deps ? note('服务可连接，但未返回依赖详情。请刷新自动连接后重试。') : table(['服务', '状态', '说明'], [['mysql', '学习数据'], ['neo4j', '知识图谱'], ['qdrant', '资料检索'], ['llm', '出题与问答'], ['embedding', '文本向量']].map(([key, name]) => { const value = deps[key]; return `<tr><td>${name}</td><td>${label(typeof value === 'object' ? value?.status : value)}</td><td>${typeof value === 'object' ? esc([value.provider, value.model].filter(Boolean).join(' · ')) : '—'}</td></tr>`; }).join('')) + '<p class="subtle">模型“已配置”表示已设置凭据，不代表本轮出题一定成功。</p>'));
   } else content = spaceView(page, id, data, view.filters);
-  return `<div class="workspace-page" data-workspace-key="${esc(view.key + ':' + view.editRevision)}"><a class="text-link back-link" href="${back}">← 返回</a><div class="page-heading"><div><h1>${heading}</h1><p>${esc(data?.material?.name || data?.space?.name || '把需要的操作，放在清楚的位置。')}</p></div>${view.mode === 'live' ? action('刷新', 'reload') : ''}</div><div class="workspace-feedback-area" aria-live="polite">${view.error ? `<p class="notice error" role="alert">${esc(view.error)}</p>` : ''}${view.notice ? note(esc(view.notice)) : ''}${view.pendingRun && !view.busy ? '<div class="workspace-related"><span class="subtle">上次后台任务尚待确认</span>' + action('查看原任务结果', 'poll-command') + '</div>' : ''}${view.busy && data ? `<p class="notice" role="status">${esc(view.busy)}</p>` : ''}</div><div class="workspace-body" aria-busy="${Boolean(view.busy)}">${content || panel(empty('该功能页面不存在。'))}${page === 'knowledge-correct' && view.mode === 'live' ? '<div class="workspace-related">' + link('检查空间的知识更新', 'knowledge-updates', id) + '</div>' : ''}</div></div>`;
+  const displayError = deletionPending ? '' : view.error;
+  return `<div class="workspace-page" data-workspace-key="${esc(view.key + ':' + view.editRevision)}"><a class="text-link back-link" href="${esc(back)}">← 返回</a><div class="page-heading"><div><h1>${heading}</h1><p>${esc(data?.material?.name || data?.space?.name || '把需要的操作，放在清楚的位置。')}</p></div>${action('刷新', 'reload')}</div><div class="workspace-feedback-area" aria-live="polite">${displayError ? `<p class="notice error" role="alert">${esc(displayError)}</p>` : ''}${view.notice ? note(esc(view.notice)) : ''}${view.pendingRun && !view.busy ? '<div class="workspace-related"><span class="subtle">上次后台任务尚待确认</span>' + action('查看原任务结果', 'poll-command') + '</div>' : ''}${view.busy && data ? `<p class="notice" role="status">${esc(view.busy)}</p>` : ''}</div><div class="workspace-body" aria-busy="${Boolean(view.busy)}">${content || panel(empty('该功能页面不存在。'))}${page === 'knowledge-correct' ? '<div class="workspace-related">' + link('检查空间的知识更新', 'knowledge-updates', id) + '</div>' : ''}</div></div>`;
 }
 
 export function updateWorkspaceConditions(root, view) {

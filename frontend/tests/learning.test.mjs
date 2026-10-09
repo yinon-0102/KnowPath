@@ -61,6 +61,76 @@ test('learning routes render one functional panel at a time', () => {
   }
 });
 
+test('task assessments preserve their association and restrict questions to the task topic subset', () => {
+  const setup = { count: '5', kind: 'retest', type: 'single_choice', topic_ids: ['t2'], plan_id: 'p1', task_id: 'task1', learning_session_id: 'ss1' };
+  const body = assessmentPayload(setup, [{ id: 't1' }, { id: 't2' }]);
+  assert.deepEqual(body.topic_ids, ['t2']);
+  assert.equal(body.plan_id, 'p1'); assert.equal(body.task_id, 'task1'); assert.equal(body.learning_session_id, 'ss1');
+  for (const patch of [{ topic_ids: ['outside'] }, { topic_ids: [] }, { topic_ids: ['t2', 't2'] }, { topic: 't1' }]) {
+    assert.throws(() => assessmentPayload({ ...setup, ...patch }, [{ id: 't1' }, { id: 't2' }]), /主题|范围/);
+  }
+});
+
+test('assessment creation reads the latest task association and drops a context from another space', async () => {
+  let association = { space_id: 's1', plan_id: 'old', task_id: 'old-task', topic_ids: ['t1'] };
+  const calls = [], storage = memory();
+  const api = { space: async () => ({ id: 's1' }), topics: async () => [{ id: 't1', source_refs: [{}] }, { id: 't2', source_refs: [{}] }],
+    createAssessment: async (spaceId, body) => { calls.push(body); throw new ApiError('未创建', 400, 'INVALID_REQUEST'); } };
+  const controller = createLearningController({ api, storage, context: () => ({ ...context(), assessmentContext: association }) });
+  await controller.loadKnowledge();
+  controller.configure({ count: '5', kind: 'practice', type: 'single_choice' });
+  association = { space_id: 's1', plan_id: 'p2', task_id: 'task2', learning_session_id: 'ss2', topic_ids: ['t2'] };
+  await controller.start(controller.snapshot().setup);
+  assert.equal(calls[0].plan_id, 'p2'); assert.equal(calls[0].task_id, 'task2'); assert.equal(calls[0].learning_session_id, 'ss2');
+  assert.deepEqual(calls[0].topic_ids, ['t2']);
+  // An explicit validation failure permits a fresh creation, unlike an ambiguous network response.
+  const fresh = createLearningController({ api, storage: memory(), context: () => ({ ...context(), assessmentContext: { ...association, space_id: 's2' } }) });
+  await fresh.loadKnowledge();
+  await fresh.start({ count: '5', kind: 'practice', type: 'single_choice', plan_id: 'stale', task_id: 'stale', learning_session_id: 'stale', topic_ids: ['t2'] });
+  assert.ok(!('plan_id' in calls[1])); assert.ok(!('task_id' in calls[1])); assert.ok(!('learning_session_id' in calls[1]));
+  assert.deepEqual(calls[1].topic_ids, ['t1', 't2']);
+});
+
+test('embedded learning and hideNav omit jumps while review offers a retest only for due topics', () => {
+  const state = { evolution: { items: [
+    { topic_id: 'due"topic', topic_name: 'Due', current: { review_schedule: { due: true } } },
+    { topic_id: 'later', topic_name: 'Later', current: { review_schedule: { due: false } } },
+  ] } };
+  for (const props of [{ embedded: true }, { hideNav: true }]) {
+    const html = renderLearning({ mode: 'live', section: 'evolution', space: { id: 's1', name: 'Space' }, state, ...props });
+    assert.doesNotMatch(html, /learning-jumps|id="learning-diagnostic"/);
+    assert.equal((html.match(/data-action="review-topic"/g) || []).length, 1);
+    assert.match(html, /data-topic="due&quot;topic"/);
+  }
+});
+
+test('task context updates the setup scope and restricts the displayed topic choices', async () => {
+  let association = { space_id: 's1', plan_id: 'p1', task_id: 'task1', topic_ids: ['t2'] };
+  const controller = createLearningController({ api: { space: async () => ({ id: 's1' }), topics: async () => [
+    { id: 't1', name: 'Other topic', source_refs: [{}] }, { id: 't2', name: 'Task topic', source_refs: [{}] },
+  ] }, context: () => ({ ...context(), assessmentContext: association }), storage: memory() });
+  await controller.loadKnowledge();
+  controller.configure({ topic: 't1' });
+  const state = controller.snapshot();
+  assert.deepEqual(state.setup.topic_ids, ['t2']); assert.equal(state.setup.topic, '');
+  const html = renderLearning({ mode: 'live', space: { id: 's1', name: 'Space' }, state, embedded: true });
+  assert.match(html, /当前任务主题（1）/); assert.match(html, /<option value="t2"/); assert.doesNotMatch(html, /<option value="t1"/);
+  association = { ...association, space_id: 's2' };
+  assert.ok(!('plan_id' in controller.snapshot().setup)); assert.ok(!('topic_ids' in controller.snapshot().setup));
+});
+
+test('ambiguous task assessment retries preserve the original association after navigation', async () => {
+  let association = { space_id: 's1', plan_id: 'p1', task_id: 'task1', learning_session_id: 'ss1', topic_ids: ['t1'] };
+  const calls = [];
+  const controller = createLearningController({ api: { space: async () => ({ id: 's1' }), topics: async () => [{ id: 't1', source_refs: [{}] }, { id: 't2', source_refs: [{}] }],
+    createAssessment: async (id, body, options) => { calls.push({ body, key: options.key }); throw new ApiError('响应丢失', 0, 'NETWORK'); },
+  }, context: () => ({ ...context(), assessmentContext: association }), storage: memory() });
+  await controller.loadKnowledge(); await controller.start({ count: '5', kind: 'practice', type: 'single_choice' });
+  association = { ...association, plan_id: 'p2', task_id: 'task2', learning_session_id: 'ss2', topic_ids: ['t2'] };
+  await controller.start({ count: '6', kind: 'practice', type: 'single_choice' });
+  assert.deepEqual(calls[0], calls[1]); assert.equal(calls[0].body.plan_id, 'p1');
+});
+
 const failedRun = (runId = 'r1') => new ApiError('Generated questions failed validation.', 200,
   'QUESTION_VALIDATION_FAILED', { runId, runStatus: 'failed' });
 
@@ -216,20 +286,18 @@ test('late requests cannot leak results into another selected space', async () =
   assert.equal(controller.snapshot().busy, '');
 });
 
-test('demo mode makes no requests and can complete a local assessment flow', async () => {
-  const space = { id: 'demo', name: 'Demo', topic_ids: ['t1'], nodes: [{ id: 't1', title: '向量', source_refs: [{ material_id: 'm1' }] }] };
-  const controller = createLearningController({ api: new Proxy({}, { get: () => () => { throw new Error('network forbidden'); } }),
-    context: () => ({ mode: 'demo', spaceId: 'demo', space, active: true }), storage: memory() });
-  await controller.loadKnowledge(); await controller.start({ topic: '', count: '5', type: 'single_choice', kind: 'practice' });
-  assert.equal(controller.snapshot().diagnostic.current_question.type, 'single_choice');
-  const first = controller.snapshot().diagnostic.current_question;
-  await controller.answer('A');
-  assert.equal(controller.snapshot().diagnostic.progress.answered, 1);
-  const html = renderLearning({ mode: 'demo', space, state: controller.snapshot() });
-  assert.match(html, /示例模式使用当前空间主题生成本地练习题/);
-  assert.match(html, /提交当前答案/);
-  assert.doesNotMatch(html, /Which definition/);
-  assert.notEqual(first.id, controller.snapshot().diagnostic.current_question.id);
+test('knowledge lookup always reads the current backend scope without a mode selector', async () => {
+  const space = { id: 's1', topic_ids: ['t1'] };
+  const topics = [{ id: 't1', title: '向量', source_refs: [{ material_id: 'm1' }] }];
+  const calls = [];
+  const controller = createLearningController({ api: {
+    space: async id => { calls.push(['space', id]); return space; },
+    topics: async selected => { calls.push(['topics', selected.id]); return topics; },
+  }, context: () => ({ spaceId: 's1', active: true }), storage: memory() });
+  await controller.loadKnowledge();
+  assert.deepEqual(calls, [['space', 's1'], ['topics', 's1']]);
+  assert.deepEqual(controller.snapshot().knowledge.eligible, topics);
+  assert.equal(controller.snapshot().diagnostic, null);
 });
 
 test('renderer escapes backend values and excludes hidden question internals', () => {
@@ -326,4 +394,20 @@ test('diagnostics progress in current page when session storage is unavailable',
   await controller.start(); await controller.answer('A');
   assert.equal(controller.snapshot().error, '');
   assert.equal(controller.snapshot().diagnostic.current_question.id, 'q2');
+});
+
+test('completed task context enforces retest when submitted form selects an unsupported kind', async () => {
+  let body;
+  const controller = createLearningController({ storage: memory(), context: () => ({ mode: 'live', spaceId: 's1', active: true,
+    assessmentContext: { space_id: 's1', plan_id: 'p1', task_id: 't1', topic_ids: ['topic'], kind: 'retest', allowed_kinds: ['retest'] } }),
+    api: { space: async () => ({ id: 's1', topic_ids: ['topic'] }), topics: async () => [{ id: 'topic', source_refs: [{ chunk_id: 'chunk' }] }],
+      createAssessment: async (_, request) => { body = request; throw new Error('stop after capture'); } } });
+  await controller.loadKnowledge();
+  await controller.start({ kind: 'diagnostic', count: '5', type: 'single_choice' });
+  assert.equal(body.kind, 'retest');
+  assert.equal(body.adaptive, false);
+  assert.equal(body.allowed_kinds, undefined);
+  assert.equal(controller.snapshot().setup.kind, 'retest');
+  const html = renderLearning({ mode: 'live', space: { id: 's1' }, state: { ...controller.snapshot(), assessmentId: '', knowledge: { space: { bindings: [] }, topics: [{ id: 'topic' }], eligible: [{ id: 'topic' }] } } });
+  assert.doesNotMatch(html.split('id="assessment-kind"')[1].split('</select>')[0], /value="diagnostic"|value="practice"/);
 });

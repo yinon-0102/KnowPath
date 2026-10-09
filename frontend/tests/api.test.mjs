@@ -2,6 +2,16 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createApi, ApiError } from '../src/api.js';
 
+test('expired local authentication prompts automatic reconnection', async t => {
+  t.mock.method(globalThis, 'fetch', async () => new Response('{}', { status: 401 }));
+  await assert.rejects(createApi(() => 'expired').health(), error => {
+    assert.equal(error.status, 401);
+    assert.match(error.message, /自动连接|重新连接/);
+    assert.doesNotMatch(error.message, /输入|连接设置/);
+    return true;
+  });
+});
+
 const json = value => new Response(JSON.stringify(value), { headers: { 'Content-Type': 'application/json' } });
 test('topic lookup uses frozen material versions and rejects inconsistent graph snapshots', async t => {
   const bindings = [{ material_id: 'm1', material_version_id: 'v1', graph_version: 3 }];
@@ -13,20 +23,51 @@ test('topic lookup uses frozen material versions and rejects inconsistent graph 
   graphVersion = 4;
   await assert.rejects(() => api.topics({ bindings }), error => error.code === 'STALE_KNOWLEDGE');
 });
-test('material graph can load before a learning space exists', async t => {
+test('material graph loads the complete published projection in one request', async t => {
   const calls = [];
   t.mock.method(globalThis, 'fetch', async url => {
     calls.push(url);
-    if (url.includes('/topics?')) return json({ material_id: 'm1', version_id: 'v1', graph_version: 0, items: [
-      { id: 't1', name: '第一章', level: 1, source_refs: [] },
-      { id: 't2', name: '第二章', level: 1, parent_id: 't1', source_refs: [] },
-    ] });
-    return json({ nodes: [{ id: 't1' }, { id: 't2' }], edges: [{ id: 'e1', type: 'contains', from_id: 't1', to_id: 't2' }] });
+    return json({ material_id: 'm1', version_id: 'v1', graph_version: 1,
+      nodes: [{ id: 't1', name: '第一章' }, { id: 't2', name: '第二章' }],
+      edges: [{ id: 'e1', type: 'contains', from_id: 't1', to_id: 't2' }], sources: [] });
   });
   const graph = await createApi(() => '').materialGraph({ id: 'm1', current_version_id: 'v1' });
   assert.deepEqual(graph.nodes.map(node => node.id), ['t1', 't2']);
   assert.equal(graph.edges[0].id, 'e1');
-  assert.ok(calls[0].endsWith('/materials/m1/topics?version_id=v1'));
+  assert.equal(calls.length, 1);
+  assert.ok(calls[0].endsWith('/materials/m1/graph?version_id=v1&include_sources=true'));
+});
+
+test('space graph reads each bound material projection once instead of each root topic', async t => {
+  const calls = [];
+  t.mock.method(globalThis, 'fetch', async url => {
+    calls.push(url);
+    if (url.includes('/materials/m1/graph?')) return json({ material_id: 'm1', version_id: 'v1', graph_version: 2,
+      nodes: [{ id: 'a', material_version_id: 'v1', graph_version: 2 }], edges: [], sources: [] });
+    if (url.includes('/materials/m2/graph?')) return json({ material_id: 'm2', version_id: 'v2', graph_version: 3,
+      nodes: [{ id: 'b', material_version_id: 'v2', graph_version: 3 }], edges: [], sources: [] });
+    assert.fail(`unexpected graph request ${url}`);
+  });
+  const graph = await createApi(() => '').graph({ bindings: [
+    { material_id: 'm1', material_version_id: 'v1', graph_version: 2 },
+    { material_id: 'm2', material_version_id: 'v2', graph_version: 3 },
+  ], topic_ids: ['a', 'b'] });
+  assert.deepEqual(graph.nodes.map(node => node.id), ['a', 'b']);
+  assert.equal(calls.length, 2);
+  assert.ok(calls.every(url => url.includes('/graph?version_id=')));
+});
+
+test('material file request keeps the original PDF response and local auth', async t => {
+  let captured;
+  t.mock.method(globalThis, 'fetch', async (url, options) => {
+    captured = { url: new URL(url), options };
+    return new Response('%PDF-1.7', { headers: { 'Content-Type': 'application/pdf' } });
+  });
+  const response = await createApi(() => 'local-token').materialFile('m1', 'v1');
+  assert.equal(captured.url.pathname, '/api/v1/materials/m1/versions/v1/file');
+  assert.equal(captured.options.headers['X-Local-Token'], 'local-token');
+  assert.equal(captured.options.credentials, 'omit');
+  assert.equal(await response.text(), '%PDF-1.7');
 });
 test('polling preserves terminal run error code and task identity', async t => {
   const mock = t.mock.method(globalThis, 'fetch', async () => json({ status: 'failed', error: {

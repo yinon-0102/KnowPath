@@ -7,6 +7,7 @@ import { esc, pdfKey, validatePdf, sourcePage, pdfLocation } from '../src/store.
 // Exercise the actual app handlers with browser boundaries stubbed. This is
 // a flow test, not a substitute for testing the browser's native PDF renderer.
 const app = await readFile(new URL('../src/app.js', import.meta.url), 'utf8');
+const styles = await readFile(new URL('../src/styles.css', import.meta.url), 'utf8');
 const handlers = app.slice(app.indexOf('function materialSpace('), app.indexOf("document.addEventListener('click'"));
 const ref = { material_id: 'm1', material_version_id: 'v1', chunk_id: 'c1' };
 const pdf = { blob: new Blob(['%PDF-1.7']), name: 'source.pdf', verified: true };
@@ -25,7 +26,12 @@ function environment({ source, cached = true, blocked = false } = {}) {
     state: { mode: 'live', graphSelected: 'topic-original' },
     data: () => ({ materials: [material], spaces: [space] }), currentSpace: () => space,
     normalizeType: item => item.type,
-    api: { source: source || (async () => ({ text: '核对后的原文', page: 7 })), materialVersions: async () => [{ id: 'v1', content_hash: 'a'.repeat(64) }] },
+    api: {
+      source: source || (async () => ({ text: '核对后的原文', page: 7 })),
+      material: async () => ({ material, version: { id: 'v1', chunks: [{ text: '解析后的原文', page: 7 }] } }),
+      materialFile: async () => ({ blob: async () => new Blob(['%PDF-1.7\nbackend-original'], { type: 'application/pdf' }) }),
+      materialVersions: async () => [{ id: 'v1', content_hash: 'a'.repeat(64) }],
+    },
     URL: { createObjectURL: () => 'blob:test-original', revokeObjectURL: () => {} }, setInterval: () => 1, clearInterval: () => {},
     window: { open: () => {
       if (blocked) return null;
@@ -87,6 +93,14 @@ test('missing PDF renders real source text and file selection, not a broken or g
   assert.doesNotMatch(env.modal.html, /blob:/);
 });
 
+test('material-library PDF view opens the backend original file when no browser cache exists', async () => {
+  const env = environment({ cached: false });
+  await env.context.openSourcePage({ material_id: 'm1', material_version_id: 'v1' }, { materialView: true });
+  assert.equal(env.windows.length, 1);
+  assert.equal(env.windows[0].destination, 'blob:test-original#page=7&view=FitH');
+  assert.equal(env.modal.open, false);
+});
+
 test('reader mode retains text and graph review actions without automatically opening another tab', async () => {
   const env = environment();
   await env.context.showSource(ref, { materialView: true, forceReader: true });
@@ -113,4 +127,49 @@ test('choosing the wrong original PDF never overwrites the saved association', a
   assert.equal(env.windows[0].closed, true);
   assert.equal(env.cache.get(pdfKey('live', 'm1', 'v1')), pdf);
   assert.match(env.notices.at(-1), /版本不一致/);
+});
+
+
+test('homepage preserves the original learning-first layout', () => {
+  assert.match(app, /你的学习，此刻继续。/);
+  assert.match(app, /今天，向前一小步。/);
+  assert.match(app, /探索知识图谱/);
+  assert.match(app, /class="stats-strip"/);
+});
+
+test('live material imports schedule refresh while parsing', () => {
+  assert.match(app, /scheduleMaterialRefresh/);
+  assert.match(app, /clearMaterialRefresh/);
+});
+
+
+test('live material list exposes a direct delete action', () => {
+  assert.match(app, /manageLink\('删除', 'material-delete'/);
+  assert.match(app, /danger-link/);
+  assert.match(styles, /material-action\{display:flex;grid-column:1\/-1/);
+});
+
+test('material refresh scheduler polls pending imports and stops after readiness', async () => {
+  const scheduler = app.slice(app.indexOf('const pendingMaterialStatuses'), app.indexOf('async function refreshData'));
+  let timer = null;
+  const cleared = [];
+  let refreshes = 0;
+  const context = vm.createContext({
+    state: { mode: 'live', live: { materials: [{ status: 'processing' }] }, materialRefreshTimer: null },
+    setTimeout: (callback, delay) => { timer = { callback, delay }; return 7; },
+    clearTimeout: id => { cleared.push(id); },
+    refreshData: async ({ silent }) => {
+      assert.equal(silent, true);
+      refreshes += 1;
+      context.state.live.materials = [{ status: 'ready' }];
+    },
+  });
+  vm.runInContext(scheduler, context);
+  context.scheduleMaterialRefresh();
+  assert.equal(timer.delay, 2500);
+  context.scheduleMaterialRefresh();
+  assert.deepEqual(cleared, [7]);
+  await timer.callback();
+  assert.equal(refreshes, 1);
+  assert.equal(context.state.materialRefreshTimer, null);
 });

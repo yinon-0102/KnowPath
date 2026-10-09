@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createWorkspaceController, updatedBindings, taskPayload, resolutionPayload, correctionPayload, dateRange } from '../src/workspace.js';
+import * as workspaceModule from '../src/workspace.js';
 import { renderWorkspace, workspaceTitles, correctionFields, updateWorkspaceConditions } from '../src/workspace-view.js';
 import { createApi, ApiError } from '../src/api.js';
 
@@ -12,7 +13,7 @@ const space = { id: 's1', name: '线性代数', space_version: 4, bindings: [{ m
 const topic = { id: 't1', name: '线性变换', description: '保持线性结构', source_refs: [ref] };
 const question = { id: 'q1', type: 'single_choice', topic_id: 't1', prompt: '什么是线性变换？', options: [{ id: 'A', text: '保持线性' }, { id: 'B', text: '任意映射' }], source_refs: [ref], answer_key: 'A', rubric: '线性性质' };
 const review = { review_id: 'r1', question_id: 'q1', question, frozen_question: question, source_text: '封存的原文', status: 'pending', events: [{ action: 'report', reason: '表述不清楚' }] };
-const plan = { id: 'p1', space_id: 's1', version: 4, tasks: [{ id: 'task1', topic_ids: ['t1'], status: 'pending', estimated_minutes: 25 }] };
+const plan = { id: 'p1', space_id: 's1', status: 'ready', version: 4, tasks: [{ id: 'task1', topic_ids: ['t1'], status: 'pending', estimated_minutes: 25 }] };
 const diff = { candidate_revision_id: 'revision1', base_graph_version: 2, status: 'pending_review', added: [], changed: [{ kind: 'node', before: topic, after: { ...topic, name: '新版线性变换' } }], removed: [], conflicts: [] };
 function fixtures() {
   return {
@@ -78,9 +79,16 @@ test('a queued deletion remains pollable after reload even when the material rec
   const storage = memory(); let polls = 0;
   const api = { deleteMaterial: async () => ({ run_id: 'delete-run' }), waitRun: async () => { if (++polls === 1) throw new ApiError('后台处理中', 0, 'RUN_PENDING'); return { status: 'succeeded' }; } };
   let env = environment('material-delete/m1', api, { storage }); await env.controller.load(); await env.controller.submit(values({ confirm: 'on', cascade: 'on' }));
-  env = environment('material-delete/m1', { ...api, materials: async () => [] }, { storage }); await env.controller.load();
+  env = environment('material-delete/m1', { ...api,
+    materials: async () => [],
+    materialVersions: async () => [],
+  }, { storage }); await env.controller.load();
   assert.equal(env.controller.snapshot().data, null); assert.equal(env.controller.snapshot().pendingRun, 'delete-run');
-  assert.match(renderWorkspace(env.controller.snapshot()), /查看原任务结果/);
+  const html = renderWorkspace(env.controller.snapshot());
+  assert.match(html, /查看原任务结果/);
+  assert.match(html, /删除请求已受理/);
+  assert.match(html, /清理/);
+  assert.doesNotMatch(html, /资料不存在|暂未读取到内容/);
   await env.controller.action('poll-command'); assert.equal(env.navigations[0][0], '#/materials');
 });
 test('knowledge updates replace only selected material bindings and strip internal fields', () => {
@@ -181,11 +189,98 @@ test('exports wait for success and download authenticated binary response', asyn
   const env = environment('export/s1', { exportSpace: async () => { calls.push('create'); return { run_id: 'exportRun', export_id: 'zip1' }; }, waitRun: async () => calls.push('wait'), downloadExport: async id => { calls.push(id); return new Response(new Blob(['zip'])); } }, { download: (...args) => downloads.push(args) });
   await env.controller.load(); await env.controller.action('export'); assert.deepEqual(calls, ['create', 'wait', 'zip1']); assert.equal(await downloads[0][0].text(), 'zip');
 });
-test('profile editing saves only the goal and explanation preferences', async () => {
+test('profile editing saves weekly budget and clears the target date with the current version', async () => {
   let body;
   const env = environment('space-profile/s1', { updateProfile: async (id, payload) => { body = payload; return {}; } });
   await env.controller.load(); await env.controller.submit(values({ goal: '准备期末考试', weekly_minutes: '120', target_date: '', example_first: 'on' }));
-  assert.deepEqual(body, { goal: '准备期末考试', preferences: { example_first: true, concise_explanations: false }, expected_version: 2 });
+  assert.deepEqual(body, { goal: '准备期末考试', preferences: { example_first: true, concise_explanations: false }, weekly_minutes: 120, target_date: null, expected_version: 2 });
+});
+
+test('optional profile budget stays unset and invalid budgets or dates never reach PATCH', async () => {
+  const calls = [];
+  const env = environment('space-profile/s1', { updateProfile: async (id, body) => { calls.push(body); return {}; } });
+  await env.controller.load();
+  for (const weekly_minutes of ['14', '2401', '12.5', 'invalid']) {
+    await env.controller.submit(values({ goal: 'Goal', weekly_minutes, target_date: '' }));
+    assert.equal(calls.length, 0);
+  }
+  await env.controller.submit(values({ goal: 'Goal', weekly_minutes: '', target_date: '2026-02-30' }));
+  assert.equal(calls.length, 0);
+  await env.controller.submit(values({ goal: 'Goal', weekly_minutes: '', target_date: '2026-12-31' }));
+  assert.ok(!('weekly_minutes' in calls[0])); assert.equal(calls[0].target_date, '2026-12-31');
+  const html = renderWorkspace(env.controller.snapshot());
+  assert.match(html, /name="weekly_minutes"[^>]*value="150"[^>]*min="15"[^>]*max="2400"/);
+  assert.match(html, /name="target_date"/);
+});
+
+test('workspace sections and backlink keep management pages in their owning space section', async () => {
+  assert.equal(typeof workspaceModule.workspaceSection, 'function');
+  const sections = { task: 'plan', session: 'plan', 'assessment-result': 'assessment', 'space-scope': 'materials', 'knowledge-updates': 'materials', 'knowledge-correct': 'materials', 'knowledge-changes': 'materials', 'learning-state': 'review', evidence: 'review', 'learning-reset': 'review', 'space-profile': 'settings', 'space-name': 'settings', 'space-settings': 'settings', export: 'settings' };
+  for (const [page, section] of Object.entries(sections)) {
+    assert.equal(workspaceModule.workspaceSection(page), section);
+    const env = environment(`${page}/${page.startsWith('assessment') ? 'a1' : ['task', 'session'].includes(page) ? 'p1/task1' : 's1'}`);
+    await env.controller.load();
+    assert.match(renderWorkspace(env.controller.snapshot()), new RegExp(`back-link" href="#/space/s1/${section}"`));
+    assert.match(renderWorkspace(env.controller.snapshot(), { returnPath: '#/space/s1/overview' }), /back-link" href="#\/space\/s1\/overview"/);
+  }
+});
+
+test('space settings offers names preferences exports and reset while section pages hold learning tools', async () => {
+  const env = environment('space-settings/s1'); await env.controller.load();
+  const html = renderWorkspace(env.controller.snapshot());
+  for (const page of ['space-name', 'space-profile', 'export', 'learning-reset']) assert.match(html, new RegExp(`#/manage/${page}/s1`));
+  for (const page of ['space-scope', 'knowledge-updates', 'knowledge-changes', 'learning-state', 'evidence']) assert.doesNotMatch(html, new RegExp(`#/manage/${page}/s1`));
+});
+
+test('server workbench restores an active session and overrides a stale local descriptor', async () => {
+  const storage = memory();
+  storage.setItem('knowpath-study-sessions-v1', JSON.stringify({ s1: { session_id: 'stale', status: 'active', plan_id: 'p1', task_id: 'task1' } }));
+  const env = environment('session/p1/task1', { workbench: async id => ({ space_id: id, active_session: { id: 'server-session', status: 'active', space_id: id, plan_id: 'p2', task_id: 'task2', paused: true } }) }, { storage });
+  await env.controller.load();
+  assert.equal(env.controller.snapshot().data.session.session_id, 'server-session');
+  assert.match(renderWorkspace(env.controller.snapshot()), /href="#\/manage\/session\/p2\/task2"/);
+  const noSession = environment('session/p1/task1', { workbench: async id => ({ space_id: id, active_session: null }) }, { storage });
+  await noSession.controller.load(); assert.equal(noSession.controller.snapshot().data.session, null);
+});
+
+test('a mismatched server workbench never displays the local or foreign active session', async () => {
+  const storage = memory();
+  storage.setItem('knowpath-study-sessions-v1', JSON.stringify({ s1: { session_id: 'local', status: 'active', plan_id: 'p1', task_id: 'task1' } }));
+  for (const workbench of [
+    { space_id: 's2', active_session: null },
+    { space_id: 's1', active_session: { session_id: 'foreign', space_id: 's2', plan_id: 'p1', task_id: 'task1', status: 'active' } },
+  ]) {
+    const env = environment('session/p1/task1', { workbench: async () => workbench }, { storage });
+    await env.controller.load(); assert.equal(env.controller.snapshot().data, null); assert.match(env.controller.snapshot().error, /空间不一致/);
+  }
+});
+
+test('session support navigation retains learning association and return route', async () => {
+  const env = environment('session/p1/task1', { workbench: async () => ({ space_id: 's1', active_session: { session_id: 'ss1', status: 'active', space_id: 's1', plan_id: 'p1', task_id: 'task1' } }), sessionEvent: async () => ({}) });
+  await env.controller.load(); await env.controller.action('session-event', 'request_hint');
+  const [path, details] = env.navigations[0];
+  assert.equal(path, '#/space/s1/assistant');
+  assert.equal(details.learningSessionId, 'ss1'); assert.equal(details.planId, 'p1'); assert.equal(details.taskId, 'task1');
+  assert.equal(details.returnTo, '#/manage/session/p1/task1'); assert.deepEqual(details.topicIds, ['t1']);
+});
+
+test('session support uses the sources sealed when the session started', async () => {
+  const frozenTopic = { ...topic, name: '封存名称', source_refs: [{ ...ref, material_version_id: 'frozen-version', chunk_id: 'frozen-chunk' }] };
+  const opened = [];
+  const env = environment('session/p1/task1', { workbench: async () => ({ space_id: 's1', active_session: { session_id: 'ss1', status: 'active', space_id: 's1', plan_id: 'p1', task_id: 'task1', context: { topics: [frozenTopic] } } }), sessionEvent: async () => ({}) }, { openSource: async (...args) => opened.push(args) });
+  await env.controller.load(); await env.controller.action('session-event', 'open_material');
+  assert.equal(opened[0][0].chunk_id, 'frozen-chunk');
+  await env.controller.action('session-event', 'request_explanation');
+  assert.deepEqual(env.navigations[0][1].topics, [frozenTopic]);
+});
+
+test('finished session offers an associated assessment alongside task status editing', async () => {
+  const env = environment('session/p1/task1', { startSession: async () => ({ session_id: 'ss1', status: 'active', task_id: 'task1', plan_id: 'p1' }), finishSession: async () => ({ session_id: 'ss1', status: 'finished', elapsed_seconds: 120 }) });
+  await env.controller.load(); await env.controller.action('session-start'); await env.controller.action('session-finish');
+  const html = renderWorkspace(env.controller.snapshot());
+  assert.match(html, /data-action="task-assessment"[^>]*data-plan="p1"[^>]*data-task="task1"[^>]*data-session="ss1"/);
+  assert.match(html, /data-topics="\[&quot;t1&quot;\]"/);
+  assert.match(html, /href="#\/manage\/task\/p1\/task1"/);
 });
 test('scope changes do not allow the same topic in inclusion and exclusion', async () => {
   let calls = 0;
@@ -221,4 +316,21 @@ test('API wrappers send exact routes, authentication, multipart versions and sou
 test('conditional form controls are disabled when hidden so unrelated required fields do not block submit', () => {
   const input = {}, root = { querySelectorAll: selector => selector === '[data-ws-when]' ? [{ dataset: { wsWhen: 'action:correct' }, closest: () => ({ elements: { namedItem: () => ({ value: 'invalidate' }) } }), querySelectorAll: () => [input] }] : [] };
   updateWorkspaceConditions(root, { busy: '' }); assert.equal(input.disabled, true);
+});
+
+test('historical task details are read-only and keep sealed names and notes', () => {
+  const html = renderWorkspace({ mode: 'live', key: 'task', route: { page: 'task', id: 'p1', item: 'task1' }, data: { space, plan: { ...plan, status: 'superseded' }, task: { ...plan.tasks[0], note: '旧笔记', context: { historical: true, title: '封存标题' } } } });
+  assert.match(html, /封存标题|旧笔记/);
+  assert.doesNotMatch(html, /data-workspace-form|开始任务学习/);
+});
+
+test('completed task finished session offers retest without starting another session', () => {
+  const html = renderWorkspace({ mode: 'live', key: 'session', route: { page: 'session', id: 'p1', item: 'task1' }, data: { space, plan: { ...plan, status: 'needs_replan', tasks: [{ ...plan.tasks[0], status: 'completed' }] }, task: { ...plan.tasks[0], status: 'completed' }, session: { id: 'session1', task_id: 'task1', plan_id: 'p1', status: 'finished', elapsed_seconds: 60 } } });
+  assert.match(html, /data-action="task-assessment"[^>]*data-kind="retest"/);
+  assert.doesNotMatch(html, /data-workspace-action="session-start"/);
+});
+
+test('management routes decode each identifier independently', () => {
+  const path = workspaceModule.workspacePath('session', 'plan/a', '任务/b');
+  assert.deepEqual(workspaceModule.workspaceRoute(path.slice('#/manage/'.length)), { page: 'session', id: 'plan/a', item: '任务/b' });
 });
