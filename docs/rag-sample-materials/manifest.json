@@ -1,0 +1,66 @@
+[
+  {
+    "file": "think-python-2e.pdf",
+    "title": "Think Python, 2nd edition",
+    "source": "https://greenteapress.com/thinkpython2/thinkpython2.pdf",
+    "final_url": "https://greenteapress.com/thinkpython2/thinkpython2.pdf",
+    "bytes": 921415,
+    "sha256": "9d923cacf1b07e88a6314395a5afafae1aa01cd1aa0ce16b1851d38b18542487",
+    "chunks": 265,
+    "max_chunk_chars": 3278,
+    "chunks_over_6000": 0,
+    "sample": "Think Python\nHow to Think Like a Computer Scientist\n2nd Edition, Version 2.4.0",
+    "pages": 244,
+    "pages_with_text": 243
+  },
+  {
+    "file": "think-stats-2e.pdf",
+    "title": "Think Stats, 2nd edition",
+    "source": "https://greenteapress.com/thinkstats2/thinkstats2.pdf",
+    "final_url": "https://greenteapress.com/thinkstats2/thinkstats2.pdf",
+    "bytes": 2090830,
+    "sha256": "272d5c33b81447227ac58d37e0343a2e9266714ed13702f1d5d0333c67660f02",
+    "chunks": 278,
+    "max_chunk_chars": 2225,
+    "chunks_over_6000": 0,
+    "sample": "Think Stats\nExploratory Data Analysis in Python\nVersion 2.2.0",
+    "pages": 264,
+    "pages_with_text": 263
+  },
+  {
+    "file": "d2l-linear-algebra-zh.md",
+    "title": "动手学深度学习：线性代数",
+    "source": "https://raw.githubusercontent.com/d2l-ai/d2l-zh/master/chapter_preliminaries/linear-algebra.md",
+    "final_url": "https://raw.githubusercontent.com/d2l-ai/d2l-zh/master/chapter_preliminaries/linear-algebra.md",
+    "bytes": 31868,
+    "sha256": "ee341ac1c6c050238360e8f0ac3f592209e52497792cd0dec669d79edee8f6ef",
+    "chunks": 222,
+    "max_chunk_chars": 636,
+    "chunks_over_6000": 0,
+    "sample": ":label:`sec_linear-algebra`"
+  },
+  {
+    "file": "d2l-calculus-zh.md",
+    "title": "动手学深度学习：微积分",
+    "source": "https://raw.githubusercontent.com/d2l-ai/d2l-zh/master/chapter_preliminaries/calculus.md",
+    "final_url": "https://raw.githubusercontent.com/d2l-ai/d2l-zh/master/chapter_preliminaries/calculus.md",
+    "bytes": 12937,
+    "sha256": "afbb49d0908ae9d23f12572e83044ed736d6aa4fc4a6754d76c183f24334a87d",
+    "chunks": 73,
+    "max_chunk_chars": 480,
+    "chunks_over_6000": 0,
+    "sample": ":label:`sec_calculus`"
+  },
+  {
+    "file": "rfc8259-json.txt",
+    "title": "RFC 8259: JSON",
+    "source": "https://www.rfc-editor.org/rfc/rfc8259.txt",
+    "final_url": "https://www.rfc-editor.org/rfc/rfc8259.txt",
+    "bytes": 28360,
+    "sha256": "61a5378f4255c720beb2a4b4a63b29540147c140f36988bf086291989b4cd2d7",
+    "chunks": 205,
+    "max_chunk_chars": 1821,
+    "chunks_over_6000": 0,
+    "sample": "Internet Engineering Task Force (IETF)                      T. Bray, Ed.\nRequest for Comments: 8259                                    Textuality\nObsoletes: 7159                   "
+  }
+]

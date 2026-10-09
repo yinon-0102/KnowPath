@@ -1,0 +1,75 @@
+ParentDocumentRetriever | langchain_classic | LangChain ReferenceLangChain Reference home pageSearch...⌘K
+Ask AI
+GitHub
+Main DocsDeep AgentsLangChainLangGraphIntegrationsLangSmith
+OverviewLangChainLangChain CoreMCP AdaptersStandard TestsText SplittersLangChain Classic
+Overview
+Agents
+Callbacks
+Chains
+Chat models
+Embeddings
+Evaluation
+Globals
+Hub
+Memory
+Output parsers
+Retrievers
+Runnables
+LangSmith
+Storage⌘I
+LangChain AssistantNewHistory
+Ask a question to get started
+Enter to send•Shift+Enter new line
+MenuNavigationProjectsLangChainLangChain CoreMCP AdaptersStandard TestsText SplittersLangChain ClassicOverviewAgentsCallbacksChainsChat modelsEmbeddingsEvaluationGlobalsHubMemoryOutput parsersRetrieversRunnablesLangSmithStorageLanguagePythonJavaScriptThemeLightDarkPythonlangchain-classicretrieversparent_document_retrieverParentDocumentRetrieverClassv1.4.2 (latest)●Since v1.0
+ParentDocumentRetrieverCopyParentDocumentRetriever()
+BasesMultiVectorRetriever
+Attributes
+Methods
+Inherited fromMultiVectorRetriever
+AttributesAvectorstore: VectorStore—
+The underlying VectorStore to use to store small chunksAbyte_store: ByteStore | None—
+The lower-level backing storage layer for the parent documentsAdocstore: BaseStore[str, Document]—
+The storage interface for the parent documentsView source on GitHubVersion HistoryAid_key: strAsearch_kwargs: dict—
+Keyword arguments to pass to the search function.Asearch_type: SearchType—
+Type of search to perform (similarity / mmr)
+Inherited fromBaseRetriever(langchain_core)
+AttributesAmodel_configAtagsAmetadata
+MethodsMinvokeMainvoke
+Inherited fromRunnableSerializable(langchain_core)
+AttributesAnameAmodel_config
+MethodsMto_jsonMconfigurable_fieldsMconfigurable_alternatives
+Inherited fromSerializable(langchain_core)
+AttributesAlc_secretsAlc_attributesAmodel_config
+MethodsMis_lc_serializableMget_lc_namespaceMlc_idMto_jsonMto_json_not_implemented
+Inherited fromRunnable(langchain_core)
+AttributesAnameAInputTypeAOutputTypeAinput_schemaAoutput_schemaAconfig_specs
+MethodsMget_nameMget_input_schemaMget_input_jsonschemaMget_output_schemaMget_output_jsonschemaMconfig_schemaattributechild_splitter: TextSplitter
+The text splitter to use to create child documents.attributeparent_splitter: TextSplitter | None
+The text splitter to use to create parent documents.
+If none, then the parent documents will be the raw documents passed in.attributechild_metadata_fields: Sequence[str] | None
+Metadata fields to leave in child documents. If None, leave all parent document
+metadata.methodadd_documents
+Adds documents to the docstore and vectorstores.methodaadd_documents
+Adds documents to the docstore and vectorstores.
+Retrieve small chunks then retrieve their parent documents.
+
+When splitting documents for retrieval, there are often conflicting desires:
+
+
+You may want to have small documents, so that their embeddings can most
+accurately reflect their meaning. If too long, then the embeddings can
+lose meaning.
+
+You want to have long enough documents that the context of each chunk is
+retained.
+
+
+The ParentDocumentRetriever strikes that balance by splitting and storing
+small chunks of data. During retrieval, it first fetches the small chunks
+but then looks up the parent IDs for those chunks and returns those larger
+documents.
+
+Note that "parent document" refers to the document that a small chunk
+originated from. This can either be the whole raw document OR a larger
+chunk.Mget_config_jsonschemaMget_graphMget_promptsMpipeMpickMassignMinvokeMainvokeMbatchMbatch_as_completedMabatchMabatch_as_completedMstreamMastreamMastream_logMastream_eventsMstream_eventsMtransformMatransformMbindMwith_configMwith_listenersMwith_alistenersMwith_typesMwith_retryMmapMwith_fallbacksMas_tool
