@@ -1,10 +1,10 @@
 # KnowPath
 
-**基于个人资料、知识图谱与学习证据的自适应学习系统。**
+**融合知识图谱与学习状态演化的自适应学习系统**
 
 KnowPath 将用户自己的教材、笔记和文档组织成可追溯的知识结构，通过诊断、练习和复测识别学习状态，再结合前置知识与时间预算生成学习安排。分层记忆与上下文编排让讨论能够延续，同时控制历史信息的范围、重复与输入成本。资料、题目、回答和掌握度之间保留来源与版本关联，让“学什么、为什么学、是否学会”都有可查询的依据。
 
-当前已实现面向本地单用户的 Python Web 后端，提供 REST API、SSE 事件流和两个持久化后台任务进程。`frontend/` 为预留目录，尚未实现前端界面。
+当前已实现面向本地单用户的 Python Web 后端和 `frontend/` 学习界面。后端提供 REST API、SSE 事件流和两个持久化后台任务进程；前端按学习首页、学习空间、资料库组织功能，支持任务节点进度、真实学习记录与测评复习。运行命令见 `frontend/README.md`。
 
 [产品功能](#产品功能) · [系统架构](#系统架构) · [算法与策略亮点](#算法与策略亮点) · [快速启动](#快速启动) · [验证与当前边界](#验证与当前边界)
 
@@ -45,7 +45,7 @@ flowchart LR
 
 ```mermaid
 flowchart TB
-    Client[API 客户端 / 未来前端] --> API[FastAPI 请求层<br/>REST · SSE · 鉴权 · 参数校验]
+    Client[学习前端 / API 客户端] --> API[FastAPI 请求层<br/>REST · SSE · 鉴权 · 参数校验]
     API --> Domain[学习领域服务<br/>资料 · 图谱 · 空间 · 测评 · 计划 · 对话]
     Domain --> SQL[(MySQL<br/>业务状态 · 快照 · 证据 · Run · Outbox)]
     Domain --> MinIO[(MinIO<br/>原始文档对象)]
@@ -85,7 +85,7 @@ flowchart TB
 
 ```text
 KnowPath/
-├── frontend/                     # 前端预留目录
+├── frontend/                     # 本地学习前端，Node.js 静态服务
 ├── py/                           # Python 后端与 .venv
 │   ├── knowpath_backend/
 │   │   ├── learning/
@@ -215,7 +215,7 @@ flowchart LR
 
 ## 快速启动
 
-需要 Python 3.13 或更高版本、uv 和已启动的 Docker。默认对话模型为 DashScope `qwen-plus`，嵌入模型为 `text-embedding-v3`，维度为 1024。
+需要 Python 3.13 或更高版本、uv、Node.js 20 或更新版本和已启动的 Docker。默认对话模型为 DashScope `qwen-plus`，嵌入模型为 `text-embedding-v3`，维度为 1024。
 
 ### 1. 启动存储并安装依赖
 
@@ -228,7 +228,7 @@ uv sync --locked
 if (-not (Test-Path .env)) { Copy-Item .env.example .env }
 ```
 
-在 `py/.env` 中填写 `DASHSCOPE_API_KEY`，确认 MySQL、Neo4j 和 Qdrant 连接参数，并使用 `LEARNING_PERSISTENCE=sql`、`LEARNING_RETRIEVAL_BACKEND=qdrant`。已有配置应保留；不要将 `.env` 或模型密钥提交到仓库。
+在 `py/.env` 中填写 `DASHSCOPE_API_KEY`，确认 MySQL、Neo4j、Qdrant 和 MinIO 连接参数，并使用 `LEARNING_PERSISTENCE=sql`、`LEARNING_RETRIEVAL_BACKEND=qdrant`。已有配置应保留；不要将 `.env` 或模型密钥提交到仓库。
 
 ### 2. 应用数据库迁移
 
@@ -239,6 +239,8 @@ uv run alembic upgrade head
 ```
 
 Alembic 读取 `alembic.ini` 同目录的 `.env`，进程环境变量优先。SQL 模式启动不会自动建表，正常安装和升级使用迁移流程。
+
+本次自动学习笔记功能新增 `0016_learning_notes` 迁移，创建笔记册、章节、版本和生成任务四张表。更新代码后先执行上述迁移，再启动后端与模型后台进程；启动脚本不会代为迁移数据库。
 
 ### 3. 启动 API 与两个后台进程
 
@@ -262,6 +264,21 @@ uv run python -m knowpath_backend.learning.model_worker_cli
 
 业务请求需要 `X-Local-Token`：设置 `LEARNING_LOCAL_TOKEN`，或读取服务自动生成的 `py/.learning-token.local`。浏览器来源需匹配 `LEARNING_ALLOWED_ORIGINS`，写入接口按契约提供 `Idempotency-Key`。未认证的健康检查仅返回基本状态。详细参数和请求示例见 [接口文档](docs/API.md)。
 
+### 4. 启动前端并使用系统
+
+在第四个终端从项目根目录执行，无需安装前端依赖：
+
+```powershell
+cd frontend
+npm.cmd run dev
+```
+
+打开 http://127.0.0.1:5173/。Node 前端通过回环接口读取与后端一致的本地鉴权配置，页面自动连接，无需手动填写令牌。业务数据全部来自后端；服务未启动时显示错误和重试入口，没有资料或空间时显示空状态。启动配置支持 `py/.env` 中的 `LEARNING_LOCAL_TOKEN`、`LEARNING_LOCAL_TOKEN_FILE` 或默认的 `py/.learning-token.local`；不要在浏览器链接中传递令牌。
+
+使用顺序：上传 PDF、Markdown 或 TXT → 等待解析 → 审核并发布知识版本 → 创建学习空间并选定范围 → 生成计划 → 开始任务学习并保存会话 → 确认任务完成 → 测评与复习 → 根据结果和资料更新调整计划。资料库支持重命名、归档和删除；删除前会展示关联空间并要求确认。节点详情展示后端记录的会话时间、关联测评与知识来源。关联节点的测评完成后自动整理学习笔记，正文和版本历史保存在后端，可从“学习笔记”或节点详情阅读与编辑。完整说明见 [前端说明](frontend/README.md)。
+
+也可从项目根目录执行 `.\start-local.ps1 -OpenBrowser`，启动 API 与同一 Node 前端；加 `-StartStorage` 启动存储容器。此脚本不执行数据库迁移，不启动图谱和模型后台进程。它验证进程归属与自动鉴权就绪后打开普通页面地址，日志保存在 `.runtime.local/`。图谱和模型后台进程仍需单独运行。
+
 ## 验证与当前边界
 
 最近一次目录重构验收记录为 **1367 项测试通过、217 项跳过**，覆盖学习业务与保留的 Agent 基座；49 个 HTTP 操作的 OpenAPI 快照及数据库结构快照保持一致。真实 DashScope 模型与临时 MySQL、Neo4j、Qdrant 容器的验收覆盖了资料发布、诊断、计划、对话、SSE 续接、后台任务恢复和复测证据持久化，详见 [验收记录](docs/implementation/2026-09-19-backend-layout.md)。
@@ -278,7 +295,7 @@ Remove-Item Env:PYTHON_DOTENV_DISABLED
 
 当前产品边界：
 
-- 面向本地单用户，前端、多用户权限和在线计费尚未实现；容器配置用于本地开发。
+- 面向本地单用户；多用户权限和在线计费尚未实现，容器配置用于本地开发。前端统一使用 `frontend/` 的 Node 服务，业务功能需要后端与相应后台进程。
 - 支持文本型资料；不提供 OCR、扫描 PDF、音视频解析。单文件上限为 20 MiB，PDF 页数上限为 300。
 - 单选题按封存答案确定性判分；开放题尚无可靠自动评分时保留为未验证，不直接形成掌握证据。
 - 已实现的是可复现的规则与策略组合；尚无对照实验支持“显著提升学习效果”等结论，也没有训练新的基础大模型。
