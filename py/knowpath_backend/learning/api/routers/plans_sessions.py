@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Annotated
 
 from fastapi import APIRouter
-from fastapi import Header
+from fastapi import Header, Query
 from fastapi.responses import JSONResponse
 
 from ...errors import DomainConflict, DomainNotFound
@@ -16,6 +16,32 @@ from ..errors import _domain_error, _error_response
 
 
 router = APIRouter(route_class=ContractRoute)
+
+
+@router.get("/api/v1/learning-spaces/{space_id}/workbench")
+async def get_workbench(state: LearningStateDep, space_id: str) -> JSONResponse:
+    try:
+        return JSONResponse(status_code=200, content=state.get_workbench(space_id))
+    except (DomainNotFound, DomainConflict) as exc:
+        return _domain_error(exc)
+
+
+@router.get("/api/v1/learning-spaces/{space_id}/progress")
+async def get_progress(state: LearningStateDep, space_id: str,
+                       limit: Annotated[int, Query(ge=1, le=50)] = 10,
+                       cursor: Annotated[str | None, Query(min_length=1, max_length=2048)] = None) -> JSONResponse:
+    try:
+        return JSONResponse(status_code=200, content=state.get_progress(space_id, limit=limit, cursor=cursor))
+    except (DomainNotFound, DomainConflict) as exc:
+        return _domain_error(exc)
+
+
+@router.get("/api/v1/plans/{plan_id}/tasks/{task_id}/learning-record")
+async def get_learning_record(state: LearningStateDep, plan_id: str, task_id: str) -> JSONResponse:
+    try:
+        return JSONResponse(status_code=200, content=state.get_learning_record(plan_id, task_id))
+    except (DomainNotFound, DomainConflict) as exc:
+        return _domain_error(exc)
 
 
 @router.post("/api/v1/learning-spaces/{space_id}/plans", status_code=202)

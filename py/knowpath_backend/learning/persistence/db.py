@@ -345,6 +345,42 @@ class OutboxEventRow(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
+class NotebookRow(Base):
+    __tablename__ = "learning_notebooks"
+    __table_args__ = (UniqueConstraint("space_id", name="uq_learning_notebooks"),)
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    space_id: Mapped[str] = mapped_column(ForeignKey("learning_spaces.id", ondelete="CASCADE"), nullable=False, index=True)
+    context: Mapped[dict] = mapped_column(JSON, nullable=False)
+
+
+class NoteChapterRow(Base):
+    __tablename__ = "note_chapters"
+    __table_args__ = (UniqueConstraint("space_id", "node_id", name="uq_note_chapters"),)
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    space_id: Mapped[str] = mapped_column(ForeignKey("learning_spaces.id", ondelete="CASCADE"), nullable=False, index=True)
+    node_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    context: Mapped[dict] = mapped_column(JSON, nullable=False)
+
+
+class NoteRevisionRow(Base):
+    __tablename__ = "note_revisions"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    chapter_id: Mapped[str] = mapped_column(ForeignKey("note_chapters.id", ondelete="CASCADE"), nullable=False, index=True)
+    context: Mapped[dict] = mapped_column(JSON, nullable=False)
+
+
+class NoteGenerationRow(Base):
+    __tablename__ = "note_generations"
+    __table_args__ = (UniqueConstraint("assessment_id", name="uq_note_generations"),)
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    space_id: Mapped[str] = mapped_column(ForeignKey("learning_spaces.id", ondelete="CASCADE"), nullable=False, index=True)
+    chapter_id: Mapped[str] = mapped_column(ForeignKey("note_chapters.id", ondelete="CASCADE"), nullable=False, index=True)
+    assessment_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    run_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    status: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    context: Mapped[dict] = mapped_column(JSON, nullable=False)
+
+
 class IdempotencyRow(Base):
     __tablename__ = "idempotency_keys"
     key: Mapped[str] = mapped_column(String(255), primary_key=True)
