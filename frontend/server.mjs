@@ -6,7 +6,7 @@ import path from 'node:path';
 const root = path.dirname(fileURLToPath(import.meta.url));
 const publicFiles = new Map([
   ['/', ['index.html', 'text/html']], ['/index.html', ['index.html', 'text/html']],
-  ...['app.js', 'api.js', 'store.js', 'icons.js', 'learning.js', 'workspace.js', 'workspace-view.js'].map(name => [`/src/${name}`, [`src/${name}`, 'text/javascript']]),
+  ...['app.js', 'api.js', 'store.js', 'icons.js', 'learning.js', 'workspace.js', 'workspace-view.js', 'progress.js', 'workbench.js', 'notes.js'].map(name => [`/src/${name}`, [`src/${name}`, 'text/javascript']]),
   ['/src/styles.css', ['src/styles.css', 'text/css']],
   ...['favicon.svg', 'knowledge-orbit.svg'].map(name => [`/assets/${name}`, [`assets/${name}`, 'image/svg+xml']]),
 ]);
