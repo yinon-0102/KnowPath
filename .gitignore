@@ -35,3 +35,5 @@ htmlcov/
 
 # Local Git metadata from the former keel repository
 py/.git.keel-backup/
+# Isolated implementation worktrees
+.worktrees/
