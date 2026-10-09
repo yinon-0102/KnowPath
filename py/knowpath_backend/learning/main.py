@@ -2,8 +2,8 @@
 
 import os
 import logging
-from dotenv import load_dotenv
 from knowpath_backend.observability import configure_logging, span, log_event
+from knowpath_backend.core.env import load_project_env
 
 
 from .api import create_app
@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 
 
 def build_app():
-    load_dotenv()
+    load_project_env()
     configure_logging('api')
     with span(logger, 'api.build'):
         return _build_app()

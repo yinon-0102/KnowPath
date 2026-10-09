@@ -4,12 +4,12 @@ from knowpath_backend.observability.actions import model_call, collect_response_
 from typing import Optional
 
 from anthropic import Anthropic
-from dotenv import load_dotenv
+from knowpath_backend.core.env import load_project_env
 from google import genai
 from google.genai import types as genai_types
 from openai import OpenAI
 
-load_dotenv()
+load_project_env()
 logger = logging.getLogger(__name__)
 
 
