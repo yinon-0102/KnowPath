@@ -42,6 +42,25 @@ class GraphQueryService:
         return {"material_id": material_id, "version_id": metadata["material_version_id"],
                 "graph_version": metadata["graph_version"], "items": nodes}
 
+    def material_graph(self, material_id, version_id=None, *, include_inactive=False, include_sources=True):
+        snapshot, metadata = self._snapshot(material_id, version_id)
+        permitted = {node["id"] for node in snapshot["nodes"]
+                     if include_inactive or node.get("status") == "active"}
+        nodes = [node for node in snapshot["nodes"] if node["id"] in permitted]
+        edges = [edge for edge in snapshot["relations"]
+                 if edge.get("from_id") in permitted and edge.get("to_id") in permitted
+                 and edge.get("status") not in {"rejected", "superseded", "inactive"}]
+        result = {"material_id": material_id, "version_id": metadata["material_version_id"],
+                  "graph_version": metadata["graph_version"], "nodes": nodes, "edges": edges}
+        if include_sources:
+            refs = {ref["chunk_id"] for item in nodes + edges for ref in item.get("source_refs", [])}
+            result["sources"] = [source for source in snapshot["sources"] if source["id"] in refs]
+        else:
+            for record in nodes + edges:
+                record.pop("source_refs", None)
+                record.pop("evidence", None)
+        return result
+
     def _snapshots(self):
         for material in self.graphs.materials.list_materials():
             yield self._snapshot(material.id)

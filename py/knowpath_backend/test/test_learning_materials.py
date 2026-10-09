@@ -23,6 +23,25 @@ def test_parser_preserves_markdown_sections_and_source_lines():
     assert chunks[1].line_start == 7
 
 
+def test_original_material_file_is_available_as_inline_response():
+    from fastapi.testclient import TestClient
+    from knowpath_backend.learning.api import create_app
+    from knowpath_backend.learning.config import LearningSettings
+
+    service = MaterialService(InMemoryMaterialRepository())
+    result = service.create(filename='law.pdf', content=b'%PDF-1.7\noriginal', idempotency_key='pdf-file', defer_parse=True)
+    app = create_app(service, settings=LearningSettings(local_token='test-token'))
+    with TestClient(app) as client:
+        response = client.get(
+            f'/api/v1/materials/{result.material.id}/versions/{result.version.id}/file',
+            headers={'X-Local-Token': 'test-token'},
+        )
+    assert response.status_code == 200
+    assert response.headers['content-type'].startswith('application/pdf')
+    assert 'inline' in response.headers['content-disposition']
+    assert response.content == b'%PDF-1.7\noriginal'
+
+
 def test_material_service_deduplicates_retries_by_idempotency_key():
     service = MaterialService(InMemoryMaterialRepository())
 
