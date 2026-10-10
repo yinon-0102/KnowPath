@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import json
 import os
+import logging
+from knowpath_backend.observability import log_event, span
 from contextlib import contextmanager
 
 from knowpath_backend.learning.errors import DomainNotFound
@@ -11,6 +13,8 @@ from neo4j import GraphDatabase, Query
 
 from knowpath_backend.learning.knowledge.reconciliation import digest
 from knowpath_backend.learning.rag.retrieval import configured_vector_retriever
+
+logger = logging.getLogger(__name__)
 
 
 class GraphPreparer:
@@ -49,14 +53,18 @@ class GraphPreparer:
         if not sources:
             raise ValueError("empty prepared graph")
         heartbeat()
-        with self._writer(manifest["snapshot"]["material_id"]):
+        with span(logger, 'graph.write', source_count=len(sources)) as metrics, self._writer(manifest["snapshot"]["material_id"]):
             graph_receipt = self.graph.prepare(manifest, sources)
+            metrics.update({key: graph_receipt[key] for key in ('topic_variants', 'relation_count') if key in graph_receipt})
         for start in range(0, len(sources), 10):
             heartbeat()
             with self._writer(manifest["snapshot"]["material_id"]):
                 self.vectors.index(sources[start:start + 10])
+            log_event(logger, 'index.batch.completed', completed_count=min(start + 10, len(sources)),
+                      total_count=len(sources), batch_number=start // 10 + 1, batch_total=(len(sources) + 9) // 10)
         heartbeat()
-        self.vectors.backend.require_index(sources)
+        with span(logger, 'index.verify', source_count=len(sources)):
+            self.vectors.backend.require_index(sources)
         heartbeat()
         return {"manifest_hash": manifest["manifest_hash"], "neo4j": graph_receipt,
                 "qdrant": {"verified": True, "collection": self.vectors.backend.collection, "indexed_chunks": len(sources)}}

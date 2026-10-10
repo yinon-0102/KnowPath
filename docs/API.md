@@ -592,13 +592,16 @@ session_count=3—5，minutes_per_session=10—120，必须满足 profile 时间
 
 在指定学习空间内发送自然语言请求，例如“用例子解释这个知识点”或“给我一道类似练习”。
 
+可选 `material_ids` 将本次检索限制到指定资料，限制同时作用于旧检索、新 RAG、历史上下文及引用；不修改学习空间的长期绑定或索引发布快照。
+
 请求：
 
 ```json
 {
   "message": "请用一个简单例子解释函数参数传递",
   "session_id": "session_001",
-  "stream": true
+  "stream": true,
+  "material_ids": ["material_001"]
 }
 ```
 
@@ -613,6 +616,20 @@ session_count=3—5，minutes_per_session=10—120，必须满足 profile 时间
 ```
 
 生成内容必须使用当前学习范围和资料来源。需要记录工具调用，但不向用户泄露内部提示词和隐藏状态。
+
+资料筛选规则：
+
+- 省略 `material_ids` 或传 `null`：使用当前空间允许的全部资料，兼容旧请求及其幂等指纹。
+- 显式传入时：列表长度 1—5，元素为非空、最长 128 字符的字符串；去重、排序后处理。空列表及无效元素返回 `422 INVALID_REQUEST`。
+- 任一 ID 不属于当前空间绑定，整次请求返回 `409 MATERIAL_OUT_OF_SCOPE`，不会忽略越界项或创建任务。
+- 有效范围为当前学习范围与所选资料绑定版本的交集。交集没有可引用来源时返回 `409 NO_LEARNING_SOURCES`，不扩大为全部资料。
+- `Idempotency-Key` 仍必需；同一键交换所选 ID 顺序会重放原任务，改变有效请求参数返回 `409 IDEMPOTENCY_CONFLICT`。
+- `202` 响应结构不变。成功的 `message.completed` 事件新增 `request_scope`，包含 `mode`（`all` / `selected`）、规范化的 `material_ids`、绑定版本 `bindings`、`space_id`、`scope_version` 及 `request_scope_id`。范围在消息创建时冻结，后台执行及恢复不会采用后续界面选择。
+- 最近消息、跨会话召回和摘要仅使用相同有效请求范围的已完成消息。显式选择不继承没有范围元数据的旧消息；默认模式保留旧消息兼容。
+- 切换范围后，“继续”等缺乏明确对象的追问不能回跳到更早的同范围对话，返回 `answer_status: clarify` 且不附引用。
+- 新 RAG 继续要求空间级索引发布完整；未选中文档的发布异常仍可能导致 `RAG_INDEX_NOT_READY`。共享索引无需因本次筛选重新构建。
+
+本次仅交付后端能力。前端重做时可通过 `material_ids` 提交选择，并使用 `message.completed.request_scope` 展示实际回答范围。详见 [请求级文档范围](DOCUMENT_SCOPE.md)。
 
 首版只接受 stream=true；message 为 1—8000 字。session_id 可空，为空时创建独立对话会话，不修改计划任务状态。202 返回 run_id/session_id/status，文本由 SSE message.delta 发送。活动测验内问答案应转为提示请求并记录 assisted，禁止隐式写入成绩。
 

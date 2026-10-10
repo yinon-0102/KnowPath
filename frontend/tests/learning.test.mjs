@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createLearningController, renderLearning, comparisonPayload } from '../src/learning.js';
-import { createApi } from '../src/api.js';
+import { createLearningController, renderLearning, comparisonPayload, assessmentTopics, assessmentPayload } from '../src/learning.js';
+import { createApi, ApiError } from '../src/api.js';
 
 test('concurrent exposure exclusions and history limits are explained without leaking other questions', () => {
   const html = renderLearning({ mode: 'live', space: { id: 's1', name: 'Space' }, state: {
@@ -19,6 +19,132 @@ test('concurrent exposure exclusions and history limits are explained without le
 const memory = () => { const map = new Map(); return { getItem: k => map.get(k) ?? null, setItem: (k, v) => map.set(k, v) }; };
 const trace = (id = 'q1') => ({ assessment_id: 'a1', adaptive: true, status: 'in_progress', policy_version: 'adaptive-v1', current_question: id ? { id, type: 'single_choice', prompt: 'Which definition?', options: [{ id: 'A', text: 'Definition' }, { id: 'B', text: 'Alternative' }] } : null, progress: { answered: id === 'q1' ? 0 : id ? 1 : 2, presented: id === 'q1' ? 1 : 2, target: 5 }, decisions: [], hypotheses: [], completion_reason: id ? null : 'no_unseen_question_family' });
 const context = () => ({ mode: 'live', spaceId: 's1', active: true });
+
+test('assessment selection uses only available current-scope topics with sources', () => {
+  const source = { material_id: 'm1', material_version_id: 'v1', chunk_id: 'c1' };
+  const topics = [
+    { id: 'included', source_refs: [source] }, { id: 'excluded', source_refs: [source] },
+    { id: 'outside', source_refs: [source] }, { id: 'manual', automatic_questions: false, source_refs: [source] },
+    { id: 'empty', source_refs: [] }, { id: 'archived', status: 'archived', source_refs: [source] },
+  ];
+  const eligible = assessmentTopics({ topic_ids: ['included', 'excluded', 'manual', 'empty', 'archived'], excluded_topic_ids: ['excluded'] }, topics);
+  assert.deepEqual(eligible.map(t => t.id), ['included']);
+  assert.deepEqual(assessmentPayload({ topic: 'included', count: '7', kind: 'practice', type: 'mixed' }, eligible), {
+    adaptive: false, kind: 'practice', question_count: 7, topic_ids: ['included'], question_types: ['single_choice', 'short_answer'],
+  });
+  assert.throws(() => assessmentPayload({ topic: 'outside', count: 5, kind: 'diagnostic', type: 'single_choice' }, eligible), /学习范围/);
+  assert.throws(() => assessmentPayload({ count: 5, kind: 'diagnostic', type: 'single_choice' }, []), /知识主题/);
+});
+
+test('knowledge setup reaches generation exactly and survives a page reload', async () => {
+  const storage = memory(), calls = [];
+  const topic = { id: 't1', name: 'Bound knowledge', source_refs: [{ chunk_id: 'c1' }] };
+  const api = { space: async () => ({ id: 's1', topic_ids: ['t1'] }), topics: async () => [topic],
+    createAssessment: async (id, body, options) => { calls.push({ id, body, key: options.key }); throw new ApiError('响应丢失', 0, 'NETWORK'); } };
+  const setup = { topic: 't1', count: '8', type: 'mixed', kind: 'practice' };
+  const controller = createLearningController({ api, context, storage });
+  await controller.loadKnowledge(); controller.configure(setup); await controller.start(setup);
+  const restored = createLearningController({ api, context, storage });
+  await restored.loadKnowledge();
+  assert.deepEqual(restored.snapshot().setup, setup);
+  await restored.start({ ...setup, count: '5' });
+  assert.equal(calls.length, 2); assert.deepEqual(calls[0], calls[1]);
+  assert.equal(calls[0].body.question_count, 8); assert.deepEqual(calls[0].body.topic_ids, ['t1']);
+});
+
+test('learning routes render one functional panel at a time', () => {
+  for (const section of ['diagnostic', 'evolution', 'comparison', 'replay']) {
+    const html = renderLearning({ mode: 'live', section, space: { id: 's1', name: 'Space' }, state: {} });
+    assert.equal(html.split('<section class="panel learning-panel"').length - 1, 1);
+    assert.ok(html.includes(`id="learning-${section}"`));
+    assert.ok(html.includes(`href="#/learning/${section}" aria-current="page"`));
+  }
+});
+
+const failedRun = (runId = 'r1') => new ApiError('Generated questions failed validation.', 200,
+  'QUESTION_VALIDATION_FAILED', { runId, runStatus: 'failed' });
+
+test('failed generation unlocks an explicit new request and renders validated questions', async () => {
+  const keys = [], storage = memory(); let creates = 0;
+  const api = {
+    createAssessment: async (spaceId, body, options) => { keys.push(options.key); creates++; return { assessment_id: 'a' + creates, run_id: 'r' + creates }; },
+    waitRun: async id => { if (id === 'r1') throw failedRun(); },
+    assessment: async () => ({ id: 'a2', space_id: 's1', adaptive: true, status: 'ready' }),
+    diagnostic: async () => ({ ...trace(), assessment_id: 'a2' }),
+  };
+  const controller = createLearningController({ api, context, storage });
+  await controller.start();
+  assert.equal(creates, 1); // No automatic model job retry.
+  assert.equal(controller.snapshot().assessmentStatus, 'failed');
+  assert.match(controller.snapshot().error, /未通过校验/);
+  const html = renderLearning({ mode: 'live', space: { id: 's1', name: 'Space' }, state: controller.snapshot() });
+  assert.match(html, /id="learning-start-form"/);
+  assert.ok(html.includes('>重新生成题目</button>'));
+  assert.match(html, /QUESTION_VALIDATION_FAILED/);
+  assert.equal(html.split('生成的题目未通过校验').length - 1, 1);
+  assert.match(html, /role="alert"/);
+  assert.doesNotMatch(html, /learning-answer-form|learning-finalize/);
+  // A page reload retains the terminal state and the recovery action.
+  const restored = createLearningController({ api, context, storage });
+  assert.equal(restored.snapshot().assessmentStatus, 'failed');
+  await restored.start();
+  assert.equal(creates, 2); assert.notEqual(keys[0], keys[1]);
+  assert.equal(restored.snapshot().diagnostic.current_question.id, 'q1');
+  assert.equal(restored.snapshot().generationError, null);
+  assert.equal(restored.snapshot().error, '');
+});
+
+test('resuming a saved generating assessment records terminal failure without requesting a diagnostic', async () => {
+  const storage = memory(); let reads = 0, diagnostics = 0;
+  storage.setItem('knowpath-learning-assessments-v1', JSON.stringify({ s1: { assessmentId: 'a1', runId: 'r1' } }));
+  const api = { assessment: async () => { reads++; return { id: 'a1', space_id: 's1', adaptive: true, status: reads === 1 ? 'generating' : 'failed', run_id: 'r1' }; },
+    waitRun: async () => { throw failedRun(); }, diagnostic: async () => { diagnostics++; throw new Error('Not available'); } };
+  const controller = createLearningController({ api, context, storage });
+  await controller.resume(); await controller.resume();
+  assert.equal(controller.snapshot().assessmentStatus, 'failed');
+  assert.equal(controller.snapshot().generationError.code, 'QUESTION_VALIDATION_FAILED');
+  assert.equal(diagnostics, 0);
+});
+
+test('a lost poll response does not enable duplicate creation and can resume the same assessment', async () => {
+  let creates = 0, polls = 0;
+  const storage = memory();
+  const api = { createAssessment: async () => { creates++; return { assessment_id: 'a1', run_id: 'r1' }; },
+    waitRun: async () => { polls++; if (polls === 1) throw new ApiError('连接中断', 0, 'NETWORK'); },
+    assessment: async () => ({ id: 'a1', space_id: 's1', adaptive: true, status: polls === 1 ? 'generating' : 'ready', run_id: 'r1' }),
+    diagnostic: async () => trace() };
+  const controller = createLearningController({ api, context, storage });
+  await controller.start(); await controller.start();
+  assert.equal(creates, 1); assert.equal(controller.snapshot().assessmentStatus, 'generating');
+  const restored = createLearningController({ api, context, storage });
+  await restored.resume();
+  assert.equal(creates, 1); assert.equal(restored.snapshot().diagnostic.current_question.id, 'q1');
+});
+
+test('ambiguous regeneration retains one key across page reloads', async () => {
+  const keys = [], storage = memory();
+  const api = { createAssessment: async (spaceId, body, options) => { keys.push(options.key); if (keys.length > 1) throw new ApiError('连接中断', 0, 'NETWORK'); return { assessment_id: 'a1', run_id: 'r1' }; },
+    waitRun: async () => { throw failedRun(); } };
+  const controller = createLearningController({ api, context, storage });
+  await controller.start(); await controller.start();
+  await createLearningController({ api, context, storage }).start();
+  assert.notEqual(keys[0], keys[1]); assert.equal(keys[1], keys[2]);
+});
+
+test('a late generation failure cannot unlock a different space or leak its error', async () => {
+  let selected = 's1', reject, ready;
+  const polling = new Promise(resolve => { ready = resolve; });
+  const controller = createLearningController({ storage: memory(),
+    context: () => ({ mode: 'live', spaceId: selected, active: true }), api: {
+      createAssessment: async () => ({ assessment_id: 'a1', run_id: 'r1' }),
+      waitRun: () => new Promise((_, fail) => { reject = fail; ready(); }),
+    } });
+  const pending = controller.start(); await polling;
+  selected = 's2'; controller.sync(); reject(failedRun()); await pending;
+  assert.equal(controller.snapshot().assessmentStatus, '');
+  assert.equal(controller.snapshot().assessmentId, '');
+  assert.equal(controller.snapshot().generationError, null);
+});
 
 test('learning API preserves exact request bodies, auth, URL encoding and retry keys', async t => {
   const calls = [];
@@ -44,7 +170,7 @@ test('learning API preserves exact request bodies, auth, URL encoding and retry 
 test('adaptive controller starts, polls, answers only current question and finalizes', async () => {
   const calls = []; let step = 0;
   const api = { createAssessment: async (id, body) => { calls.push(body); return { assessment_id: 'a1', run_id: 'r1' }; },
-    waitRun: async id => calls.push(id), assessment: async () => ({ id: 'a1', space_id: 's1', status: step === 3 ? 'completed' : 'ready' }),
+    waitRun: async id => calls.push(id), assessment: async () => ({ id: 'a1', space_id: 's1', adaptive: true, status: step === 3 ? 'completed' : 'ready' }),
     diagnostic: async () => step === 3 ? { ...trace(null), status: 'completed' } : trace(step === 0 ? 'q1' : step === 1 ? 'q2' : null),
     recordAttempt: async (id, body) => { calls.push(body); step++; return {}; },
     finalizeAssessment: async (id, body) => { calls.push(body); step = 3; return { run_id: 'final' }; },
@@ -55,7 +181,7 @@ test('adaptive controller starts, polls, answers only current question and final
   assert.equal(calls[0].adaptive, true);
   assert.equal(calls[1], 'r1');
   await controller.answer('A');
-  assert.deepEqual(calls[2], { answers: [{ question_id: 'q1', expected_answer_revision: 0, answer: 'A' }] });
+  assert.deepEqual(calls[2], { answers: [{ question_id: 'q1', expected_answer_revision: 0, answer: 'A', elapsed_seconds: 0 }] });
   assert.equal(controller.snapshot().diagnostic.current_question.id, 'q2');
   await controller.answer('B');
   await controller.finalize();
@@ -66,7 +192,7 @@ test('adaptive controller starts, polls, answers only current question and final
 test('resume restores same assessment and validates the owning space', async () => {
   const storage = memory(); let creates = 0;
   const api = { createAssessment: async () => { creates++; return { assessment_id: 'a1', run_id: 'r1' }; }, waitRun: async () => {},
-    assessment: async () => ({ id: 'a1', space_id: 's1', status: 'ready' }), diagnostic: async () => trace() };
+    assessment: async () => ({ id: 'a1', space_id: 's1', adaptive: true, status: 'ready' }), diagnostic: async () => trace() };
   await createLearningController({ api, context, storage }).start();
   const restored = createLearningController({ api, context, storage });
   await restored.resume();
@@ -90,13 +216,20 @@ test('late requests cannot leak results into another selected space', async () =
   assert.equal(controller.snapshot().busy, '');
 });
 
-test('demo mode makes no requests and renders honest empty states', async () => {
+test('demo mode makes no requests and can complete a local assessment flow', async () => {
+  const space = { id: 'demo', name: 'Demo', topic_ids: ['t1'], nodes: [{ id: 't1', title: '向量', source_refs: [{ material_id: 'm1' }] }] };
   const controller = createLearningController({ api: new Proxy({}, { get: () => () => { throw new Error('network forbidden'); } }),
-    context: () => ({ mode: 'demo', spaceId: 'demo', active: true }), storage: memory() });
-  await controller.start(); await controller.loadEvolution();
-  const html = renderLearning({ mode: 'demo', space: { id: 'demo', name: 'Demo' }, state: controller.snapshot() });
-  assert.match(html, /真实学习数据/); assert.match(html, /不会生成示例诊断/);
+    context: () => ({ mode: 'demo', spaceId: 'demo', space, active: true }), storage: memory() });
+  await controller.loadKnowledge(); await controller.start({ topic: '', count: '5', type: 'single_choice', kind: 'practice' });
+  assert.equal(controller.snapshot().diagnostic.current_question.type, 'single_choice');
+  const first = controller.snapshot().diagnostic.current_question;
+  await controller.answer('A');
+  assert.equal(controller.snapshot().diagnostic.progress.answered, 1);
+  const html = renderLearning({ mode: 'demo', space, state: controller.snapshot() });
+  assert.match(html, /示例模式使用当前空间主题生成本地练习题/);
+  assert.match(html, /提交当前答案/);
   assert.doesNotMatch(html, /Which definition/);
+  assert.notEqual(first.id, controller.snapshot().diagnostic.current_question.id);
 });
 
 test('renderer escapes backend values and excludes hidden question internals', () => {
@@ -111,10 +244,11 @@ test('renderer escapes backend values and excludes hidden question internals', (
 });
 
 test('reports distinguish unavailable data, proxy metrics and observational retests', () => {
-  const html = renderLearning({ mode: 'live', space: { id: 's1', name: 'Space' }, state: { busy: '', error: '',
+  const input = { mode: 'live', space: { id: 's1', name: 'Space' }, state: { busy: '', error: '',
     diagnostic: { ...trace(null), completion_reason: 'no_unseen_question_family' },
     evolution: { items: [] }, comparison: { scenarios: [] },
-    replay: { policies: [], decisions: [], prediction: { predicted_observations: 0, eligible_observations: 0, mean_absolute_error: null }, observed_retests: { pair_count: 0, reason: 'no_eligible_retests' } } } });
+    replay: { policies: [], decisions: [], prediction: { predicted_observations: 0, eligible_observations: 0, mean_absolute_error: null }, observed_retests: { pair_count: 0, reason: 'no_eligible_retests' } } } };
+  const html = ['diagnostic', 'evolution', 'comparison', 'replay'].map(section => renderLearning({ ...input, section })).join('');
   assert.match(html, /没有可用的新题族/); assert.match(html, /暂无/);
   assert.match(html, /代理指标/); assert.match(html, /因果/); assert.match(html, /独立/);
   assert.doesNotMatch(html, /null|undefined|NaN/);
@@ -129,7 +263,7 @@ test('comparison form validates distinct bounded budgets and horizon', () => {
 test('ambiguous answer failure retries same immutable payload and key', async () => {
   const calls = []; let fail = true;
   const api = { createAssessment: async () => ({ assessment_id: 'a1', run_id: 'r1' }), waitRun: async () => {},
-    assessment: async () => ({ id: 'a1', space_id: 's1', status: 'ready' }), diagnostic: async () => trace(),
+    assessment: async () => ({ id: 'a1', space_id: 's1', adaptive: true, status: 'ready' }), diagnostic: async () => trace(),
     recordAttempt: async (id, body, options) => { calls.push({ body, key: options.key }); if (fail) throw new Error('结果未知'); return {}; } };
   const controller = createLearningController({ api, context, storage: memory() });
   await controller.start(); await controller.answer('A');
@@ -161,14 +295,14 @@ test('report errors remain visible and stale errors cannot overwrite a new conte
 test('comparison renders chosen budgets after action rerenders the form', async () => {
   const controller = createLearningController({ api: { comparePlans: async () => ({ space_id: 's1', scenarios: [] }) }, context, storage: memory() });
   await controller.compare({ budgets_minutes_per_day: [30, 60], horizon_days: 14 });
-  const html = renderLearning({ mode: 'live', space: { id: 's1', name: 'Space' }, state: controller.snapshot() });
+  const html = renderLearning({ mode: 'live', space: { id: 's1', name: 'Space' }, state: controller.snapshot(), section: 'comparison' });
   assert.ok(html.includes('value="30,60"')); assert.ok(html.includes('value="14"'));
 });
 
 test('ambiguous creation after a completed round retains the new request key', async () => {
   let created = 0; const keys = [];
   const api = { createAssessment: async (id, body, options) => { created++; keys.push(options.key); if (created > 1) throw new Error('创建响应中断'); return { assessment_id: 'a1', run_id: 'r1' }; },
-    waitRun: async () => {}, assessment: async () => ({ id: 'a1', space_id: 's1', status: 'completed' }),
+    waitRun: async () => {}, assessment: async () => ({ id: 'a1', space_id: 's1', adaptive: true, status: 'completed' }),
     diagnostic: async () => ({ ...trace(null), status: 'completed' }), assessmentResult: async () => ({ question_results: [] }) };
   const controller = createLearningController({ api, context, storage: memory() });
   await controller.start(); await controller.start(); await controller.start();
@@ -176,7 +310,7 @@ test('ambiguous creation after a completed round retains the new request key', a
 });
 
 test('stale mastery is not presented as a current score', () => {
-  const html = renderLearning({ mode: 'live', space: { id: 's1', name: 'Space' }, state: { busy: '', error: '',
+  const html = renderLearning({ mode: 'live', section: 'evolution', space: { id: 's1', name: 'Space' }, state: { busy: '', error: '',
     evolution: { items: [{ topic_name: 'Changed revision', current: { mastery_score: 0.987, score_validity: 'stale', independent_evidence_count: 7, review_schedule: { selected_evidence_ids: [] } } }] } } });
   assert.ok(!html.includes('0.987'));
   assert.match(html, /历史均值/);
@@ -186,7 +320,7 @@ test('diagnostics progress in current page when session storage is unavailable',
   let answered = false;
   const storage = { getItem() { throw new Error('blocked'); }, setItem() { throw new Error('blocked'); } };
   const api = { createAssessment: async () => ({ assessment_id: 'a1', run_id: 'r1' }), waitRun: async () => {},
-    assessment: async () => ({ id: 'a1', space_id: 's1', status: 'ready' }), diagnostic: async () => trace(answered ? 'q2' : 'q1'),
+    assessment: async () => ({ id: 'a1', space_id: 's1', adaptive: true, status: 'ready' }), diagnostic: async () => trace(answered ? 'q2' : 'q1'),
     recordAttempt: async () => { answered = true; return {}; } };
   const controller = createLearningController({ api, context, storage });
   await controller.start(); await controller.answer('A');

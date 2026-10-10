@@ -9,6 +9,7 @@ from knowpath_backend.memory.item import MemoryItem
 from knowpath_backend.memory.summary import SummaryMemory
 from knowpath_backend.learning.materials.source_access import original_source_refs
 from knowpath_backend.learning.errors import DomainConflict
+from .document_scope import filter_document_sources
 
 
 def _excerpt(text, limit=320):
@@ -25,23 +26,36 @@ def _relevant_excerpt(text, query, limit=600):
     return max(windows, key=lambda part: bigram_relevance(part.casefold(), query.casefold()))
 
 
-def project_memory(rows, space, conversation_id, query):
+def project_memory(rows, space, conversation_id, query, *, request_scope=None):
     """Only original completed turns enter the index; projections never recurse."""
     eligible = [r for r in rows if r["space_id"] == space["id"] and r["status"] == "completed"
+                and not r['snapshot'].get('request_scope_invalidated')
                 and r.get("response") and r["snapshot"].get("scope_version") == space["scope_version"]
                 and r["snapshot"].get("bindings") == space["bindings"]]
+    if request_scope is not None:
+        eligible = [r for r in eligible if (
+            r['snapshot'].get('request_scope', {}).get('request_scope_id') == request_scope['request_scope_id']
+            or ('request_scope' not in r['snapshot'] and request_scope['mode'] == 'all'))]
     source_refs, safe = {}, []
     for row in eligible:
         try:
-            message_source_refs(row, eligible, memo=source_refs)
+            refs = message_source_refs(row, eligible, memo=source_refs)
+            if request_scope is not None and filter_document_sources(refs, request_scope) != refs:
+                continue
             safe.append(row)
         except DomainConflict:
             # Old context with missing provenance must not silently enter a
             # fresh answer. Original messages remain available for inspection.
             continue
     eligible = safe
+    # A follow-up refers to the immediately preceding turn, not an older turn
+    # that happens to share today's scope after an A -> B -> A transition.
+    preceding = [r for r in rows if r['space_id'] == space['id']
+                 and r['conversation_id'] == conversation_id and r['status'] == 'completed' and r.get('response')]
+    latest = max(preceding, key=lambda r: r['sequence'], default=None)
+    scope_changed = request_scope is not None and latest is not None and latest['id'] not in {r['id'] for r in eligible}
     own = sorted([r for r in eligible if r["conversation_id"] == conversation_id], key=lambda r: r["sequence"])
-    recent = own[-5:]
+    recent = [] if scope_changed else own[-5:]
     recent_ids = {r["id"] for r in recent}
     history = [part for r in recent for part in (
         {"role": "user", "content": r["message"]}, {"role": "assistant", "content": r["response"]["text"]})]
@@ -72,7 +86,7 @@ def project_memory(rows, space, conversation_id, query):
     provenance = {"history": [refs(row) for row in recent],
                   "recall": {row["message_id"]: refs(records[row["message_id"]]) for row in recall},
                   "summary": [ref for row in older for ref in refs(row)]}
-    return {"history": history, "memory": {"summary": summary, "recall": recall},
+    return {"history": history, 'context_scope_changed': scope_changed, "memory": {"summary": summary, "recall": recall},
             "context_provenance": provenance}
 
 

@@ -174,6 +174,7 @@ class GraphWorker:
                     correction.update(status='published', result=copy.deepcopy(result))
                     self.repository.put_record('corrections', correction)
                 self.graph.runs.complete(current['run_id'], result)
+            log_event(logger, 'graph.publication.completed' if correction_id else 'graph.review.ready')
             return True
         except (LeaseLost, DomainNotFound):
             return False

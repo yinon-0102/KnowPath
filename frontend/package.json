@@ -7,7 +7,7 @@
   "scripts": {
     "dev": "node server.mjs",
     "start": "node server.mjs",
-    "check": "node --check src/app.js && node --check src/api.js && node --check src/learning.js && node --check src/store.js && node --check src/icons.js && node --check server.mjs",
+    "check": "node --check src/app.js && node --check src/plan-order.js && node --check src/home-view.js && node --check src/api.js && node --check src/learning.js && node --check src/workspace.js && node --check src/workspace-view.js && node --check src/progress.js && node --check src/workbench.js && node --check src/notes.js && node --check src/study.js && node --check src/store.js && node --check src/icons.js && node --check server.mjs",
     "test": "node --test tests/*.test.mjs"
   },
   "engines": { "node": ">=20" }

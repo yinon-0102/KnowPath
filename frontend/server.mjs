@@ -4,24 +4,79 @@ import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 
 const root = path.dirname(fileURLToPath(import.meta.url));
+const API_BASE = 'http://127.0.0.1:8000/api/v1';
+const LOCAL_AUTH_PATH = '/__knowpath/local-auth';
+const dotenvEscapes = { '\\': '\\', "'": "'", '"': '"', a: '\x07', b: '\b', f: '\f', n: '\n', r: '\r', t: '\t', v: '\v' };
 const publicFiles = new Map([
   ['/', ['index.html', 'text/html']], ['/index.html', ['index.html', 'text/html']],
-  ...['app.js', 'api.js', 'store.js', 'icons.js', 'learning.js'].map(name => [`/src/${name}`, [`src/${name}`, 'text/javascript']]),
+  ...['app.js', 'api.js', 'store.js', 'icons.js', 'learning.js', 'workspace.js', 'workspace-view.js', 'progress.js', 'workbench.js', 'notes.js', 'study.js', 'plan-order.js', 'home-view.js'].map(name => [`/src/${name}`, [`src/${name}`, 'text/javascript']]),
   ['/src/styles.css', ['src/styles.css', 'text/css']],
   ...['favicon.svg', 'knowledge-orbit.svg'].map(name => [`/assets/${name}`, [`assets/${name}`, 'image/svg+xml']]),
 ]);
 
-export function createFrontendServer() {
+function parseDotenv(source) {
+  const values = Object.create(null);
+  for (const rawLine of source.replace(/^\uFEFF/, '').split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith('#')) continue;
+    const match = line.match(/^(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$/);
+    if (!match) continue;
+    let value = match[2].trim();
+    if (value.startsWith('"') || value.startsWith("'")) {
+      const singleQuoted = value.startsWith("'");
+      const quoted = singleQuoted ? value.match(/^'((?:\\'|[^'])*)'\s*(?:#.*)?$/) : value.match(/^"((?:\\"|[^"])*)"\s*(?:#.*)?$/);
+      if (!quoted) throw new Error('invalid local configuration');
+      value = quoted[1].replace(singleQuoted ? /\\[\\']/g : /\\[\\'"abfnrtv]/g, escape => dotenvEscapes[escape[1]]);
+    } else {
+      value = value.replace(/\s+#.*$/, '').trim();
+    }
+    // python-dotenv expands each value once, using prior dotenv entries and
+    // keeping process-level values authoritative with override=False.
+    values[match[1]] = value.replace(/\$\{([^}:]*)(?::-([^}]*))?\}/g, (_, name, fallback = '') =>
+      Object.hasOwn(process.env, name) ? process.env[name] : Object.hasOwn(values, name) ? values[name] : fallback);
+  }
+  return values;
+}
+
+async function readDotenv(file) {
+  try {
+    return parseDotenv(await readFile(file, 'utf8'));
+  } catch (error) {
+    if (error.code === 'ENOENT') return {};
+    throw error;
+  }
+}
+
+async function loadLocalToken(projectRoot) {
+  const backendRoot = path.join(projectRoot, 'py');
+  const dotenv = await readDotenv(path.join(backendRoot, '.env'));
+  const direct = process.env.LEARNING_LOCAL_TOKEN ?? dotenv.LEARNING_LOCAL_TOKEN;
+  let token = direct;
+  if (!token) {
+    const configured = process.env.LEARNING_LOCAL_TOKEN_FILE ?? dotenv.LEARNING_LOCAL_TOKEN_FILE;
+    const tokenFile = configured
+      ? (path.isAbsolute(configured) ? configured : path.resolve(backendRoot, configured))
+      : path.join(backendRoot, '.learning-token.local');
+    token = (await readFile(tokenFile, 'utf8')).trim();
+  }
+  token = String(token);
+  if (!token || /[\s\x00-\x1f\x7f]/.test(token)) throw new Error('invalid local token');
+  return token;
+}
+
+export function createFrontendServer({ projectRoot = path.resolve(root, '..') } = {}) {
+  const configuredProjectRoot = path.resolve(projectRoot);
   return http.createServer(async (req, res) => {
     const port = req.socket.localPort;
     const allowedHosts = [`localhost:${port}`, `127.0.0.1:${port}`];
     const headers = {
       'Cache-Control': 'no-store',
+      'X-KnowPath-Frontend': 'knowpath-frontend-v1',
       'X-Content-Type-Options': 'nosniff',
       'X-Frame-Options': 'DENY',
       'Referrer-Policy': 'no-referrer',
       'Permissions-Policy': 'camera=(), microphone=(), geolocation=()',
-      'Content-Security-Policy': "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' http://127.0.0.1:8000 http://localhost:8000; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'",
+      'Content-Security-Policy': "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' http://127.0.0.1:8000 http://localhost:8000; frame-src 'self' blob:; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'",
     };
     const respond = (status, body, type = 'text/plain') => {
       const content = Buffer.isBuffer(body) ? body : Buffer.from(body);
@@ -33,6 +88,14 @@ export function createFrontendServer() {
     let pathname;
     try { pathname = new URL(req.url, `http://${req.headers.host}`).pathname; }
     catch { return respond(400, 'Invalid request'); }
+    if (pathname === LOCAL_AUTH_PATH) {
+      try {
+        const token = await loadLocalToken(configuredProjectRoot);
+        return respond(200, JSON.stringify({ token, api_base: API_BASE }), 'application/json');
+      } catch {
+        return respond(503, JSON.stringify({ error: '本地服务配置不可用' }), 'application/json');
+      }
+    }
     const file = publicFiles.get(pathname);
     if (!file) return respond(404, '页面不存在');
     try { respond(200, await readFile(path.join(root, file[0])), file[1]); }

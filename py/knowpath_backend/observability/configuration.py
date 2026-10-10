@@ -11,6 +11,7 @@ import sys
 from threading import RLock
 
 from .events import log_event, redact, safe_exception, safe_value
+from .presentation import LEVELS, SERVICES, correlation, describe, one_line
 
 _lock = RLock()
 _original = None
@@ -60,6 +61,8 @@ class JsonFormatter(logging.Formatter):
             result['message'] = '[dependency message omitted]' if dependency else redact(record.getMessage())
         if record.exc_info and record.exc_info[1] is not None:
             result['exception'] = safe_exception(record.exc_info[1])
+        if hasattr(record, 'event'):
+            result['message'] = describe(result)
         return result
 
     def format(self, record):
@@ -69,8 +72,19 @@ class JsonFormatter(logging.Formatter):
 class TextFormatter(JsonFormatter):
     def format(self, record):
         item = self.document(record)
-        prefix = f"{item.pop('timestamp')} {item.pop('level'):<8} [{item.pop('service')}:{item.pop('pid')}] {item.pop('event')}"
-        return prefix + ' ' + json.dumps(item, ensure_ascii=False, allow_nan=False, separators=(',',':'))
+        level = LEVELS.get(item['level'], item['level'])
+        service = SERVICES.get(item['service'], item['service'])
+        message = item['message'] if hasattr(record, 'event') else describe(item)
+        # Keep full correlation in JSON; one stable short label distinguishes
+        # concurrent operations without repeating every internal identifier.
+        identifier = next((item[k] for k in ('run_id', 'request_id', 'material_id')
+                           if isinstance(item.get(k), str) and item[k]), None)
+        if identifier:
+            from hashlib import sha256
+            tag = sha256(identifier.encode()).hexdigest()[:8]
+            service += f' · {tag}'
+        detail = ' ｜ ' + correlation(item) if record.levelno <= logging.DEBUG else ''
+        return one_line(f"{item['timestamp']} {level} [{service}] {message}{detail}")
 
 
 class _NoiseFilter(logging.Filter):
