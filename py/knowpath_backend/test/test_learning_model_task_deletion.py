@@ -162,10 +162,10 @@ def test_model_worker_cli_closes_retriever_and_engine(monkeypatch, fails):
     calls = []
     engine = SimpleNamespace(dispose=lambda: calls.append('engine'))
     retriever = SimpleNamespace(close=lambda: calls.append('retriever'))
-    state = SimpleNamespace(assessment_service=object(), message_service=SimpleNamespace(retriever=retriever))
+    state = SimpleNamespace(assessment_service=object(), message_service=SimpleNamespace(retriever=retriever), notes_service=object())
     class Consumer:
         def __init__(self, *args, **kwargs):
-            pass
+            assert kwargs['notes'] is state.notes_service
         def run_once(self):
             if fails:
                 raise RuntimeError('storage failure')

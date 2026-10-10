@@ -70,6 +70,7 @@ def build_tasks(topics, states, config, space, old_tasks, timestamp, policy):
         elapsed_deferral = bool(previous and previous["status"] == "deferred"
             and previous.get("defer_until") and datetime.fromisoformat(previous["defer_until"]) <= moment)
         future_deferral = bool(previous and previous["status"] == "deferred" and not elapsed_deferral)
+        same_cycle = False
         if previous and not invalidated:
             old_context = previous.get("context", {})
             same_cycle = old_context.get("cycle_fingerprint") == cycle
@@ -88,6 +89,8 @@ def build_tasks(topics, states, config, space, old_tasks, timestamp, policy):
                 task = deepcopy(previous)
                 task["id"] = str(uuid4())
                 task["context"]["origin_task_id"] = previous["id"]
+                task["context"].setdefault("node_id", previous["id"])
+                task["context"].setdefault("sequence", old_context.get("position", 0) + 1)
                 tasks.append(task)
                 continue
         if previous and (previous["status"] in {"completed", "skipped"} or invalidated):
@@ -100,9 +103,15 @@ def build_tasks(topics, states, config, space, old_tasks, timestamp, policy):
             context["origin_task_id"] = previous["id"]
         if elapsed_deferral:
             context["previous_defer_until"] = previous["defer_until"]
+        if previous and not invalidated and same_cycle and previous["kind"] == kind:
+            if not previous.get("context", {}).get("historical"):
+                context.update({key: deepcopy(value) for key, value in previous.get("context", {}).items()
+                                if key in {"node_id", "sequence", "title", "topics", "source_refs"}})
+                context.setdefault("node_id", previous["id"])
+                context.setdefault("sequence", previous.get("context", {}).get("position", 0) + 1)
         tasks.append({"id": str(uuid4()), "topic_ids": [topic["id"]], "kind": kind,
                       "status": "deferred" if future_deferral else "pending", "estimated_minutes": estimate,
-                      "reason": reason, "note": previous.get("note") if elapsed_deferral or future_deferral else None,
+                      "reason": reason, "note": previous.get("note") if previous and (same_cycle or elapsed_deferral or future_deferral) else None,
                       "defer_until": previous["defer_until"] if future_deferral else None, "context": context})
     # Historical tasks remain traceable even when their topics leave the scope.
     for previous in old_tasks:
@@ -111,6 +120,8 @@ def build_tasks(topics, states, config, space, old_tasks, timestamp, policy):
             task = deepcopy(previous)
             task["id"] = str(uuid4())
             task["context"].update(origin_task_id=previous["id"], historical=True)
+            task["context"].setdefault("node_id", previous["id"])
+            task["context"].setdefault("sequence", previous.get("context", {}).get("position", 0) + 1)
             tasks.append(task)
     active = [t for t in tasks if t["status"] not in {"completed", "skipped", "deferred"} and not t["context"].get("historical")]
     by_topic = {t["topic_ids"][0]: t for t in tasks if not t["context"].get("historical")}
@@ -144,6 +155,10 @@ def build_tasks(topics, states, config, space, old_tasks, timestamp, policy):
     deadline = date.fromisoformat(space["target_date"]) if space.get("target_date") else None
     for position, task in enumerate(tasks):
         task["context"]["position"] = position
+        task["context"].setdefault("node_id", task["id"])
+        task["context"].setdefault("sequence", position + 1)
+        task["node_id"] = task["context"]["node_id"]
+        task["sequence"] = task["context"]["sequence"]
         if task not in active:
             continue
         minutes = task["estimated_minutes"]

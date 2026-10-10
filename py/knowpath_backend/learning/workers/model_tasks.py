@@ -17,7 +17,7 @@ from knowpath_backend.observability import context_fields, job_observed, log_eve
 
 logger = logging.getLogger(__name__)
 
-EVENTS = {"assessment.generate": "assessments", "message.generate": "messages"}
+EVENTS = {"assessment.generate": "assessments", "message.generate": "messages", "note.generate": "note_generations"}
 TRANSIENT_ERRORS = frozenset({"MODEL_UNAVAILABLE", "EMBEDDING_UNAVAILABLE", "VECTOR_UNAVAILABLE", "VECTOR_INDEX_NOT_READY", "RATE_LIMITED"})
 
 
@@ -197,15 +197,16 @@ class ModelJob:
 
 
 class ModelTaskWorker:
-    def __init__(self, assessments=None, messages=None, *, clock=None, lease_seconds=300, max_attempts=3,
+    def __init__(self, assessments=None, messages=None, *, notes=None, clock=None, lease_seconds=300, max_attempts=3,
                  max_execution_seconds=1200, heartbeat_interval=None, monotonic=None):
-        service = assessments or messages
+        service = assessments or messages or notes
         heartbeat_interval = lease_seconds / 3 if heartbeat_interval is None else heartbeat_interval
         if (service is None or not isfinite(lease_seconds) or lease_seconds <= 0 or max_attempts < 1
                 or not isfinite(max_execution_seconds) or not 1 <= max_execution_seconds <= 3600
                 or not isfinite(heartbeat_interval) or not 0 < heartbeat_interval <= lease_seconds / 3):
             raise ValueError("A service, positive lease/retry limit, 1-3600 second execution budget and bounded heartbeat interval are required")
         self.assessments, self.messages = assessments, messages
+        self.notes = notes
         self.repository, self.runs = service.repository, service.runs
         self.clock = clock or (lambda: datetime.now(timezone.utc))
         self.lease_seconds, self.max_attempts = lease_seconds, max_attempts
@@ -213,7 +214,8 @@ class ModelTaskWorker:
         self.monotonic = monotonic or monotonic_time
 
     def _service(self, event):
-        return self.assessments if event["event_type"] == "assessment.generate" else self.messages
+        return {"assessment.generate": self.assessments, "message.generate": self.messages,
+                "note.generate": self.notes}.get(event["event_type"])
 
     @contextmanager
     def _locked(self, initial):
@@ -223,7 +225,14 @@ class ModelTaskWorker:
             table = EVENTS[initial["event_type"]]
             resource, missing = None, False
             try:
-                if table == "assessments":
+                if table == "note_generations":
+                    # Finalization/review/deletion all take assessment -> space
+                    # before chapter/job locks. Preserve that order in workers.
+                    peek = self.repository.get_record(table, initial["aggregate_id"], lock=False)
+                    self.repository.get_record("assessments", peek["assessment_id"])
+                    service.spaces.repository.get(peek["space_id"])
+                    resource = self.repository.get_record(table, initial["aggregate_id"])
+                elif table == "assessments":
                     resource = self.repository.get_record(table, initial["aggregate_id"])
                     service.spaces.repository.get(resource["space_id"])
                 else:

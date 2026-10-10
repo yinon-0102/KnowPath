@@ -9,7 +9,7 @@ const LOCAL_AUTH_PATH = '/__knowpath/local-auth';
 const dotenvEscapes = { '\\': '\\', "'": "'", '"': '"', a: '\x07', b: '\b', f: '\f', n: '\n', r: '\r', t: '\t', v: '\v' };
 const publicFiles = new Map([
   ['/', ['index.html', 'text/html']], ['/index.html', ['index.html', 'text/html']],
-  ...['app.js', 'api.js', 'store.js', 'icons.js', 'learning.js', 'workspace.js', 'workspace-view.js', 'progress.js', 'workbench.js', 'notes.js', 'study.js', 'plan-order.js', 'home-view.js'].map(name => [`/src/${name}`, [`src/${name}`, 'text/javascript']]),
+  ...['app.js', 'api.js', 'store.js', 'icons.js', 'learning.js', 'workspace.js', 'workspace-view.js', 'progress.js', 'workbench.js', 'notes.js'].map(name => [`/src/${name}`, [`src/${name}`, 'text/javascript']]),
   ['/src/styles.css', ['src/styles.css', 'text/css']],
   ...['favicon.svg', 'knowledge-orbit.svg'].map(name => [`/assets/${name}`, [`assets/${name}`, 'image/svg+xml']]),
 ]);
@@ -76,7 +76,7 @@ export function createFrontendServer({ projectRoot = path.resolve(root, '..') } 
       'X-Frame-Options': 'DENY',
       'Referrer-Policy': 'no-referrer',
       'Permissions-Policy': 'camera=(), microphone=(), geolocation=()',
-      'Content-Security-Policy': "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' http://127.0.0.1:8000 http://localhost:8000; frame-src 'self' blob:; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'",
+      'Content-Security-Policy': "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' http://127.0.0.1:8000 http://localhost:8000; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'",
     };
     const respond = (status, body, type = 'text/plain') => {
       const content = Buffer.isBuffer(body) ? body : Buffer.from(body);

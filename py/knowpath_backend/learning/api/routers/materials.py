@@ -7,7 +7,8 @@ import asyncio
 
 from fastapi import APIRouter
 from fastapi import File, Form, Header, Query, UploadFile
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
+from urllib.parse import quote
 
 from ...errors import DomainConflict, DomainNotFound
 from knowpath_backend.learning.materials.schemas import UpdateMaterial, DeleteMaterial
@@ -259,6 +260,25 @@ async def get_source_chunk(service: MaterialServiceDep, source_access: SourceAcc
             "content_hash": chunk.content_hash,
         },
     )
+
+
+@router.get("/api/v1/materials/{material_id}/versions/{version_id}/file")
+async def get_material_file(service: MaterialServiceDep, source_access: SourceAccessDep,
+                            material_id: str, version_id: str, space_id: str | None = None) -> Response:
+    version = service.repository.get_version(version_id)
+    if version is None or version.material_id != material_id:
+        return _error_response(404, "RESOURCE_NOT_FOUND", "资料版本不存在", {"version_id": version_id})
+    try:
+        await asyncio.to_thread(source_access.consult, material_id, version_id,
+                                [chunk.id for chunk in version.chunks], space_id)
+        content = await asyncio.to_thread(service.repository.get_raw, version_id)
+    except (DomainNotFound, DomainConflict) as exc:
+        return _domain_error(exc)
+    if content is None:
+        return _error_response(404, "RESOURCE_NOT_FOUND", "原始资料不存在", {"version_id": version_id})
+    filename = quote(version.filename or "material", safe="")
+    return Response(content=content, media_type=version.media_type or "application/octet-stream",
+                    headers={"Content-Disposition": f"inline; filename*=UTF-8''{filename}"})
 
 
 @router.patch("/api/v1/materials/{material_id}")

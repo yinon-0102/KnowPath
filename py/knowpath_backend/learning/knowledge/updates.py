@@ -200,5 +200,7 @@ class KnowledgeUpdateService:
                     'state_version': space['state_version'], 'previous_bindings': previous_bindings,
                     'bindings': copy.deepcopy(bindings), 'invalidated_plan_ids': sorted(invalidated_plan_ids)}})
             self.runs.complete(run['id'], {'type': 'learning_space', 'id': space_id, **result})
+            if getattr(self, 'notes', None) is not None:
+                self.notes.synchronize(space_id)
             return result
         return self.commands._execute('knowledge_updates.apply', space_id, payload, key, change)

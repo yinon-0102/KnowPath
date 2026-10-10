@@ -130,13 +130,11 @@ test('choosing the wrong original PDF never overwrites the saved association', a
 });
 
 
-test('homepage keeps the learning-first route desk without duplicating space cards', () => {
-  assert.match(app, /打开你的学习路线/);
-  assert.match(app, /当前空间资料/);
-  assert.match(app, /最近笔记/);
-  assert.doesNotMatch(app, /你的学习，此刻继续。/);
+test('homepage preserves the original learning-first layout', () => {
+  assert.match(app, /你的学习，此刻继续。/);
+  assert.match(app, /今天，向前一小步。/);
   assert.match(app, /探索知识图谱/);
-  assert.match(app, /class="home-summary"/);
+  assert.match(app, /class="stats-strip"/);
 });
 
 test('live material imports schedule refresh while parsing', () => {

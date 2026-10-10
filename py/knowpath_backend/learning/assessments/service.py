@@ -49,7 +49,14 @@ class AssessmentService:
                 diagnostic = assessment["snapshot"].get("adaptive")
                 if diagnostic is not None and payload["question_id"] not in diagnostic["presented_question_ids"]:
                     raise DomainConflict("QUESTION_NOT_PRESENTED", "未展示的诊断题目不可复核")
-            return change()
+            response = change()
+            notes = getattr(self, "notes", None)
+            if notes is not None and operation in {"assessment.finalize", "assessment.attempt",
+                    "assessment.grade_review", "assessment.question_report",
+                    "assessment.question_resolution", "state.reset"}:
+                space_id = identifier if operation == "state.reset" else self.repository.get_record("assessments", identifier)["space_id"]
+                notes.synchronize(space_id)
+            return response
         return self.commands._execute(operation, identifier, payload, key, guarded_change)
 
     def _topics(self, space):
@@ -73,6 +80,13 @@ class AssessmentService:
         created = []
         def prepare():
             space = self.spaces.repository.get(space_id)
+            links = {}
+            if any(payload.get(field) for field in ("plan_id", "task_id", "learning_session_id")):
+                plans = getattr(self, "plan_sessions", None)
+                if plans is None:
+                    from knowpath_backend.learning.plans.service import PlanSessionService
+                    plans = PlanSessionService(self.repository, self.spaces, self.runs, self)
+                links = plans.validate_assessment_links(space, payload)
             topics = self._topics(space)
             requested = payload.get("topic_ids") or [t["id"] for t in topics]
             if not requested or not set(requested) <= {t["id"] for t in topics}:
@@ -93,6 +107,9 @@ class AssessmentService:
                     "bindings": copy.deepcopy(space["bindings"]), "topics": topics,
                     "epochs": self._epochs(space_id), "request": payload,
                     "assessment_policy_version": "assessment-v1"}}
+            assessment.update(links)
+            assessment["snapshot"]["request"] = {field: copy.deepcopy(value) for field, value in payload.items()
+                                                  if field not in {"plan_id", "task_id", "learning_session_id"}}
             if payload.get("adaptive"):
                 assessment["snapshot"]["adaptive"] = adaptive.freeze_inputs(
                     topics, enrich_observation_times(self.repository,
@@ -194,6 +211,8 @@ class AssessmentService:
     def public(self, assessment):
         snapshot = assessment["snapshot"]
         result = {k: copy.deepcopy(assessment[k]) for k in ("id", "space_id", "kind", "status", "topic_ids", "created_at", "run_id")}
+        result.update({field: copy.deepcopy(assessment[field]) for field in ("plan_id", "task_id", "learning_session_id")
+                       if field in assessment})
         result.update(question_count=snapshot["request"]["question_count"], scope_version=snapshot["scope_version"],
                       graph_versions=[b["graph_version"] for b in snapshot["bindings"]],
                       material_version_ids=[b["material_version_id"] for b in snapshot["bindings"]],
@@ -386,6 +405,8 @@ class AssessmentService:
             adaptive.update_hypotheses(assessment, self._diagnostic_observations(assessment, answers))
         self.repository.put_record("assessments", assessment)
         self.runs.complete(run["id"], {"type": "assessment", "id": assessment["id"]})
+        if getattr(self, "notes", None) is not None:
+            self.notes.enqueue_assessment(assessment)
         return {"run_id": run["id"], "assessment_id": assessment["id"], "status": "processing"}
 
     def _recompute(self, space_id, topic_id, revision_id, epoch, version, timestamp):
@@ -415,7 +436,10 @@ class AssessmentService:
         assessment = self.repository.get_record("assessments", assessment_id)
         if assessment["result"] is None:
             raise DomainConflict("ASSESSMENT_NOT_READY", "测验尚未完成评分")
-        return copy.deepcopy(assessment["result"])
+        result = copy.deepcopy(assessment["result"])
+        if getattr(self, "notes", None) is not None:
+            result["notes"] = self.notes.assessment_reference(assessment_id)
+        return result
 
     def state(self, space_id, *, topic_id=None, status=None, include_evidence=False):
         with self.repository.transaction():

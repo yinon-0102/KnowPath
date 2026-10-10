@@ -21,7 +21,7 @@ export function createApi(getToken) {
       if (!response.ok) {
         const payload = await response.json().catch(() => ({}));
         const error = payload.error || {};
-        const message = response.status === 401 ? '本地会话令牌无效，请打开连接设置重新输入。' : error.message || `请求失败（${response.status}），请重试。`;
+        const message = response.status === 401 ? '本地鉴权已失效，请重新连接以自动读取当前令牌。' : error.message || `请求失败（${response.status}），请重试。`;
         throw new ApiError(message, response.status, error.code, error.details);
       }
       if (raw) return response;
@@ -66,49 +66,27 @@ export function createApi(getToken) {
     return results.flatMap(result => result.items || []);
   }
   async function graph(space) {
-    const allTopics = await topics(space);
-    const permitted = new Set(allTopics.map(t => t.id));
-    const roots = [...new Set([...(space.topic_ids || []), ...allTopics.filter(t => t.level === 1).map(t => t.id)])].filter(t => permitted.has(t));
-    if (!roots.length && allTopics.length) roots.push(allTopics[0].id);
-    const nodes = new Map(allTopics.map(t => [t.id, t]));
+    const nodes = new Map();
     const edges = new Map();
-    for (const root of roots) {
-      const data = await request(`/topics/${id(root)}/graph?depth=3&include_sources=true`);
-      for (const node of data.nodes || []) if (permitted.has(node.id)) {
-        const bound = nodes.get(node.id);
-        if (bound.graph_version !== node.graph_version || bound.material_version_id !== node.material_version_id) throw new ApiError('图谱版本与空间绑定的快照不同，请确认知识版本后重试。');
-        nodes.set(node.id, node);
+    const projections = await Promise.all((space.bindings || []).map(async binding => {
+      const data = await materialGraph({ id: binding.material_id, current_version_id: binding.material_version_id });
+      if (data.graph_version !== binding.graph_version || data.material_version_id !== binding.material_version_id) {
+        throw new ApiError('图谱版本与空间绑定的快照不同，请确认知识版本后重试。');
       }
-      for (const edge of data.edges || []) if (permitted.has(edge.from_id) && permitted.has(edge.to_id)) edges.set(edge.id, edge);
+      return data;
+    }));
+    for (const data of projections) {
+      for (const node of data.nodes || []) nodes.set(node.id, node);
+      for (const edge of data.edges || []) edges.set(edge.id, edge);
     }
     return { nodes: [...nodes.values()], edges: [...edges.values()] };
   }
   async function materialGraph(material, options = {}) {
     const versionId = material?.current_version_id || material?.version_id;
-    const result = await request(`/materials/${id(material.id)}/topics${versionId ? `?version_id=${id(versionId)}` : ''}`, options);
-    if (!Array.isArray(result.items)) throw new ApiError('资料知识主题返回格式不正确。');
-    const permitted = new Set(result.items.map(topic => topic.id));
-    const nodes = new Map(result.items.map(topic => [topic.id, topic]));
-    const edges = new Map();
-    const addEdge = edge => {
-      if (!edge?.from_id || !edge?.to_id || !permitted.has(edge.from_id) || !permitted.has(edge.to_id)) return;
-      const key = `${edge.type || 'related_to'}:${edge.from_id}:${edge.to_id}`;
-      edges.set(key, edge.id ? edge : { ...edge, id: key });
-    };
-    for (const topic of result.items) {
-      if (topic.parent_id) addEdge({ id: `contains:${topic.parent_id}:${topic.id}`, type: 'contains', from_id: topic.parent_id, to_id: topic.id, source_refs: topic.source_refs || [] });
-      for (const prerequisite of [...(topic.prerequisites || []), ...(topic.recommended_prerequisites || [])]) {
-        const source = typeof prerequisite === 'string' ? prerequisite : prerequisite?.id;
-        if (source) addEdge({ id: `prerequisite_of:${source}:${topic.id}`, type: 'prerequisite_of', from_id: source, to_id: topic.id, source_refs: topic.source_refs || [] });
-      }
-    }
-    const roots = result.items.filter(topic => !topic.parent_id).map(topic => topic.id);
-    for (const root of roots.length ? roots : result.items.slice(0, 1).map(topic => topic.id)) {
-      const data = await request(`/topics/${id(root)}/graph?depth=3&include_sources=true`, options);
-      for (const node of data.nodes || []) if (permitted.has(node.id)) nodes.set(node.id, node);
-      for (const edge of data.edges || []) addEdge(edge);
-    }
-    return { nodes: [...nodes.values()], edges: [...edges.values()], graph_version: result.graph_version, material_id: result.material_id, material_version_id: result.version_id };
+    const result = await request(query(`/materials/${id(material.id)}/graph`, { version_id: versionId, include_sources: true }), options);
+    if (!Array.isArray(result.nodes) || !Array.isArray(result.edges)) throw new ApiError('资料知识图谱返回格式不正确。');
+    return { nodes: result.nodes, edges: result.edges, sources: result.sources || [], graph_version: result.graph_version,
+      material_id: result.material_id, material_version_id: result.version_id };
   }
   async function waitRun(runId, signal) {
     const start = Date.now();
@@ -191,6 +169,7 @@ export function createApi(getToken) {
     replayPolicies: (spaceId, body = {}, options = {}) => request(`/learning-spaces/${id(spaceId)}/policy-replays`, { ...options, method: 'POST', body }),
     spaces: () => list('/learning-spaces'), materials: () => list('/materials'),
     space: (value, options = {}) => request(`/learning-spaces/${id(value)}`, options),
+    materialFile: (materialId, versionId, spaceId, options = {}) => request(query(`/materials/${id(materialId)}/versions/${id(versionId)}/file`, { space_id: spaceId }), { ...options, raw: true }),
     createSpace: body => request('/learning-spaces', { method: 'POST', body }),
     setSpaceStatus: (space, status, options = {}) => request(`/learning-spaces/${id(space.id)}`, { ...options, method: 'PATCH', body: { status, expected_version: space.space_version } }),
     deleteSpace: (space, options = {}) => request(`/learning-spaces/${id(space.id)}`, { ...options, method: 'DELETE', body: { confirm: true, expected_version: space.space_version } }),
@@ -202,6 +181,9 @@ export function createApi(getToken) {
     publish: (materialId, revisionId, version, resolutions = [], options = {}) => request(`/materials/${id(materialId)}/graph-revisions/${id(revisionId)}/publish`, { ...options, method: 'POST', body: { expected_graph_version: version, resolutions } }),
     createPlan: (spaceId, body) => request(`/learning-spaces/${id(spaceId)}/plans`, { method: 'POST', body }),
     plan: value => request(`/plans/${id(value)}`),
+    workbench: (spaceId, options = {}) => request(`/learning-spaces/${id(spaceId)}/workbench`, options),
+    progress: (spaceId, params = {}, options = {}) => request(query(`/learning-spaces/${id(spaceId)}/progress`, params), options),
+    learningRecord: (planId, taskId, options = {}) => request(`/plans/${id(planId)}/tasks/${id(taskId)}/learning-record`, options),
     completeTask: (plan, task) => request(`/plans/${id(plan.id || plan.plan_id)}/tasks/${id(task.id)}`, { method: 'PATCH', body: { status: 'completed', expected_plan_version: plan.version } }),
     sendMessage: (spaceId, message, sessionId, materialIds = []) => request(`/learning-spaces/${id(spaceId)}/messages`, { method: 'POST', body: { message, stream: true, ...(sessionId ? { session_id: sessionId } : {}), ...(materialIds.length ? { material_ids: materialIds } : {}) } }),
     updateMaterial: (materialId, body, options = {}) => request(`/materials/${id(materialId)}`, { ...options, method: 'PATCH', body }),
@@ -234,6 +216,13 @@ export function createApi(getToken) {
     finishSession: (sessionId, options = {}) => request(`/sessions/${id(sessionId)}/finish`, { ...options, method: 'POST', body: {} }),
     exportSpace: (spaceId, options = {}) => request(`/learning-spaces/${id(spaceId)}/exports`, { ...options, method: 'POST', body: { format: 'json' } }),
     downloadExport: (exportId, options = {}) => request(`/exports/${id(exportId)}/download`, { ...options, raw: true }),
+    notebooks: (options = {}) => request('/notebooks', options),
+    notebook: (spaceId, options = {}) => request(`/learning-spaces/${id(spaceId)}/notebook`, options),
+    noteChapter: (chapterId, options = {}) => request(`/note-chapters/${id(chapterId)}`, options),
+    updateNoteChapter: (chapterId, body, options = {}) => request(`/note-chapters/${id(chapterId)}`, { ...options, method: 'PATCH', body }),
+    noteRevisions: (chapterId, options = {}) => request(`/note-chapters/${id(chapterId)}/revisions`, options),
+    noteRevision: (chapterId, revisionId, options = {}) => request(`/note-chapters/${id(chapterId)}/revisions/${id(revisionId)}`, options),
+    retryNoteGeneration: (generationId, options = {}) => request(`/note-generations/${id(generationId)}/retry`, { ...options, method: 'POST', body: {} }),
     health: (options = {}) => request('/health', options),
     cancelRun: runId => request(`/runs/${id(runId)}/cancel`, { method: 'POST', body: {} }),
     source: (ref, spaceId) => {
@@ -254,15 +243,13 @@ export function createApi(getToken) {
 }
 
 // State is updated by the caller only after a confirmed successful operation.
-export async function changeSpace({ api, mode, space, action, confirmed = false }) {
+export async function changeSpace({ api, space, action, confirmed = false }) {
   if (!space?.id || !Number.isInteger(space.space_version) || space.space_version < 1) {
     throw new Error('空间信息已失效，请刷新页面后重新操作。');
   }
   if (!['archive', 'restore', 'delete'].includes(action)) throw new Error('不支持的空间操作。');
   if (action === 'delete' && confirmed !== true) throw new Error('请先确认删除此空间及其学习记录。');
   const status = action === 'archive' ? 'archived' : 'active';
-  if (mode === 'demo') return action === 'delete' ? null : { ...space, status, space_version: space.space_version + 1 };
-  if (mode !== 'live') throw new Error('当前数据模式不可用，请刷新页面。');
   if (action !== 'delete') {
     const result = await api.setSpaceStatus(space, status);
     if (result?.id !== space.id || result.status !== status || !Number.isInteger(result.space_version) || result.space_version <= space.space_version) {

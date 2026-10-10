@@ -1,34 +1,12 @@
-async function loadFrontendModules() {
-  try {
-    return await Promise.all([
-      import('./icons.js'), import('./api.js'), import('./learning.js'), import('./workspace.js'),
-      import('./workspace-view.js'), import('./progress.js'), import('./study.js'), import('./notes.js'),
-      import('./workbench.js'), import('./store.js'), import('./plan-order.js'), import('./home-view.js'),
-    ]);
-  } catch (error) {
-    const main = document.getElementById('main');
-    if (main) {
-      main.innerHTML = '<div class="container"><section class="panel" role="alert"><h1>页面资源加载失败</h1><p>请重启前端服务后刷新页面；如果仍无法打开，请检查前端文件是否完整。</p><button type="button" class="button button-primary">刷新页面</button></section></div>';
-      main.querySelector('button').addEventListener('click', () => location.reload());
-    }
-    throw error;
-  }
-}
-
-const [
-  { icon, logo },
-  { createApi, changeSpace },
-  { createLearningController, renderLearning, comparisonPayload },
-  { createWorkspaceController, workspacePath, workspaceFamily, workspaceRoute, workspaceSection, dateRange },
-  { renderWorkspace, updateWorkspaceConditions, correctionFields, workspaceTitles },
-  { renderProgress, renderLearningRecord, currentProgressNodes, createProgressDock, nodeSessionState, taskDisplay },
-  { createStudyController, renderStudy, renderStudyReader, studyPath, renderAnswerMetadata },
-  { createNotesController, renderNotes, renderNoteMarkdown },
-  { isLearningRoute, parseRoute, spacePath, routeState, nextLearningStep, taskAssessmentContext, createWorkbenchController, publishedMaterialIds },
-  { TOKEN_KEY, esc, dateText, sizeText, storageRead, storageWrite, validateFile, materialIds, removeSpaceData, graphTitle, buildGraphIndex, graphSlice, createPdfLibrary, pdfKey, validatePdf, sourcePage, pdfLocation },
-  { createPlanOrderController, renderPlanOrder, selectAssessmentOption, assessmentStageText },
-  { currentSpaceMaterialIds, sortHomeMaterials, homePlanState, notebookSummary },
-] = await loadFrontendModules();
+import { icon, logo } from './icons.js';
+import { createApi, changeSpace } from './api.js';
+import { createLearningController, renderLearning, comparisonPayload } from './learning.js';
+import { createWorkspaceController, workspacePath, workspaceFamily, workspaceRoute, workspaceSection, dateRange } from './workspace.js';
+import { renderWorkspace, updateWorkspaceConditions, correctionFields, workspaceTitles } from './workspace-view.js';
+import { renderProgress, renderLearningRecord } from './progress.js';
+import { createNotesController, renderNotes } from './notes.js';
+import { isLearningRoute, parseRoute, spacePath, routeState, nextLearningStep, taskAssessmentContext, createWorkbenchController, publishedMaterialIds } from './workbench.js';
+import { TOKEN_KEY, esc, dateText, sizeText, storageRead, storageWrite, validateFile, materialIds, removeSpaceData, graphTitle, buildGraphIndex, graphSlice, createPdfLibrary, pdfKey, validatePdf, sourcePage, pdfLocation } from './store.js';
 
 const $ = (selector, root = document) => root.querySelector(selector);
 const main = $('#main');
@@ -37,15 +15,11 @@ let session;
 try { session = window.sessionStorage; } catch { session = { getItem() {}, setItem() {} }; }
 let token = storageRead(session, TOKEN_KEY, '');
 const api = createApi(() => token);
-const planOrder = createPlanOrderController({ api });
-let assessmentTicker;
 const pdfLibrary = createPdfLibrary();
 const pdfUrls = new Set();
 let sourceReader = null;
-const studySidebarScroll = new Map();
-const progressDock = createProgressDock();
 const state = {
-  live: { spaces: [], materials: [], tasks: [] }, loading: true, error: '', chatCapabilityError: '',
+  live: { spaces: [], materials: [], tasks: [] }, loading: true, error: '',
   selected: '', spaceFilter: 'all', materialFilter: 'all', query: '',
   graph: null, graphSpace: '', graphMaterial: '', graphError: '', graphLoading: false, graphSelected: '', zoom: 1, pan: { x: 0, y: 0 },
   graphQuery: '', graphPage: 0, graphScope: 'overview', graphRelation: 'all', graphHistory: [], graphUiKey: '', graphInitialized: false,
@@ -54,7 +28,7 @@ const state = {
   workbenchSection: 'overview', progressScrollKey: '', assessmentContext: null, assistantContext: null, recordFocus: null,
   messages: new Map(), chats: new Map(), chatMaterials: new Map(), pendingJob: null, sending: false, chatController: null,
   timerRemaining: 25 * 60, timerEnd: null, timerInterval: null, timerDuration: 25,
-  materialRefreshTimer: null, dataRefreshId: 0, homeNotebook: null,
+  materialRefreshTimer: null, dataRefreshId: 0,
 };
 const routes = [ ['overview', '学习首页'], ['spaces', '学习空间'], ['notes', '学习笔记'], ['materials', '资料库'] ];
 const statusLabels = { ready: '已就绪', uploaded: '待解析', processing: '解析中', needs_review: '待审核', failed: '解析失败', archived: '已归档', active: '学习中', draft: '待选择范围' };
@@ -63,9 +37,6 @@ const data = () => state.live;
 const route = () => parseRoute(location.hash);
 const currentSpace = () => data().spaces.find(s => s.id === state.selected) || data().spaces[0];
 const byId = id => data().spaces.find(s => s.id === id);
-const study = createStudyController({ api, storage: session, changed: updateStudy,
-  committed: async () => { const spaceId = study.snapshot().space?.id; if (spaceId) { workbench.invalidate(spaceId); await workbench.load(spaceId); } },
-});
 const notes = createNotesController({ api, changed: () => { if (route().name === 'notes' || route().name === 'space' && route().section === 'notes') render(); } });
 const workbench = createWorkbenchController({ api, changed: id => {
   const entry = workbench.snapshot(id);
@@ -111,7 +82,7 @@ const workspace = createWorkspaceController({ api, storage: session,
   },
 });
 const manageLink = (label, page, id, item, cls = 'text-link') => `<a class="${cls}" href="${workspacePath(page, ...[id, item].filter(value => value != null))}">${esc(label)}</a>`;
-const activeTasks = () => [...state.plans.values()].flatMap(p => [...(p.tasks || [])].sort((a, b) => (a.context?.position ?? a.sequence ?? 0) - (b.context?.position ?? b.sequence ?? 0)).map(t => ({ ...t, space_id: p.space_id, plan_id: p.id || p.plan_id })));
+const activeTasks = () => [...state.plans.values()].flatMap(p => (p.tasks || []).map(t => ({ ...t, space_id: p.space_id, plan_id: p.id || p.plan_id })));
 const link = (label, href, cls = 'text-link', glyph = 'chevron') => `<a class="${cls}" href="${href}">${label}${icon(glyph)}</a>`;
 const button = (label, action, cls = 'button button-primary', glyph = '', attrs = '') => `<button type="button" class="${cls}" data-action="${action}" ${attrs}>${glyph ? icon(glyph) : ''}${label}</button>`;
 const empty = (title, description, action = '', glyph = 'book') => `<div class="empty-state">${icon(glyph)}<h2>${esc(title)}</h2><p>${esc(description)}</p>${action}</div>`;
@@ -124,13 +95,13 @@ function toast(message, error = false) {
 }
 function go(name, id = '') { const target = `#/${name}${id ? '/' + encodeURIComponent(id) : ''}`; if (location.hash === target) render(); else location.hash = target; }
 function openModal(title, body, className = '') {
-  modalVersion++; delete modal.dataset.orderDialog; modal.className = className;
+  modalVersion++; modal.className = className;
   modal.innerHTML = `<div class="modal-head"><h2 id="modal-title">${title}</h2>${button('', 'close-modal', 'icon-button', 'close', 'aria-label="关闭弹窗"')}</div><div class="modal-body">${body}</div>`;
   if (!modal.open) modal.showModal();
   const focusTarget = $('input:not([type=checkbox]), textarea, select', modal);
   if (focusTarget) focusTarget.focus();
 }
-function closeModal() { modalVersion++; modal.close(); if (state.recordFocus?.isConnected) { state.recordFocus.setAttribute?.('aria-expanded', 'false'); state.recordFocus.focus({ preventScroll: true }); } state.recordFocus = null; }
+function closeModal() { modalVersion++; modal.close(); if (state.recordFocus?.isConnected) state.recordFocus.focus(); state.recordFocus = null; }
 function showError(error, root = modal) {
   const box = $('[data-form-error]', root);
   if (box) { box.textContent = error.message || String(error); box.hidden = false; }
@@ -228,7 +199,7 @@ function spaceCard(space, i) {
   const count = materialIds(space).length;
   return `<article class="space-card"><a class="card-art ${theme}" href="#/space/${encodeURIComponent(space.id)}" aria-label="打开${esc(space.name)}"><span class="art-label">${['让理解更进一步', '给好奇心一个开始', '与新的可能相遇'][i % 3]}</span>${art(theme)}</a><div class="card-content"><div class="card-title-row"><h3><a href="#/space/${encodeURIComponent(space.id)}">${esc(space.name)}</a></h3>${space.status === 'archived' ? '<span class="badge">已归档</span>' : ''}</div><p>${esc(space.goal || '把你的资料，变成自己的知识。')}</p><div class="card-meta"><span>${icon('file')}${count} 份资料</span><span>${icon('graph')}${(space.topic_ids || []).length} 个学习主题</span></div><div class="empty-progress">从资料出发，逐步建立学习记录</div><div class="card-bottom"><span class="subtle">${esc(statusLabels[space.status] || '学习空间')}</span>${link('继续探索', `#/space/${encodeURIComponent(space.id)}`)}</div>${spaceActions(space)}</div></article>`;
 }
-function taskTitle(task) { return taskDisplay({ ...task, title: task.title || task.name || task.context?.title || `${taskLabels[task.type || task.kind] || '学习'}：${(task.topic_ids || []).map(id => (state.topics.get(task.space_id) || byId(task.space_id)?.nodes || []).find(n => n.id === id)?.title || '知识主题').join('、')}` }).title; }
+function taskTitle(task) { return task.title || task.name || task.context?.title || `${taskLabels[task.type || task.kind] || '学习'}：${(task.topic_ids || []).map(id => (state.topics.get(task.space_id) || byId(task.space_id)?.nodes || []).find(n => n.id === id)?.title || '知识主题').join('、')}`; }
 function taskRow(task) {
   const done = task.status === 'completed';
   const kind = task.type || task.kind || 'learn';
@@ -236,42 +207,14 @@ function taskRow(task) {
   const taskLinks = task.plan_id
     ? '<div class="workspace-task-links">' + manageLink(canStart ? '开始学习' : '查看任务', canStart ? 'session' : 'task', task.plan_id, task.id, canStart ? 'text-link task-start-link' : 'text-link') + button('学习记录', 'progress-node', 'text-link', '', `data-plan="${esc(task.plan_id)}" data-task="${esc(task.id)}"`) + '</div>'
     : '';
-  return `<div class="task-row"><button class="task-check ${done ? 'done' : ''}" data-action="complete-task" data-id="${esc(task.id)}" aria-label="${done ? '已完成' : '完成任务'}：${esc(taskTitle(task))}" aria-pressed="${done}" ${(!canStart || done) ? 'disabled' : ''}>${done ? icon('check') : ''}</button><div class="task-content"><div class="task-title ${done ? 'completed' : ''}">${esc(taskTitle(task))}</div><div class="task-detail">${esc(taskDisplay(task).sourceLabel)} · ${Number(task.minutes || task.estimated_minutes || 25)} 分钟</div></div><span class="task-tag ${kind === 'review' ? 'review' : ''}">${taskLabels[kind] || '学习'}</span>${taskLinks}</div>`;
+  return `<div class="task-row"><button class="task-check ${done ? 'done' : ''}" data-action="complete-task" data-id="${esc(task.id)}" aria-label="${done ? '已完成' : '完成任务'}：${esc(taskTitle(task))}" aria-pressed="${done}" ${(!canStart || done) ? 'disabled' : ''}>${done ? icon('check') : ''}</button><div class="task-content"><div class="task-title ${done ? 'completed' : ''}">${esc(taskTitle(task))}</div><div class="task-detail">${esc(byId(task.space_id)?.name || currentSpace()?.name || '')} · ${Number(task.minutes || task.estimated_minutes || 25)} 分钟</div></div><span class="task-tag ${kind === 'review' ? 'review' : ''}">${taskLabels[kind] || '学习'}</span>${taskLinks}</div>`;
 }
-function homeTaskTitle(task) {
-  return taskDisplay({ ...task, title: task.title || task.name || task.context?.title || '未命名学习节点' }).title;
-}
-
-function homeChapter(task) {
-  const title = String(task?.context?.title || '');
-  return title.match(/^(\d+)[.、]/)?.[1] || '未记录';
-}
-
-function homeNotebookMarkup(space) {
-  const summary = notebookSummary(state.homeNotebook);
-  const notebookHref = spacePath(space.id, 'notes');
-  if (summary.kind === 'empty') return `<div class="home-note-empty"><strong>${esc(summary.label)}</strong><p>完成与计划节点关联的测评后，系统会整理本次学习内容；未总结章节不会显示为已掌握。</p><a class="text-link" href="${notebookHref}">打开笔记册${icon('chevron')}</a></div>`;
-  return `<div class="home-note-latest"><span class="eyebrow">最近更新</span><strong>${esc(summary.title)}</strong><p>${summary.status === 'COMPLETED' ? '章节已完成' : '章节进行中'} · ${summary.correctionCount} 项已确认纠偏<br>更新于 ${esc(dateText(summary.updatedAt))}</p><a class="text-link" href="${notebookHref}">阅读这一章${icon('chevron')}</a></div>`;
-}
-
 function overview() {
-  const spaces = data().spaces.filter(space => space.status !== 'archived');
-  const space = currentSpace() && currentSpace().status !== 'archived' ? currentSpace() : spaces[0];
-  const work = space ? workbench.snapshot(space.id) : { data: null };
-  const plan = work.data?.current_plan || state.plans.get(space?.id);
-  const tasks = [...(plan?.tasks || [])].filter(task => !task.historical && !task.context?.historical).sort((a, b) => (a.context?.position ?? a.sequence ?? 0) - (b.context?.position ?? b.sequence ?? 0));
-  const next = tasks.find(task => ['pending', 'in_progress'].includes(task.status)) || tasks[0];
-  const planState = homePlanState(plan);
-  const currentMaterials = sortHomeMaterials(data().materials, space);
-  const completed = tasks.filter(task => task.status === 'completed').length;
-  const heroAction = planState.action === '查看学习路线' ? button(heroActionLabel(planState.action), 'plan-open', 'button button-primary', 'arrow') : button(heroActionLabel(planState.action), 'continue-learning', 'button button-primary', 'arrow');
-  const route = tasks.slice(0, 5).map((task, index) => `<li><span class="home-route-number">${index + 1}</span><div><strong>${esc(homeTaskTitle(task))}</strong><small>原文章节 ${esc(homeChapter(task))} · ${Number(task.estimated_minutes || 25)} 分钟</small></div><span>${task.status === 'completed' ? '已完成' : task.status === 'skipped' ? '已跳过' : '未完成'}</span></li>`).join('');
-  const materialRows = currentMaterials.slice(0, 4).map(material => `<div class="home-material-row"><span class="home-material-type">${esc(normalizeType(material).toUpperCase())}</span><div><strong>${esc(material.name)}</strong><small>${esc(statusLabels[material.status] || material.status || '未记录')} · ${dateText(material.created_at)}</small></div>${button('阅读', 'view-material', 'text-link', '', `data-id="${esc(material.id)}"`)}</div>`).join('');
-  const emptyMaterials = `<div class="home-empty">当前空间还没有绑定资料。${space ? `<a class="text-link" href="${spacePath(space.id, 'materials')}">选择资料${icon('chevron')}</a>` : ''}</div>`;
-  return `<section class="hero" aria-labelledby="hero-title"><div class="hero-copy"><div class="hero-overline">${icon('spark')}每一点好奇，都值得继续。</div><h1 id="hero-title">让每一步学习，<br>都有方向。</h1><p class="hero-description">把零散的资料，连成清晰的知识。<br>在属于你的节奏里，让理解自然发生。</p><div class="hero-actions">${heroAction}${link('探索知识图谱', '#/graph')}</div></div><img class="hero-art" src="./assets/knowledge-orbit.svg" alt="知识围绕学习目标连接，形成清晰的探索路径" width="640" height="500"><div class="hero-caption">每个知识点，都能找到彼此。</div></section><div class="home-summary" aria-label="当前学习摘要"><span><strong>${spaces.length}</strong> 个学习空间</span><span><strong>${data().materials.length}</strong> 份学习资料</span><span><strong>${tasks.length}</strong> 个当前节点</span><small>统计来自当前记录</small></div><section class="home-route-section"><div class="home-section-heading"><div><h2>打开你的学习路线</h2><p>围绕当前空间，接着学下去。</p></div></div>${space ? `<div class="home-route-card"><div class="home-route-main"><div class="home-space-picker"><label for="home-space-select">当前空间</label><select id="home-space-select" data-change="home-select-space" aria-label="选择当前学习空间">${spaces.map(item => `<option value="${esc(item.id)}" ${item.id === space.id ? 'selected' : ''}>${esc(item.name)}</option>`).join('')}</select><span class="home-plan-status">${esc(plan?.status === 'needs_replan' ? '待重新规划' : plan ? '已有学习计划' : '尚未安排计划')}</span></div><span class="home-eyebrow">${plan ? '从上次的安排继续' : '从资料开始建立路线'}</span><h3>${esc(planState.headline)}</h3><p>${esc(plan ? planState.action === '查看学习路线' ? '学习安排需要重新确认。查看当前路线，再选择符合你节奏的下一步。' : '打开当前节点，选择阅读原文或个性化讲解。' : '选择资料范围并生成计划，系统会按原文位置安排节点。')}</p>${next ? `<div class="home-next-node"><span>${icon('book')}</span><div><strong>${esc(homeTaskTitle(next))}</strong><small>${plan?.status === 'needs_replan' ? '上次安排' : '路线节点 ' + (tasks.indexOf(next) + 1)} · 原文章节 ${esc(homeChapter(next))} · 预计 ${Number(next.estimated_minutes || 25)} 分钟</small></div></div>` : ''}<div class="home-route-actions">${heroActionLabel(planState.action) === '查看学习路线' ? button('查看学习路线', 'plan-open', 'button button-primary') : button(planState.action, 'continue-learning', 'button button-primary')}${space ? `<a class="text-link" href="${spacePath(space.id, 'materials')}">阅读原资料${icon('chevron')}</a>` : ''}</div></div><aside class="home-route-list"><div><strong>本轮路线</strong><span>${completed}/${tasks.length} 节点完成</span></div><ol>${route || '<li class="home-empty">尚未生成学习计划。</li>'}</ol></aside></div>` : empty('还没有学习空间', '先创建空间并选择资料，再从这里开始。', button('创建学习空间', 'new-space', 'button button-primary', 'plus'))}</section>${space ? `<section class="home-resources"><section class="home-resource-panel"><div class="home-section-heading"><h2>当前空间资料</h2><a class="text-link" href="${spacePath(space.id, 'materials')}">查看资料库${icon('chevron')}</a></div>${materialRows || emptyMaterials}</section><section class="home-resource-panel"><div class="home-section-heading"><h2>最近笔记</h2><a class="text-link" href="${spacePath(space.id, 'notes')}">打开笔记册${icon('chevron')}</a></div>${homeNotebookMarkup(space)}</section></section>` : ''}`;
+  const spaces = data().spaces.filter(s => s.status !== 'archived');
+  const tasks = activeTasks();
+  const stats = [['layers', spaces.length, '个', '学习空间'], ['file', data().materials.length, '份', '学习资料'], ['layers', spaces.filter(space => space.status === 'active').length, '个', '学习中的空间'], ['check', tasks.filter(t => t.status === 'completed').length, '项', '已完成任务']];
+  return `<section class="hero" aria-labelledby="hero-title"><div class="hero-copy"><div class="hero-overline">${icon('spark')}每一点好奇，都值得继续。</div><h1 id="hero-title">让每一步学习，<br>都有方向。</h1><p class="hero-description">把零散的资料，连成清晰的知识。<br>在属于你的节奏里，让理解自然发生。</p><div class="hero-actions">${button('继续学习', 'continue-learning', 'button button-primary', 'arrow')}${link('探索知识图谱', '#/graph')}</div></div><img class="hero-art" src="./assets/knowledge-orbit.svg" alt="知识围绕学习目标连接，形成清晰的探索路径" width="640" height="500"><div class="hero-caption">每个知识点，都能找到彼此。</div></section><div class="stats-strip" aria-label="学习统计">${stats.map(([glyph, value, unit, label]) => `<div class="stat"><span class="stat-icon">${icon(glyph)}</span><div><div class="stat-value">${value}<small>${unit}</small></div><div class="stat-label">${label}</div></div></div>`).join('')}</div><section class="section"><div class="section-heading"><div><h2>你的学习，此刻继续。</h2><p>熟悉的知识，新一点的发现。</p></div>${link('全部学习空间', '#/spaces')}</div>${spaces.length ? `<div class="space-grid overview-spaces">${spaces.slice(0, 3).map(spaceCard).join('')}</div>` : empty('给好奇心一个空间', '先导入一份资料，再创建属于你的学习空间。', button('创建学习空间', 'new-space', 'button button-primary', 'plus'))}</section><div class="quick-section"><section class="panel"><div class="panel-title"><h2>今天，向前一小步。</h2>${link('查看计划', '#/plan')}</div>${tasks.length ? tasks.slice(0, 3).map(taskRow).join('') : `<p class="subtle">还没有学习任务。创建计划，让下一步更清晰。</p>${link('安排学习计划', '#/plan')}`}</section><section class="panel tip-panel">${icon('leaf')}<h2>不必一口气学会。<br>只要每一次，都有收获。</h2><p>遇到不明白的地方，就从一个问题开始。<br>让学习助手陪你，把知识一点点想清楚。</p>${link('和学习助手聊聊', '#/assistant')}<div class="tip-decoration"></div></section></div>`;
 }
-
-function heroActionLabel(action) { return action; }
 function filteredSpaces() {
   return data().spaces.filter(s => (state.spaceFilter === 'all' || (state.spaceFilter === 'active' ? s.status !== 'archived' : s.status === 'archived')) && `${s.name} ${s.goal || ''}`.toLowerCase().includes(state.query.toLowerCase()));
 }
@@ -438,15 +381,13 @@ function planPage({ embedded = false } = {}) {
   if (!space) return heading + empty('学习，从一个小目标开始', '先创建学习空间，再为它安排学习任务。', button('新建空间', 'new-space', 'button button-primary', 'plus'), 'calendar');
   if (route().query?.view === 'budget') return `<nav class="workbench-subnav">${link('返回学习计划', spacePath(space.id, 'plan'))}</nav>${renderLearning({ space, state: learning.snapshot(), section: 'comparison', embedded: true, hideNav: true })}`;
   const controls = embedded
-    ? `<div class="space-panel-toolbar"><span class="subtle">${completed} / ${tasks.length} 项已完成</span><div class="workspace-links">${link('预算比较', spacePath(space.id, 'plan', { view: 'budget' }))}${plan ? button('调整顺序', 'order-open', 'button button-secondary') : ''}${button(plan ? '重新规划' : '生成学习任务', 'new-plan', 'button button-primary', 'plus')}</div></div>`
+    ? `<div class="space-panel-toolbar"><span class="subtle">${completed} / ${tasks.length} 项已完成</span><div class="workspace-links">${link('预算比较', spacePath(space.id, 'plan', { view: 'budget' }))}${button(plan ? '重新规划' : '生成学习任务', 'new-plan', 'button button-primary', 'plus')}</div></div>`
     : `<div class="toolbar">${spaceSelect()}<span class="subtle">${completed} / ${tasks.length} 项已完成</span></div>`;
   const entry = workbench.snapshot(space.id);
-  const standaloneRoute = embedded ? '' : `<section class="panel workbench-plan-progress">${renderProgress(progressForSpace(space), { currentPlan: plan, compact: true, activeSession: workbench.snapshot(space.id).data?.active_session })}</section>`;
-  return `${heading}${controls}${entry.error ? notice(esc(entry.error), 'error') + button('重试', 'workbench-retry', 'button button-secondary') : ''}${plan?.status === 'needs_replan' ? notice('计划依据的知识或学习状态已变化，请先重新规划。', 'warning') : ''}${state.planError ? notice(esc(state.planError), 'error') : ''}${planNote}${standaloneRoute}<div class="plan-layout"><div>${entry.busy && !entry.data || state.planLoading ? '<div class="skeleton" role="status" aria-label="正在加载学习任务"></div>' : tasks.length ? `<section class="panel plan-list"><div class="panel-title"><div><h2>本轮学习任务</h2><p class="subtle">选择任务开始学习，也可查看记录或调整安排。</p></div><span class="badge">${tasks.length} 个节点</span></div>${tasks.map(taskRow).join('')}</section>` : empty('先生成一组学习任务', '学习范围确定后，按照主题和掌握状态生成下一步。', button('生成学习任务', 'new-plan', 'button button-primary', 'calendar'), 'calendar')}</div>${focusCard()}</div>`;
+  return `${heading}${controls}${entry.error ? notice(esc(entry.error), 'error') + button('重试', 'workbench-retry', 'button button-secondary') : ''}${plan?.status === 'needs_replan' ? notice('计划依据的知识或学习状态已变化，请先重新规划。', 'warning') : ''}${state.planError ? notice(esc(state.planError), 'error') : ''}${planNote}<section class="panel workbench-plan-progress">${renderProgress(progressForSpace(space), { currentPlan: plan, compact: true })}</section><div class="plan-layout"><div>${entry.busy && !entry.data || state.planLoading ? '<div class="skeleton" role="status" aria-label="正在加载学习任务"></div>' : tasks.length ? `<section class="panel plan-list"><div class="panel-title"><h2>从一个任务开始</h2><span class="badge">当前任务</span></div>${tasks.map(taskRow).join('')}</section>` : empty('先生成一组学习任务', '学习范围确定后，按照主题和掌握状态生成下一步。', button('生成学习任务', 'new-plan', 'button button-primary', 'calendar'), 'calendar')}</div>${focusCard()}</div>`;
 }
 function chatMessages() {
-  const messages = (state.messages.get(currentSpace()?.id) || []).map((message, index) => `<div class="chat-message ${message.role}"><span class="chat-message-label">${message.role === 'user' ? '你' : 'KnowPath 学习助手'}</span>${message.role === 'assistant' ? `${renderAnswerMetadata(message)}<div class="note-markdown">${renderNoteMarkdown(message.text)}</div>` : esc(message.text)}${(message.citations || []).map((ref, i) => `<button class="citation" data-action="chat-source" data-message="${index}" data-index="${i}">${esc(ref.material_name || data().materials.find(m => m.id === ref.material_id)?.name || '来源资料')} · 查看依据 ${i + 1}</button>`).join('')}</div>`).join('');
-  return messages + (state.chatDraft?.spaceId === currentSpace()?.id && state.chatDraft.text ? `<div class="chat-message assistant study-stream-draft">${renderAnswerMetadata(state.chatDraft)}<span class="chat-message-label">学习助手 · ${state.chatDraft.provisional ? '正在生成，依据待核对' : '正在接收'}</span><div class="note-markdown">${renderNoteMarkdown(state.chatDraft.text)}</div></div>` : '');
+  return (state.messages.get(currentSpace()?.id) || []).map((message, index) => `<div class="chat-message ${message.role}"><span class="chat-message-label">${message.role === 'user' ? '你' : 'KnowPath 学习助手'}</span>${esc(message.text)}${(message.citations || []).map((ref, i) => `<button class="citation" data-action="chat-source" data-message="${index}" data-index="${i}">${esc(ref.material_name || data().materials.find(m => m.id === ref.material_id)?.name || '来源资料')} · 查看依据 ${i + 1}</button>`).join('')}</div>`).join('');
 }
 function assistantPage({ embedded = false } = {}) {
   const heading = embedded ? '' : pageHeading('学习助手', '带着问题出发，带着理解回来。');
@@ -454,7 +395,7 @@ function assistantPage({ embedded = false } = {}) {
   const pending = state.pendingJob?.spaceId === currentSpace().id;
   const assistantCtx = state.assistantContext?.space_id === currentSpace().id ? state.assistantContext : null;
   const background = `<div class="workbench-assistant-context"><span>当前空间：${esc(currentSpace().name)} · ${materialIds(currentSpace()).length} 份资料</span>${assistantCtx ? link('返回本次学习', assistantCtx.returnTo || workspacePath('session', assistantCtx.planId, assistantCtx.taskId)) + button('自由提问', 'clear-assistant-context', 'text-link') : ''}</div>`;
-  return `${heading}${background}${state.chatCapabilityError ? notice(esc(state.chatCapabilityError), 'error') : ''}<div class="assistant-shell">${embedded ? '' : `<div class="toolbar">${spaceSelect()}<span class="badge">自动选择回答依据</span></div>`}<div class="assistant-intro"><div class="assistant-mark">${icon('spark')}</div><h2>今天，想弄懂什么？</h2><p>不必一次问得完美。从一个小小的好奇开始。</p><div class="suggestions">${['帮我梳理这份资料的重点', '如何理解这个知识点？', '接下来可以学习什么？'].map(text => `<button class="suggestion" data-action="suggestion" data-text="${esc(text)}">${text}</button>`).join('')}</div></div><div class="chat-messages" id="chat-messages" aria-live="polite" aria-relevant="additions">${chatMessages()}</div><div id="chat-status" class="notice" role="status" ${!state.sending && !pending ? 'hidden' : ''}>${state.sending ? '正在判断回答依据并生成回答…' : '上次回答尚未接收完成，可继续接收同一个任务。'}</div>${'<details class="workspace-chat-filter"><summary>限定本次问答的资料（默认全部）</summary>' + data().materials.filter(m => materialIds(currentSpace()).includes(m.id)).map(m => '<label class="check-label"><input type="checkbox" data-chat-material value="' + esc(m.id) + '" ' + ((state.chatMaterials.get(currentSpace().id) || []).includes(m.id) ? 'checked' : '') + (state.sending ? ' disabled' : '') + '>' + esc(m.name) + '</label>').join('') + '</details>'}<form id="chat-form" class="chat-form"><label class="screenreader" for="question">输入你的学习问题</label><textarea id="question" name="question" rows="2" maxlength="8000" placeholder="例如：能用直观的方式解释一下线性变换吗？" required ${state.sending || state.chatCapabilityError ? 'disabled' : ''}></textarea><div class="chat-form-bottom"><span>资料问题附来源，模型补充有标记<br>Enter 发送 · Shift + Enter 换行</span>${state.sending ? button('停止', 'stop-chat', 'button button-secondary', 'pause') : pending ? button('继续接收', 'resume-chat', 'button button-primary', 'refresh') : '<button type="submit" class="button button-primary">发送问题' + icon('arrow') + '</button>'}</div></form><p class="chat-footnote">模型回答可能存在偏差，请结合原始资料核对。</p></div>`;
+  return `${heading}${background}<div class="assistant-shell">${embedded ? '' : `<div class="toolbar">${spaceSelect()}<span class="badge">基于你的资料</span></div>`}<div class="assistant-intro"><div class="assistant-mark">${icon('spark')}</div><h2>今天，想弄懂什么？</h2><p>不必一次问得完美。从一个小小的好奇开始。</p><div class="suggestions">${['帮我梳理这份资料的重点', '如何理解这个知识点？', '接下来可以学习什么？'].map(text => `<button class="suggestion" data-action="suggestion" data-text="${esc(text)}">${text}</button>`).join('')}</div></div><div class="chat-messages" id="chat-messages" aria-live="polite" aria-relevant="additions">${chatMessages()}</div><div id="chat-status" class="notice" role="status" ${!state.sending && !pending ? 'hidden' : ''}>${state.sending ? '正在检索资料与生成回答…' : '上次回答尚未接收完成，可继续接收同一个任务。'}</div>${'<details class="workspace-chat-filter"><summary>限定本次问答的资料（默认全部）</summary>' + data().materials.filter(m => materialIds(currentSpace()).includes(m.id)).map(m => '<label class="check-label"><input type="checkbox" data-chat-material value="' + esc(m.id) + '" ' + ((state.chatMaterials.get(currentSpace().id) || []).includes(m.id) ? 'checked' : '') + (state.sending ? ' disabled' : '') + '>' + esc(m.name) + '</label>').join('') + '</details>'}<form id="chat-form" class="chat-form"><label class="screenreader" for="question">输入你的学习问题</label><textarea id="question" name="question" rows="2" maxlength="8000" placeholder="例如：能用直观的方式解释一下线性变换吗？" required ${state.sending ? 'disabled' : ''}></textarea><div class="chat-form-bottom"><span>回答有迹可循，来源随时可查<br>Enter 发送 · Shift + Enter 换行</span>${state.sending ? button('停止', 'stop-chat', 'button button-secondary', 'pause') : pending ? button('继续接收', 'resume-chat', 'button button-primary', 'refresh') : '<button type="submit" class="button button-primary">发送问题' + icon('arrow') + '</button>'}</div></form><p class="chat-footnote">模型回答可能存在偏差，请结合原始资料核对。</p></div>`;
 }
 function spaceTabButton(tab, label, glyph = '') {
   const active = state.workbenchSection === tab || tab === 'assessment' && state.workbenchSection === 'review';
@@ -477,21 +418,11 @@ function nextActionHtml(space) {
 function spaceOverviewPanel(space, materials, topics) {
   const entry = workbench.snapshot(space.id), updates = entry.updates?.available_updates || [];
   const plan = entry.data?.current_plan;
-  return `<div class="space-overview-grid"><section class="panel detail-hero"><span class="badge">个人学习空间</span><h2>${esc(space.name)}</h2><p>${esc(space.goal || '从一个明确目标开始，把资料逐步变成自己的知识。')}</p>${nextActionHtml(space)}</section><aside class="panel"><div class="panel-title"><h2>当前目标</h2><span class="badge">${materials.length} 份资料</span></div><p class="subtle">${Number(space.topic_ids?.length || 0)} 个主题${space.weekly_minutes ? ' · 每周 ' + Number(space.weekly_minutes) + ' 分钟' : ''}${space.target_date ? ' · 目标日期 ' + esc(space.target_date) : ''}</p>${link('调整目标与偏好', workspacePath('space-profile', space.id))}${updates.length ? notice(`有 ${updates.length} 份资料发布了新知识版本。采用前可先查看影响。`) + manageLink('预览并采用更新', 'knowledge-updates', space.id) : ''}${entry.updatesError ? '<p class="subtle">资料更新状态暂未读取。</p>' : ''}</aside></div><section class="panel space-summary-panel"><div class="panel-title"><div><h2>学习路径</h2><p class="subtle">每个节点是一项任务，点击查看当次学习记录。任务完成后节点着色。</p></div></div>${entry.error ? notice(esc(entry.error), 'error') + button('重试', 'workbench-retry', 'button button-secondary') : ''}${renderProgress(progressForSpace(space), { currentPlan: plan, activeSession: entry.data?.active_session })}</section>`;
+  return `<div class="space-overview-grid"><section class="panel detail-hero"><span class="badge">个人学习空间</span><h2>${esc(space.name)}</h2><p>${esc(space.goal || '从一个明确目标开始，把资料逐步变成自己的知识。')}</p>${nextActionHtml(space)}</section><aside class="panel"><div class="panel-title"><h2>当前目标</h2><span class="badge">${materials.length} 份资料</span></div><p class="subtle">${Number(space.topic_ids?.length || 0)} 个主题${space.weekly_minutes ? ' · 每周 ' + Number(space.weekly_minutes) + ' 分钟' : ''}${space.target_date ? ' · 目标日期 ' + esc(space.target_date) : ''}</p>${link('调整目标与偏好', workspacePath('space-profile', space.id))}${updates.length ? notice(`有 ${updates.length} 份资料发布了新知识版本。采用前可先查看影响。`) + manageLink('预览并采用更新', 'knowledge-updates', space.id) : ''}${entry.updatesError ? '<p class="subtle">资料更新状态暂未读取。</p>' : ''}</aside></div><section class="panel space-summary-panel"><div class="panel-title"><div><h2>学习路径</h2><p class="subtle">每个节点是一项任务，点击查看当次学习记录。任务完成后节点着色。</p></div></div>${entry.error ? notice(esc(entry.error), 'error') + button('重试', 'workbench-retry', 'button button-secondary') : ''}${renderProgress(progressForSpace(space), { currentPlan: plan })}</section>`;
 }
 function spaceShell(space, body, section = state.workbenchSection) {
   state.selected = space.id; state.workbenchSection = section;
-  return `<a class="text-link back-link" href="#/spaces">返回学习空间</a>${pageHeading(esc(space.name), '阅读原文、理解讲解，沿着节点继续学习。', `<div class="space-detail-actions">${link('空间设置', spacePath(space.id, 'settings'), 'button button-secondary', 'settings')}${link('高级分析', spacePath(space.id, 'analysis'), 'text-link')}</div>`)}${studyProgressPanel(space)}<nav class="space-tabs" aria-label="空间学习功能">${spaceTabButton('study', '学习', 'book')}${spaceTabButton('plan', '学习计划', 'calendar')}${spaceTabButton('materials', '资料与范围', 'file')}${spaceTabButton('assessment', '测评与复习', 'check')}${spaceTabButton('notes', '学习笔记', 'book')}</nav><div class="space-tab-content">${body}</div>`;
-}
-function studyProgressPanel(space) {
-  const entry = workbench.snapshot(space.id), plan = entry.data?.current_plan;
-  const view = study.snapshot(), progress = progressForSpace(space);
-  const selected = view.space?.id === space.id ? view.nodeId : null;
-  const decorated = progress ? { ...progress, rounds: (progress.rounds || []).map(round => ({ ...round, nodes: (round.nodes || []).map(node => ({ ...node, selected: node.node_id === selected })) })) } : progress;
-  const nodes = currentProgressNodes(decorated, plan), task = view.space?.id === space.id ? view.task : null;
-  const completed = nodes.filter(n => n.status === 'completed').length, percent = nodes.length ? Math.round(completed / nodes.length * 100) : 0;
-  const count = `${completed} / ${nodes.length} 项已完成`;
-  return `<section class="panel study-progress" data-study-progress><div class="study-progress-full"><div class="study-route-heading"><div><h2>学习路线</h2><p>按节点循序学习 · 点击打开学习内容</p></div>${plan ? button('调整顺序', 'order-open', 'text-link') : ''}<div class="study-route-total"><strong>${percent}%</strong><span>${count}</span></div></div><div class="study-route-meter" role="progressbar" aria-label="本轮任务完成进度" aria-valuemin="0" aria-valuemax="${nodes.length || 1}" aria-valuenow="${completed}"><span style="width:${percent}%"></span></div>${entry.error ? notice(esc(entry.error), 'error') : ''}${renderProgress(decorated, { currentPlan: plan, compact: true, showHeading: false, activeSession: view.space?.id === space.id ? view.activeSession : entry.data?.active_session })}<details class="study-progress-history"><summary>历史轮次与累计记录</summary>${renderProgress(decorated, { currentPlan: plan, historyOnly: true })}</details></div></section><aside class="panel study-progress-dock" data-study-progress-dock aria-label="当前学习节点" aria-hidden="true" inert><div class="study-progress-compact"><strong>${esc(task ? taskDisplay(task).title : '当前学习路线')}</strong><span>${count}</span><button type="button" class="text-link" data-action="study-expand-progress" aria-expanded="false">展开节点</button></div></aside>`;
+  return `<a class="text-link back-link" href="#/spaces">返回学习空间</a>${pageHeading(esc(space.name), '目标、学习和复习，都在这个空间继续。', `<div class="space-detail-actions">${link('空间设置', spacePath(space.id, 'settings'), 'button button-secondary', 'settings')}${link('高级分析', spacePath(space.id, 'analysis'), 'text-link')}</div>`)}<nav class="space-tabs" aria-label="空间学习功能">${spaceTabButton('overview', '空间首页', 'layers')}${spaceTabButton('plan', '学习计划', 'calendar')}${spaceTabButton('materials', '资料与范围', 'file')}${spaceTabButton('assistant', '学习助手', 'spark')}${spaceTabButton('assessment', '测评与复习', 'check')}${spaceTabButton('notes', '学习笔记', 'book')}</nav><div class="space-tab-content">${body}</div>`;
 }
 function spaceMaterialsPanel(space, materials, topics) {
   const tools = manageLink('资料更新', 'knowledge-updates', space.id) + manageLink('知识纠错', 'knowledge-correct', space.id) + manageLink('变更记录', 'knowledge-changes', space.id);
@@ -514,162 +445,6 @@ function managedPage() {
   if (view.route.page === 'health') return renderWorkspace(view) + button('重新自动连接', 'reconnect', 'button button-secondary', 'refresh');
   if (!space) return renderWorkspace(view);
   return spaceShell(space, renderWorkspace(view), workspaceSection(view.route.page));
-}
-async function loadStudy(current = route(), { refresh = false } = {}) {
-  const requestedHash = location.hash;
-  const space = currentSpace(); if (!space) return;
-  const entry = workbench.snapshot(space.id);
-  let plan = entry.data?.current_plan;
-  let currentPlan = true;
-  if (current.query?.plan && current.query.plan !== plan?.id) {
-    plan = await api.plan(current.query.plan); currentPlan = false;
-    if (plan.space_id !== space.id || location.hash !== requestedHash) return;
-  }
-  const previousSpace = study.snapshot().space;
-  const bindingsChanged = previousSpace?.id === space.id && JSON.stringify(previousSpace.bindings || []) !== JSON.stringify(space.bindings || []);
-  await study.load({ space, plan, activeSession: entry.data?.active_session, taskId: current.query?.task, nodeId: current.query?.node, current: currentPlan, materials: data().materials, capabilityError: state.chatCapabilityError }, { refresh: refresh || bindingsChanged });
-  if (location.hash === requestedHash && study.snapshot().mode === 'original' && study.snapshot().refs.length && !study.snapshot().reader && !study.snapshot().readerError) {
-    try { await study.readSource(); } catch { /* Reader exposes the exact error and retry. */ }
-  }
-}
-function updateRouteNodeStates() {
-  const view = study.snapshot(), space = currentSpace();
-  if (!space) return;
-  const entry = workbench.snapshot(space.id), plan = entry.data?.current_plan;
-  const session = view.space?.id === space.id ? view.activeSession : entry.data?.active_session;
-  const nodes = currentProgressNodes(progressForSpace(space), plan);
-  const completed = nodes.filter(n => n.status === 'completed').length;
-  const percent = nodes.length ? Math.round(completed / nodes.length * 100) : 0;
-  const total = $('[data-study-progress] .study-route-total');
-  if (total) { $('strong', total).textContent = percent + '%'; $('span', total).textContent = `${completed} / ${nodes.length} 项已完成`; }
-  const meter = $('[data-study-progress] .study-route-meter');
-  if (meter) { meter.setAttribute('aria-valuenow', String(completed)); $('span', meter).style.width = percent + '%'; }
-  for (const element of document.querySelectorAll('[data-study-progress] [data-progress-view="current"] .progress-node')) {
-    const node = nodes.find(item => item.node_id === element.dataset.node);
-    if (!node) continue;
-    const currentNode = session?.task_id === node.task_id && session?.plan_id === node.plan_id
-      ? { ...node, active_session_id: session.id || session.session_id } : node;
-    const status = nodeSessionState(currentNode, session);
-    for (const name of ['active', 'running', 'paused']) element.classList.toggle(name, status[name]);
-    for (const name of ['completed', 'pending', 'skipped', 'deferred']) element.classList.toggle(name, node.status === name || name === 'pending' && !['completed', 'skipped', 'deferred'].includes(node.status));
-    const selected = view.space?.id === space.id && node.node_id === view.nodeId;
-    element.classList.toggle('selected', selected); element.setAttribute('aria-pressed', String(selected));
-    const text = status.paused ? '已暂停' : status.active ? '学习中' : { pending: '待学习', in_progress: '学习中', completed: '已完成', skipped: '已跳过', deferred: '已延期' }[node.status] || node.status;
-    const label = $('.progress-node-status', element); if (label) label.textContent = text;
-    element.setAttribute('aria-label', element.getAttribute('aria-label').replace(/，(?:学习中|已暂停|待学习|已完成|已跳过|已延期)/, '，' + text));
-  }
-}
-function syncAssessmentTicker() {
-  if ($('[data-assessment-stage]')) {
-    updateAssessmentElapsed();
-    if (!assessmentTicker) assessmentTicker = setInterval(updateAssessmentElapsed, 1000);
-  } else { clearInterval(assessmentTicker); assessmentTicker = null; }
-}
-function updateAssessmentElapsed() {
-  const view = learning.snapshot();
-  for (const element of document.querySelectorAll('[data-assessment-stage]')) element.textContent = assessmentStageText(element.dataset.assessmentStage, view.generationStartedAt);
-}
-function updateStudy(change = {}) {
-  const current = route();
-  if (current.name !== 'space' || !['study', 'overview'].includes(current.section) || study.snapshot().space?.id !== current.id) return;
-  updateRouteNodeStates();
-  const view = study.snapshot(), host = $('.study-workspace');
-  if (!host || host.dataset.studyKey !== view.key) { render(); return; }
-  if (change.sessionOnly && view.session?.status === 'active' && view.session.task_id === view.task?.id) {
-    const paused = view.session.paused === true;
-    const badge = $('.study-task .badge', host), control = $('.study-task-actions [data-study-action="pause"], .study-task-actions [data-study-action="resume"]', host);
-    const footer = $('.study-footer > div > strong', host);
-    if (badge) badge.textContent = paused ? '学习已暂停' : '正在学习';
-    if (control) { control.dataset.studyAction = paused ? 'resume' : 'pause'; control.textContent = paused ? '继续学习' : '暂停'; }
-    if (footer) footer.textContent = paused ? '当前会话已暂停' : '学习会话进行中';
-    return;
-  }
-  const documentView = $('[data-study-document]', host);
-  captureStudySidebarScroll();
-  const lectureReader = $('[data-study-lecture-scroll]', host);
-  if (lectureReader?.dataset.lessonIdentity && !lectureReader.closest('[hidden]')) studySidebarScroll.set(`lecture:${view.space.id}:${view.nodeId}:${lectureReader.dataset.lessonIdentity}`, { top: lectureReader.scrollTop });
-  const preferences = $('#study-preferences', host), question = $('#study-question', host);
-  const focused = document.activeElement;
-  const focusedId = focused?.id;
-  const focusedAction = focused?.dataset?.studyAction;
-  const focusedMode = focused?.dataset?.mode;
-  const holder = document.createElement('div'); holder.innerHTML = renderStudy(view);
-  const next = holder.firstElementChild;
-  const nextDocument = $('[data-study-document]', next);
-  const keepDocument = documentView?.dataset.readerToken && documentView.dataset.readerToken === nextDocument?.dataset.readerToken;
-  const readingScroll = keepDocument ? [documentView, ...documentView.querySelectorAll('*')].filter(element => element.scrollTop || element.scrollLeft).map(element => ({ element, top: element.scrollTop, left: element.scrollLeft })) : [];
-  if (preferences && preferences.contains(focused)) $('#study-preferences', next)?.replaceWith(preferences);
-  const oldInput = $('#study-question-input', question), nextInput = $('#study-question-input', next);
-  if (question?.dataset.chatContext === view.chatContextKey && oldInput === focused && nextInput && !nextInput.disabled) nextInput.replaceWith(oldInput);
-  host.before(next);
-  if (keepDocument) {
-    documentView.hidden = nextDocument.hidden;
-    // A connected atomic move preserves the PDF browsing context during SSE renders.
-    if (nextDocument.parentNode.moveBefore) { nextDocument.parentNode.moveBefore(documentView, nextDocument); nextDocument.remove(); }
-    else nextDocument.replaceWith(documentView);
-  }
-  host.remove();
-  for (const { element, top, left } of readingScroll) { element.scrollTop = top; element.scrollLeft = left; }
-  const nextLectureReader = $('[data-study-lecture-scroll]', next);
-  if (nextLectureReader?.dataset.lessonIdentity) nextLectureReader.scrollTop = studySidebarScroll.get(`lecture:${view.space.id}:${view.nodeId}:${nextLectureReader.dataset.lessonIdentity}`)?.top || 0;
-  updateStudyTabs();
-  updateStudySidebar();
-  const stage = ({ reading_sources: '正在读取节点原文…', generating: '正在整理个性化讲义…', validating_sources: '正在核对讲义来源…' })[view.generation?.stage];
-  if (stage && ['generating', 'queued', 'running'].includes(view.generation?.status)) {
-    const status = $('#study-explanation [role="status"]'); if (status) status.textContent = stage;
-  }
-  if (focused?.isConnected) focused.focus({ preventScroll: true });
-  else if (focusedId) document.getElementById(focusedId)?.focus({ preventScroll: true });
-  else if (focusedAction === 'mode') $(`[data-study-action="mode"][data-mode="${focusedMode}"]`)?.focus({ preventScroll: true });
-}
-function captureStudySidebarScroll() {
-  const sidebar = $('[data-study-sidebar]'), scroll = $('[data-study-chat-scroll]', sidebar || document);
-  if (sidebar && scroll) studySidebarScroll.set(sidebar.dataset.chatContext, { top: scroll.scrollTop, bottom: scroll.scrollHeight - scroll.clientHeight - scroll.scrollTop < 40 });
-}
-function updateStudySidebar() {
-  for (const element of document.querySelectorAll?.('[data-study-inert]') || []) { element.inert = false; delete element.dataset.studyInert; }
-  const sidebar = $('[data-study-sidebar]'); if (!sidebar) return;
-  const narrow = window.matchMedia?.('(max-width: 1099px)').matches || false, view = study.snapshot();
-  sidebar.hidden = narrow ? !view.drawerOpen : view.sidebarOpen === false;
-  const backdrop = $('.study-sidebar-backdrop'); if (backdrop) backdrop.hidden = !narrow || !view.drawerOpen;
-  sidebar.setAttribute('role', narrow ? 'dialog' : 'complementary');
-  if (narrow && view.drawerOpen) {
-    sidebar.setAttribute('aria-modal', 'true');
-    const workspace = $('.study-workspace');
-    const backgrounds = [...(document.querySelectorAll?.('#header,#footer,.study-task,.study-reader-column,.study-footer') || []), ...(workspace?.parentElement?.children || [])];
-    for (const element of backgrounds) { if (element === workspace || element.contains?.(workspace) || element.inert) continue; element.inert = true; element.dataset.studyInert = ''; }
-    if (!sidebar.contains(document.activeElement)) $('.study-sidebar-close', sidebar)?.focus({ preventScroll: true });
-  } else sidebar.removeAttribute('aria-modal');
-  const open = $('[data-study-action="sidebar-open"]'); if (open) open.setAttribute('aria-expanded', String(narrow ? view.drawerOpen : view.sidebarOpen !== false));
-  const scroll = $('[data-study-chat-scroll]', sidebar), saved = studySidebarScroll.get(sidebar.dataset.chatContext);
-  if (scroll) scroll.scrollTop = saved ? saved.top : 0;
-}
-function updateStudyTabs() {
-  document.querySelectorAll('[data-study-action="mode"]').forEach(tab => { tab.tabIndex = tab.getAttribute('aria-selected') === 'true' ? 0 : -1; });
-}
-async function assessStudyNode() {
-  const view = study.snapshot();
-  const ctx = taskAssessmentContext(view.plan, view.task.id, { spaceId: view.space.id, sessionId: view.session?.session_id });
-  state.assessmentContext = ctx;
-  location.hash = spacePath(view.space.id, 'assessment', { plan: ctx.plan_id, task: ctx.task_id, session: ctx.learning_session_id });
-}
-async function readStudyCitation(ref) {
-  if (!ref) throw new Error('当前讲义没有有效的引用来源。');
-  const view = study.snapshot(), hash = location.hash;
-  const resolved = await api.source(ref, view.space.id);
-  if (study.snapshot() !== view || location.hash !== hash) return;
-  const originalRef = resolved.material_id && resolved.material_version_id && resolved.chunk_id ? resolved : ref;
-  let index = view.refs.findIndex(r => r.material_id === originalRef.material_id && r.material_version_id === originalRef.material_version_id && r.chunk_id === originalRef.chunk_id);
-  if (index < 0) { view.refs.push({ ...originalRef, page: resolved.page || ref.page }); index = view.refs.length - 1; }
-  await study.setMode('original', { sourceIndex: index });
-  if (study.snapshot() !== view || location.hash !== hash) return;
-  if (view.drawerOpen) study.sidebar(false, { drawer: true });
-  $('#study-original')?.scrollIntoView({ block: 'start', behavior: 'smooth' });
-}
-function updateProgressPosition() {
-  const panel = $('[data-study-progress]'), dock = $('[data-study-progress-dock]');
-  const top = ($('#header')?.getBoundingClientRect?.().bottom || 72) + 8;
-  progressDock.mount(panel, dock, top);
 }
 async function openLearningRecord(planId, taskId, trigger) {
   state.recordFocus = trigger;
@@ -714,7 +489,7 @@ function spacePage(spaceId) {
   const materials = data().materials.filter(m => materialIds(space).includes(m.id));
   const topics = state.topics.get(space.id);
   const tab = state.spaceTab;
-  const body = tab === 'study' || tab === 'overview' ? renderStudy(study.snapshot().space?.id === space.id ? study.snapshot() : { space, busy: true, plan: state.plans.get(space.id) })
+  const body = tab === 'overview' ? spaceOverviewPanel(space, materials, topics)
     : tab === 'notes' ? renderNotes(notes.snapshot())
     : tab === 'scope' ? spaceMaterialsPanel(space, materials, topics)
     : tab === 'tasks' ? planPage({ embedded: true })
@@ -756,34 +531,6 @@ function legacySpaceRedirect(current) {
 }
 function render() {
   const current = route();
-  const studyView = typeof study === 'undefined' ? {} : study.snapshot();
-  const mountedStudy = $('.study-workspace');
-  const mountedMatches = !studyView.key || mountedStudy?.dataset?.studyKey === studyView.key;
-  const sameStudyNode = studyView.space?.id === current.id && (!current.query?.task || current.query.task === studyView.task?.id) && (!current.query?.plan || current.query.plan === studyView.plan?.id);
-  if ((state.preserveStudyRoute === location.hash || sameStudyNode) && current.name === 'space' && ['study', 'overview'].includes(current.section) && mountedMatches && mountedStudy) {
-    header(); updateStudy();
-    const panel = $('[data-study-progress]'), dock = $('[data-study-progress-dock]');
-    if (panel && dock && currentSpace()) {
-      const holder = document.createElement('div'); holder.innerHTML = studyProgressPanel(currentSpace());
-      const nextPanel = $('[data-study-progress]', holder);
-      const oldNodes = [...panel.querySelectorAll('[data-progress-view="current"] .progress-node')].map(n => n.dataset.node).join(',');
-      const nextNodes = [...nextPanel.querySelectorAll('[data-progress-view="current"] .progress-node')].map(n => n.dataset.node).join(',');
-      if (oldNodes !== nextNodes) {
-        const scroll = $('.progress-scroll', panel)?.scrollLeft || 0;
-        const historyOpen = $('.study-progress-history', panel)?.open;
-        panel.replaceWith(nextPanel);
-        const nextScroll = $('.progress-scroll', nextPanel); if (nextScroll) nextScroll.scrollLeft = scroll;
-        const history = $('.study-progress-history', nextPanel); if (history) history.open = Boolean(historyOpen);
-      }
-      else updateRouteNodeStates();
-      dock.replaceWith($('[data-study-progress-dock]', holder));
-      updateProgressPosition();
-    }
-    return;
-  }
-  if (current.name === 'space' && current.section === 'overview' && !state.loading) {
-    location.replace(studyPath(current.id, current.query?.task, current.query?.plan)); return;
-  }
   if (current.name === 'space') {
     if (byId(current.id)) state.selected = current.id;
     state.workbenchSection = current.section; const rs = routeState(current.section);
@@ -807,15 +554,7 @@ function render() {
   if (state.loading) content = pageHeading('正在连接你的知识', '读取学习空间和资料，请稍候。') + '<div class="skeleton" role="status" aria-label="正在加载数据"></div>';
   else if (state.error && !(current.name === 'manage' && current.id === 'health')) content = pageHeading('让连接，重新发生。', '检查本地服务，然后继续你的学习。') + notice(esc(state.error), 'error') + empty('暂时无法读取学习数据', '请检查后端启动情况。你的学习数据仍保留在后端。', manageLink('查看服务状态', 'health', null) + ' ' + button('重试连接', 'reconnect', 'button button-primary', 'refresh'), 'connection');
   else content = legacyGraph ? graphPage() : legacySpace ? spacePage(currentSpace()?.id) : (views[current.name] || (() => empty('这个页面还不存在', '回到概览，继续你的探索。', link('返回概览', '#/overview', 'button button-primary'))))();
-  const previousDocument = $('[data-study-document]');
-  captureStudySidebarScroll();
   main.innerHTML = `<div class="container">${subbar()}${content}</div>`;
-  const nextDocument = $('[data-study-document]');
-  if (previousDocument?.dataset.readerToken && previousDocument.dataset.readerToken === nextDocument?.dataset.readerToken) { previousDocument.hidden = nextDocument.hidden; nextDocument.replaceWith(previousDocument); }
-  syncAssessmentTicker();
-  updateProgressPosition();
-  updateStudySidebar();
-  if (current.name === 'space' && ['study', 'overview'].includes(current.section)) updateStudyTabs();
   const activeNode = $('.workbench-plan-progress .progress-node.active') || $('.workbench-plan-progress .progress-node.pending');
   const progressKey = 'live:' + location.hash;
   if (activeNode && state.progressScrollKey !== progressKey) {
@@ -857,12 +596,7 @@ function scheduleMaterialRefresh() {
 async function connectBackend({ renew = false } = {}) {
   if (state.connecting) return state.connecting;
   state.connecting = (async () => {
-    const preserveReader = typeof $ === 'function' && Boolean($('.study-workspace'));
-    const questionInput = typeof $ === 'function' ? $('#question') : null;
-    const questionDraft = questionInput?.value;
-    const selectedSpace = state.selected;
-    if (preserveReader) state.preserveStudyRoute = globalThis.location?.hash;
-    state.loading = !preserveReader; state.error = ''; render();
+    state.loading = true; state.error = ''; render();
     try {
       if (renew || !token) {
         const response = await fetch('/__knowpath/local-auth', { cache: 'no-store', credentials: 'omit', signal: AbortSignal.timeout(8000) });
@@ -871,19 +605,10 @@ async function connectBackend({ renew = false } = {}) {
         if (typeof auth.token !== 'string' || !auth.token || /\s/.test(auth.token) || auth.api_base !== 'http://127.0.0.1:8000/api/v1') throw new Error('本地连接配置无效，请检查服务配置后重试。');
         token = auth.token; storageWrite(session, TOKEN_KEY, token);
       }
-      if (api.messageCapabilities) {
-        try { const capabilities = await api.messageCapabilities({ refresh: true }); state.chatCapabilityError = capabilities.message; }
-        catch (error) { state.chatCapabilityError = `暂未确认对话接口版本：${error.message}`; }
-      }
-      await refreshData({ silent: preserveReader });
-      if (preserveReader) await loadRoute();
+      await refreshData();
     } catch {
       state.error = '无法自动连接本地服务，请确认后端已启动并检查鉴权配置。';
-    } finally {
-      state.loading = false; render(); state.preserveStudyRoute = null;
-      if (questionDraft !== undefined && state.selected === selectedSpace && typeof $ === 'function' && $('#question')) $('#question').value = questionDraft;
-      if (preserveReader && state.error) toast(state.error, true);
-    }
+    } finally { state.loading = false; render(); }
   })();
   try { await state.connecting; } finally { state.connecting = null; }
 }
@@ -910,32 +635,14 @@ async function refreshData({ silent = false } = {}) {
 async function loadRoute() {
   if (state.loading || (state.error && !(route().name === 'manage' && route().id === 'health'))) return;
   const current = route(), space = currentSpace(), requestHash = location.hash;
-  if (!(current.name === 'space' && ['study', 'overview'].includes(current.section))) study.dispose();
   if (current.name === 'notes' || current.name === 'space' && current.section === 'notes') { await notes.load(current); return; }
   notes.dispose();
   const routeValid = () => location.hash === requestHash && currentSpace()?.id === space?.id;
   if ((current.name === 'space' || current.name === 'overview') && space) {
     await workbench.load(space.id);
     if (!routeValid()) return;
-    if (current.name === 'overview') {
-      state.homeNotebook = null;
-      try {
-        const notebook = await api.notebook(space.id);
-        if (routeValid()) state.homeNotebook = notebook;
-      } catch (error) {
-        if (routeValid()) state.homeNotebook = { chapters: [], error: error.message };
-      }
-      if (!routeValid()) return;
-      render();
-    }
   }
-  if (current.name === 'manage') {
-    await workspace.load();
-    const managed = workspace.snapshot();
-    if (managed.route.page === 'session' && managed.data?.space && location.hash === requestHash) location.replace(studyPath(managed.data.space.id, managed.route.item, managed.route.id));
-    return;
-  }
-  if (current.name === 'space' && ['study', 'overview'].includes(current.section)) { await loadStudy(current); return; }
+  if (current.name === 'manage') { await workspace.load(); return; }
   if (['graph', 'material-graph'].includes(current.name)) {
     const context = graphContext();
     if (!context) return;
@@ -1109,51 +816,10 @@ function updatePlanPreview(form) {
   }
   if (submit) submit.disabled = false;
 }
-function newPlanOrdering(space) {
-  const base = state.plans.get(space.id), bound = materialIds(space);
-  const prior = (base?.config?.material_order || []).filter(id => bound.includes(id));
-  const ids = [...prior, ...bound.filter(id => !prior.includes(id))];
-  return `<div class="form-field"><label for="new-plan-order">学习顺序</label><select id="new-plan-order" name="order_mode">${base ? '<option value="inherit" selected>沿用当前顺序偏好</option>' : ''}<option value="source" ${!base ? 'selected' : ''}>原文顺序</option><option value="adaptive">智能顺序</option></select><small>原文顺序按资料和章节推进；智能顺序结合知识状态与前置关系。</small></div>${ids.length > 1 ? `<h3>资料优先级</h3><ol class="order-list">${ids.map(id => `<li data-new-plan-material="${esc(id)}"><span>${esc(data().materials.find(m => m.id === id)?.name || id)}</span><span class="order-moves"><button type="button" data-action="new-plan-material-move" data-direction="-1" aria-label="上移资料">↑</button><button type="button" data-action="new-plan-material-move" data-direction="1" aria-label="下移资料">↓</button></span></li>`).join('')}</ol>` : ids.map(id => `<span hidden data-new-plan-material="${esc(id)}"></span>`).join('')}`;
-}
-function renderOrderDialog() {
-  const focused = document.activeElement;
-  const focusKey = focused && modal.contains(focused) ? { ...focused.dataset } : null;
-  if (!modal.open || modal.dataset.orderDialog !== 'true') return;
-  $('.modal-body', modal).innerHTML = renderPlanOrder(planOrder.snapshot(), data().materials);
-  if (focusKey) {
-    const controls = [...modal.querySelectorAll('button, select')];
-    const target = controls.find(element => !element.disabled && ['action', 'change', 'kind', 'id', 'direction'].every(key => element.dataset[key] === focusKey[key]))
-      || controls.find(element => !element.disabled && ['action', 'change', 'kind', 'id'].every(key => element.dataset[key] === focusKey[key]));
-    target?.focus({ preventScroll: true });
-  }
-}
-function orderModal() {
-  const space = currentSpace(), plan = state.plans.get(space?.id);
-  if (!space || !plan) throw new Error('请先生成学习计划。');
-  planOrder.open(plan, space, workbench.snapshot(space.id).data?.active_session);
-  openModal('调整学习顺序', renderPlanOrder(planOrder.snapshot(), data().materials), 'plan-order-modal');
-  modal.dataset.orderDialog = 'true';
-}
-async function orderCommand(name) {
-  const version = modalVersion;
-  try {
-    const request = name === 'apply' ? planOrder.apply() : name === 'refresh' ? planOrder.refresh() : planOrder.preview();
-    renderOrderDialog();
-    const result = await request;
-    if (version !== modalVersion || !modal.open) return;
-    if (name === 'apply' && result) {
-      const spaceId = planOrder.snapshot().space.id;
-      state.plans.set(spaceId, { ...result, space_id: spaceId });
-      closeModal(); workbench.invalidate(spaceId); await workbench.load(spaceId);
-      if (route().section === 'study') await loadStudy(route());
-      toast('学习顺序已更新，原有节点和笔记已保留。');
-    }
-  } finally { if (version === modalVersion) renderOrderDialog(); }
-}
 function planModal() {
   const space = currentSpace(); if (!space) return newSpaceModal();
   if (!space.topic_ids?.length) { return scopeModal({ returnToPlan: true }); }
-  openModal('生成学习任务', `<p class="modal-intro">为「${esc(space.name)}」的 ${Number(space.topic_ids.length)} 个学习主题生成一组可执行任务。</p><form id="plan-form" data-space="${esc(space.id)}">${newPlanOrdering(space)}<div class="form-field"><label for="session-count">最多安排几次学习？</label><select id="session-count" name="session_count"><option value="3">3 次</option><option value="4">4 次</option><option value="5">5 次</option><option value="custom">自定义</option></select></div><div class="form-field plan-custom-field" data-plan-custom="session_count" hidden><label for="session-count-custom">自定义学习次数</label><input id="session-count-custom" name="session_count_custom" type="number" min="3" max="5" step="1" placeholder="请输入 3—5 次"><small>可设置 3—5 次学习。</small></div><div class="form-field"><label for="session-minutes">每次最多学习多久？</label><select id="session-minutes" name="minutes_per_session"><option value="15">15 分钟，轻松起步</option><option value="25" selected>25 分钟，保持专注</option><option value="45">45 分钟，深入理解</option><option value="custom">自定义</option></select></div><div class="form-field plan-custom-field" data-plan-custom="minutes_per_session" hidden><label for="session-minutes-custom">自定义单次时长（分钟）</label><input id="session-minutes-custom" name="minutes_per_session_custom" type="number" min="10" max="120" step="1" placeholder="请输入 10—120 分钟"><small>可设置 10—120 分钟。</small></div><label class="check-label"><input type="checkbox" name="include_review" checked>有到期内容时安排复习</label><div id="plan-preview" class="plan-preview" aria-live="polite"></div><div class="form-error" data-form-error hidden role="alert"></div><div class="form-actions">${button('取消', 'close-modal', 'button button-secondary')}<button type="submit" class="button button-primary">生成学习任务</button></div></form>`);
+  openModal('生成学习任务', `<p class="modal-intro">为「${esc(space.name)}」的 ${Number(space.topic_ids.length)} 个学习主题生成一组可执行任务。</p><form id="plan-form" data-space="${esc(space.id)}"><div class="form-field"><label for="session-count">最多安排几次学习？</label><select id="session-count" name="session_count"><option value="3">3 次</option><option value="4">4 次</option><option value="5">5 次</option><option value="custom">自定义</option></select></div><div class="form-field plan-custom-field" data-plan-custom="session_count" hidden><label for="session-count-custom">自定义学习次数</label><input id="session-count-custom" name="session_count_custom" type="number" min="3" max="5" step="1" placeholder="请输入 3—5 次"><small>可设置 3—5 次学习。</small></div><div class="form-field"><label for="session-minutes">每次最多学习多久？</label><select id="session-minutes" name="minutes_per_session"><option value="15">15 分钟，轻松起步</option><option value="25" selected>25 分钟，保持专注</option><option value="45">45 分钟，深入理解</option><option value="custom">自定义</option></select></div><div class="form-field plan-custom-field" data-plan-custom="minutes_per_session" hidden><label for="session-minutes-custom">自定义单次时长（分钟）</label><input id="session-minutes-custom" name="minutes_per_session_custom" type="number" min="10" max="120" step="1" placeholder="请输入 10—120 分钟"><small>可设置 10—120 分钟。</small></div><label class="check-label"><input type="checkbox" name="include_review" checked>有到期内容时安排复习</label><div id="plan-preview" class="plan-preview" aria-live="polite"></div><div class="form-error" data-form-error hidden role="alert"></div><div class="form-actions">${button('取消', 'close-modal', 'button button-secondary')}<button type="submit" class="button button-primary">生成学习任务</button></div></form>`);
   updatePlanPreview($('#plan-form'));
 }
 async function createPlan(form) {
@@ -1163,8 +829,7 @@ async function createPlan(form) {
   const { sessions, minutes } = planSettings(form);
   if (!sessions.valid) throw new Error(sessions.message);
   if (!minutes.valid) throw new Error(minutes.message);
-  const payload = { session_count: sessions.value, minutes_per_session: minutes.value, include_review: values.has('include_review'), rebuild_mode: 'initial', order_mode: values.get('order_mode') || 'source', material_order: [...form.querySelectorAll('[data-new-plan-material]')].map(row => row.dataset.newPlanMaterial) };
-  if (values.get('order_mode') === 'inherit') delete payload.order_mode;
+  const payload = { session_count: sessions.value, minutes_per_session: minutes.value, include_review: values.has('include_review'), rebuild_mode: 'initial' };
   const status = $('#plan-preview', form);
   if (status) { status.className = 'plan-preview pending'; status.innerHTML = '<strong>正在生成学习任务…</strong><span>正在读取知识状态，请稍候，不要重复点击。</span>'; }
   form.querySelectorAll('select, input, button').forEach(control => { control.disabled = true; });
@@ -1203,7 +868,7 @@ function toggleTimer() {
   render();
 }
 function helpModal() {
-  openModal('从好奇，到理解', `<div class="help-content"><h3>1. 先把资料放进来</h3><p>在资料库导入 PDF、Markdown 或 TXT。资料会自动进入解析流程。解析后先复核并发布知识图谱，再创建空间。</p><h3>2. 为目标创建一个空间</h3><p>填写空间名称和学习目标，选择 1—5 份资料。每周时间和目标日期不再是创建前置条件。</p><h3>3. 在空间里定范围</h3><p>进入学习空间的“资料与范围”，选择本次要学的主题，暂时排除不需要的内容，并决定是否自动纳入前置知识。</p><h3>4. 生成任务并学习</h3><p>在“学习计划”里设置学习次数、单次时长和复习选项。任务会根据当前范围生成；可以直接打开资料、记录学习会话和请求讲解。</p><h3>5. 继续提问和测评</h3><p>“学习助手”自动判断问题：资料相关问题附引用，通用问题由模型回答，资料不足时明确标注模型补充；“测评与复习”按当前范围出题，结果和复核入口也从空间进入。</p><h3>用键盘也很顺手</h3><p><code>Ctrl / ⌘ + K</code> 搜索；<code>Esc</code> 关闭弹窗；<code>Ctrl / ⌘ + Enter</code> 发送问题。Tab 可在导航、按钮和知识主题之间移动。</p></div><div class="form-actions">${button('开始探索', 'close-modal', 'button button-primary')}</div>`);
+  openModal('从好奇，到理解', `<div class="help-content"><h3>1. 先把资料放进来</h3><p>在资料库导入 PDF、Markdown 或 TXT。资料会自动进入解析流程。解析后先复核并发布知识图谱，再创建空间。</p><h3>2. 为目标创建一个空间</h3><p>填写空间名称和学习目标，选择 1—5 份资料。每周时间和目标日期不再是创建前置条件。</p><h3>3. 在空间里定范围</h3><p>进入学习空间的“资料与范围”，选择本次要学的主题，暂时排除不需要的内容，并决定是否自动纳入前置知识。</p><h3>4. 生成任务并学习</h3><p>在“学习计划”里设置学习次数、单次时长和复习选项。任务会根据当前范围生成；可以直接打开资料、记录学习会话和请求讲解。</p><h3>5. 继续提问和测评</h3><p>“学习助手”只围绕当前空间资料回答并提供引用；“测评与复习”按当前范围出题，结果和复核入口也从空间进入。</p><h3>用键盘也很顺手</h3><p><code>Ctrl / ⌘ + K</code> 搜索；<code>Esc</code> 关闭弹窗；<code>Ctrl / ⌘ + Enter</code> 发送问题。Tab 可在导航、按钮和知识主题之间移动。</p></div><div class="form-actions">${button('开始探索', 'close-modal', 'button button-primary')}</div>`);
 }
 function searchModal() {
   openModal('找到你的下一步', `<div class="command-input">${icon('search')}<input data-input="global-search" id="global-search" aria-label="搜索全部学习内容" placeholder="搜索空间、资料，或前往一个页面" autocomplete="off"><kbd>Esc</kbd></div><div id="global-results">${searchResults('')}</div>`, 'search-dialog');
@@ -1220,30 +885,26 @@ function searchResults(query) {
 function updateChat() { if (route().name !== 'assistant' && !(route().name === 'space' && state.spaceTab === 'assistant')) return; const question = $('#question')?.value || ''; render(); if ($('#question')) $('#question').value = question; }
 async function sendChat(question, resume = false) {
   const space = currentSpace(); if (!space || state.sending) return;
-  if (!resume && state.chatCapabilityError) { toast(state.chatCapabilityError, true); return; }
   if (!resume && state.pendingJob) throw new Error('还有一个问题正在处理中。请先继续接收或停止该任务。');
   if (!resume && !question.trim()) throw new Error('先写下一个你想弄懂的问题吧。');
   const list = state.messages.get(space.id) || [];
+  if (!resume) { list.push({ role: 'user', text: question }); state.messages.set(space.id, list); }
   state.sending = true; const controller = new AbortController(); state.chatController = controller;
-  updateChat();
+  if ($('#question')) $('#question').value = ''; updateChat();
   try {
     if (!resume) {
       const ctx = state.assistantContext?.space_id === space.id ? state.assistantContext : null;
       const job = await api.sendMessage(space.id, question, ctx?.learningSessionId || state.chats.get(space.id), state.chatMaterials.get(space.id) || []);
-      list.push({ role: 'user', text: question }); state.messages.set(space.id, list);
-      if (currentSpace()?.id === space.id && $('#question')) $('#question').value = '';
       state.pendingJob = { ...job, spaceId: space.id }; state.chats.set(space.id, job.session_id);
       if (controller.signal.aborted) { await api.cancelRun(job.run_id); state.pendingJob = null; throw new DOMException('操作已停止', 'AbortError'); }
     }
-    const result = await api.readMessage(state.pendingJob, { signal: controller.signal, onStatus: text => { const element = $('#chat-status'); if (element) { element.hidden = false; element.textContent = text; } },
-      onDelta: (_, value) => { if (!controller.signal.aborted) { state.chatDraft = { spaceId: space.id, text: value.text, provisional: value.provisional, answer_mode: value.answer_mode, supplement_explanation: value.supplement_explanation }; updateChat(); } }
-    });
+    const result = await api.readMessage(state.pendingJob, { signal: controller.signal, onStatus: text => { const element = $('#chat-status'); if (element) { element.hidden = false; element.textContent = text; } } });
     if (!byId(space.id)) return;
-    list.push({ role: 'assistant', text: result.text, citations: result.citations || [], answer_mode: result.answer_mode, supplement_explanation: result.supplement_explanation });
+    list.push({ role: 'assistant', text: result.text, citations: result.citations || [] });
     state.messages.set(space.id, list); state.pendingJob = null;
   } catch (error) {
     if (error.name !== 'AbortError') { toast(error.message, true); if (state.pendingJob && error.code !== 'RUN_PENDING' && error.status >= 400) state.pendingJob = null; }
-  } finally { state.chatDraft = null; state.sending = false; state.chatController = null; updateChat(); }
+  } finally { state.sending = false; state.chatController = null; updateChat(); }
 }
 function materialSpace(materialId, versionId) {
   const matches = space => (space?.bindings || []).some(binding => binding.material_id === materialId && (!versionId || binding.material_version_id === versionId));
@@ -1452,67 +1113,6 @@ async function attachSourcePdf(file) {
   }
 }
 document.addEventListener('click', async event => {
-  const optionRow = event.target.closest('[data-action="learning-option-select"]');
-  if (optionRow) { selectAssessmentOption(optionRow, event.target); return; }
-  const orderMove = event.target.closest('[data-action="order-move"]');
-  if (orderMove) { if (!orderMove.disabled) { planOrder.move(orderMove.dataset.kind, orderMove.dataset.id, Number(orderMove.dataset.direction)); renderOrderDialog(); } return; }
-  const materialMove = event.target.closest('[data-action="new-plan-material-move"]');
-  if (materialMove) {
-    if (materialMove.disabled) return;
-    const row = materialMove.closest('[data-new-plan-material]'), previous = row.previousElementSibling, next = row.nextElementSibling;
-    if (Number(materialMove.dataset.direction) < 0 && previous) previous.before(row);
-    else if (Number(materialMove.dataset.direction) > 0 && next) next.after(row);
-    materialMove.focus(); return;
-  }
-  const originalLink = event.target.closest('[data-study-open-original]');
-  if (originalLink) {
-    event.preventDefault();
-    const popup = reservePdfWindow();
-    if (!popup) { toast('请允许浏览器打开新标签页后重试。', true); return; }
-    try {
-      const view = study.snapshot(), reader = view.reader, key = view.key;
-      await api.source(reader.ref, view.space.id);
-      await api.materialFile(reader.ref.material_id, reader.ref.material_version_id, view.space.id);
-      if (study.snapshot().key !== key || !study.snapshot().reader?.url) { popup.close(); return; }
-      popup.location.replace(`${study.snapshot().reader.url}#page=${reader.page || 1}&view=FitH`);
-    } catch (error) { popup.close(); toast(error.message, true); }
-    return;
-  }
-  const studyAction = event.target.closest('[data-study-action]');
-  if (studyAction) {
-    const name = studyAction.dataset.studyAction, view = study.snapshot();
-    await busy(studyAction, async () => {
-      if (name === 'sidebar-open' || name === 'sidebar-close') {
-        const drawer = window.matchMedia('(max-width: 1099px)').matches;
-        study.sidebar(name === 'sidebar-open', { drawer });
-        if (name === 'sidebar-close') $('[data-study-action="sidebar-open"]')?.focus({ preventScroll: true });
-        return;
-      }
-      if (name === 'lesson-sources') { if (view.drawerOpen) study.sidebar(false, { drawer: true }); $('#study-explanation .study-citations')?.scrollIntoView({ block: 'center' }); return; }
-      if (name === 'mode') return study.setMode(studyAction.dataset.mode);
-      if (name === 'source') return study.readSource(Number(studyAction.dataset.index));
-      if (name === 'parsed-source') return study.readParsedSource(Number(studyAction.dataset.index));
-      if (name === 'reader-format') return study.readerFormat(studyAction.dataset.format);
-      if (name === 'generate' || name === 'regenerate') return study.generate(name === 'regenerate');
-      if (name === 'retry') return study.retry(studyAction.dataset.id);
-      if (name === 'cancel') return study.cancel();
-      if (name === 'start') return study.start();
-      if (name === 'pause' || name === 'resume') return study.sessionEvent(name);
-      if (name === 'finish' || name === 'finish-assess') { await study.finish(); if (name === 'finish-assess') await assessStudyNode(); return; }
-      if (name === 'assess') return assessStudyNode();
-      if (name === 'refresh') return loadStudy(route(), { refresh: true });
-      if (name === 'record') return openLearningRecord(view.plan.id, view.task.id, studyAction);
-      if (name === 'version') return study.readLesson(studyAction.dataset.id);
-      if (name === 'history') return study.moreHistory();
-      if (name === 'resume-chat') return study.ask('', true);
-      if (name === 'cancel-chat') return study.cancelChat();
-      if (name === 'citation') return readStudyCitation((view.lesson || view.lessonDraft)?.citations?.[Number(studyAction.dataset.index)]);
-      if (name === 'message-citation') {
-        const message = view.messages.find(m => (m.id || m.message_id) === studyAction.dataset.message);
-        return readStudyCitation(message?.response?.citations?.[Number(studyAction.dataset.index)]);
-      }
-    }); return;
-  }
   const workspaceAction = event.target.closest('[data-workspace-action]');
   if (workspaceAction) { await workspace.action(workspaceAction.dataset.workspaceAction, workspaceAction.dataset.value); workbench.invalidate(currentSpace()?.id); return; }
   if (event.target.closest('.skip-link')) { event.preventDefault(); main.focus(); return; }
@@ -1534,13 +1134,7 @@ document.addEventListener('click', async event => {
     'learning-finalize': async () => { await learning.finalize(); workbench.invalidate(currentSpace()?.id); await workbench.load(currentSpace().id); }, 'learning-evolution': () => learning.loadEvolution(),
     'learning-replay': () => learning.replay(), 'learning-cancel': () => learning.cancelGeneration(),
     'close-modal': closeModal, 'close-record': closeModal, search: searchModal, help: helpModal,
-    'progress-node': () => { closeModal(); location.hash = studyPath(currentSpace().id, element.dataset.task, element.dataset.plan); },
-    'study-expand-progress': () => {
-      const panel = $('[data-study-progress]'); if (!panel) return;
-      state.recordFocus = element; element.setAttribute('aria-expanded', 'true');
-      openModal('学习路线', $('.study-progress-full', panel).innerHTML, 'study-route-dialog');
-      $('.progress-node.selected, .progress-node', modal)?.focus({ preventScroll: true });
-    },
+    'progress-node': () => openLearningRecord(element.dataset.plan, element.dataset.task, element),
     'progress-more': () => workbench.load(currentSpace().id, { more: true }),
     'workbench-retry': () => workbench.load(currentSpace().id, { force: true }),
     'task-assessment': () => openTaskAssessment(element),
@@ -1552,11 +1146,9 @@ document.addEventListener('click', async event => {
     'space-material-source': () => readSpaceMaterial(id),
     privacy: () => openModal('你的知识，安心放在这里', '<div class="help-content"><h3>资料副本</h3><p>关联的原 PDF 副本保存在当前浏览器的 IndexedDB 中，便于阅读精确版本的来源。清除网站数据会移除这些浏览器副本；后端资料和学习记录按后端配置持久保存。</p><h3>本地服务</h3><p>真实资料与问答通过本地后端处理。前端只向 127.0.0.1:8000 发送请求；模型服务的调用由后端配置决定。前端不包含统计追踪、广告脚本或外部字体。</p><h3>连接凭据</h3><p>本地令牌只保存在当前标签页的 sessionStorage，并通过 X-Local-Token 请求头发送。聊天界面记录保留在本次页面会话中；后台记录遵循后端的持久化设置。</p></div>'),
     'mobile-menu': () => { const nav = $('#main-nav'); const open = nav.classList.toggle('open'); element.setAttribute('aria-expanded', String(open)); element.setAttribute('aria-label', open ? '收起导航' : '展开导航'); },
-    'order-open': orderModal, 'order-preview': () => orderCommand('preview'), 'order-apply': () => orderCommand('apply'), 'order-refresh': () => orderCommand('refresh'),
     'new-space': newSpaceModal, 'new-plan': planModal, 'edit-scope': scopeModal,
     'archive-space': () => spaceChangeModal(id, 'archive'), 'restore-space': () => spaceChangeModal(id, 'restore'), 'delete-space': () => spaceChangeModal(id, 'delete'),
     'continue-learning': () => currentSpace() ? openSpaceTab('overview') : newSpaceModal(),
-    'plan-open': () => currentSpace() ? openSpaceTab('tasks') : newSpaceModal(),
     reconnect: () => connectBackend({ renew: true }),
     refresh: () => { state.graphSpace = ''; state.graph = null; state.graphUiKey = ''; state.topics.clear(); state.plans.clear(); workbench.invalidate(); return refreshData(); },
     'space-filter': () => { state.spaceFilter = id; render(); },
@@ -1592,15 +1184,6 @@ document.addEventListener('click', async event => {
 
 document.addEventListener('submit', async event => {
   const form = event.target; event.preventDefault();
-  if (form.id === 'study-preferences') {
-    await busy(form.querySelector('button[type="submit"]'), async () => {
-      const fields = new FormData(form), space = await study.preferences(String(fields.get('style')), String(fields.get('instructions')));
-      const existing = byId(space.id); if (existing) Object.assign(existing, space); toast('讲解偏好已保存。');
-    }); return;
-  }
-  if (form.id === 'study-question') {
-    await busy(form.querySelector('button[type="submit"]'), async () => { const question = String(new FormData(form).get('message') || '').trim(); if (!question) return; await study.ask(question); }); return;
-  }
   if (form.matches('[data-workspace-form]')) { await workspace.submit(new FormData(form)); workbench.invalidate(currentSpace()?.id); return; }
   if (form.matches('[data-workspace-filter]')) { await workspace.filter(new FormData(form)); return; }
   if (form.id === 'learning-replay-form') {
@@ -1645,7 +1228,6 @@ document.addEventListener('submit', async event => {
   });
 });
 document.addEventListener('input', event => {
-  if (event.target.id === 'study-question-input') { study.question(event.target.value); return; }
   if (event.target.dataset.noteCorrectionId) { notes.editCorrection(event.target.dataset.noteCorrectionId, event.target.value); return; }
   if (event.target.dataset.noteBlock) { notes.edit(event.target.dataset.noteBlock, event.target.value, event.target.dataset.noteCorrection); return; }
   const action = event.target.dataset.input;
@@ -1656,8 +1238,6 @@ document.addEventListener('input', event => {
   if (event.target.closest('#plan-form')) updatePlanPreview(event.target.form);
 });
 document.addEventListener('change', async event => {
-  if (event.target.dataset.change === 'order-mode') { planOrder.configure({ order_mode: event.target.value }); renderOrderDialog(); return; }
-  if (event.target.matches('[data-study-page]')) { study.page(event.target.value); return; }
   if (event.target.matches('[data-chat-material]')) { state.chatMaterials.set(currentSpace().id, [...document.querySelectorAll('[data-chat-material]:checked')].map(input => input.value)); return; }
   if (event.target.closest('[data-workspace-form]')) {
     if (event.target.matches('[data-workspace-target]')) $('[data-workspace-correction-fields]', event.target.form).innerHTML = correctionFields(workspace.snapshot().data, event.target.value);
@@ -1678,28 +1258,9 @@ document.addEventListener('change', async event => {
     if (state.sending) { toast('请先等待当前回答完成，或停止接收。'); event.target.value = state.selected; return; }
     state.selected = event.target.value; state.assessmentContext = null; state.assistantContext = null; state.graphSelected = ''; state.graphSpace = ''; state.graph = null; state.zoom = 1; state.pan = { x: 0, y: 0 }; state.planError = ''; openSpaceTab('overview', state.selected);
   }
-  if (event.target.dataset.change === 'home-select-space') {
-    if (state.sending) { toast('请先等待当前回答完成，或停止接收。'); event.target.value = state.selected; return; }
-    state.selected = event.target.value; state.homeNotebook = null; state.planError = ''; render(); void loadRoute();
-  }
   if (event.target.closest('#plan-form')) updatePlanPreview(event.target.form);
 });
 document.addEventListener('keydown', event => {
-  const sidebar = $('[data-study-sidebar]');
-  if (study.snapshot().drawerOpen && sidebar && !sidebar.hidden) {
-    if (event.key === 'Escape') { event.preventDefault(); study.sidebar(false, { drawer: true }); $('[data-study-action="sidebar-open"]')?.focus({ preventScroll: true }); return; }
-    if (event.key === 'Tab') {
-      const items = [...sidebar.querySelectorAll('button:not(:disabled),a[href],textarea:not(:disabled),[tabindex="0"]')].filter(element => element.getClientRects().length);
-      const first = items[0], last = items[items.length - 1];
-      if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus(); }
-      else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
-    }
-  }
-  if (event.target.id === 'study-question-input' && event.key === 'Enter' && !event.shiftKey && !event.isComposing && event.keyCode !== 229) { event.preventDefault(); $('#study-question')?.requestSubmit(); return; }
-  if (event.target.dataset?.studyAction === 'mode' && ['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) {
-    event.preventDefault(); const mode = event.key === 'Home' ? 'original' : event.key === 'End' ? 'explanation' : event.target.dataset.mode === 'original' ? 'explanation' : 'original';
-    void study.setMode(mode).then(() => $(`[data-study-action="mode"][data-mode="${mode}"]`)?.focus({ preventScroll: true })).catch(error => toast(error.message, true)); return;
-  }
   if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'k') { event.preventDefault(); searchModal(); }
   if (event.key === 'Enter' && !event.shiftKey && !event.isComposing && event.keyCode !== 229 && event.target.id === 'question') { event.preventDefault(); $('#chat-form')?.requestSubmit(); }
   if (event.key === 'ArrowDown' && modal.classList.contains('search-dialog')) {
@@ -1715,9 +1276,7 @@ document.addEventListener('dragover', event => { const zone = event.target.close
 document.addEventListener('dragleave', event => { const zone = event.target.closest('#upload-zone'); if (zone && !zone.contains(event.relatedTarget)) zone.classList.remove('dragging'); });
 document.addEventListener('drop', async event => { const zone = event.target.closest('#upload-zone'); if (zone) { event.preventDefault(); zone.classList.remove('dragging'); try { await uploadFiles(event.dataTransfer.files); } catch (error) { toast(error.message, true); } } });
 window.addEventListener('hashchange', () => { state.query = ''; if (modal.open) closeModal(); render(); main.focus({ preventScroll: true }); window.scrollTo(0, 0); void loadRoute(); });
-window.addEventListener('resize', () => { progressDock.dispose(); updateProgressPosition(); }, { passive: true });
-window.matchMedia?.('(max-width: 1099px)').addEventListener('change', updateStudySidebar);
-window.addEventListener('beforeunload', () => { clearInterval(assessmentTicker); progressDock.dispose(); study.dispose(); learning.dispose(); notes.dispose(); state.chatController?.abort(); clearInterval(state.timerInterval); clearMaterialRefresh(); });
+window.addEventListener('beforeunload', () => { learning.dispose(); notes.dispose(); state.chatController?.abort(); clearInterval(state.timerInterval); clearMaterialRefresh(); });
 state.selected = storageRead(session, 'knowpath-selected-live', '') || data().spaces[0]?.id || '';
 render();
 void connectBackend();

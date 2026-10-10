@@ -1,0 +1,20 @@
+{
+  "started_at": "2026-09-29T13:27:41.906705+00:00",
+  "source": "C:\\Users\\27202\\Desktop\\KnowPath-RAG测试资料\\未成年人保护法（2024修正·37页·纯文字）.pdf",
+  "source_bytes": 276752,
+  "source_sha256": "1984750c417fbc6e8e3b108d964ab38844418019bc54bee2d19e9cac84356842",
+  "database": "kp_perf_20260929_212741_f8a6a2",
+  "bucket": "kp-perf-20260929-212741-f8a6a2",
+  "collection_prefix": "kp_perf_20260929_212741_f8a6a2",
+  "port": 62548,
+  "model": "qwen-plus",
+  "rag_mode": "legacy",
+  "queue_poll_seconds": 2,
+  "conditions": "Isolated empty SQL queue; real local MySQL, MinIO, Neo4j and Qdrant; real configured DashScope APIs; fresh API and worker processes.",
+  "chat": [],
+  "status": "failed",
+  "failure_type": "OperationalError",
+  "observations": [],
+  "finished_at": "2026-09-29T13:27:42.014184+00:00",
+  "isolated_resources_retained": true
+}

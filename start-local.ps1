@@ -8,14 +8,22 @@ $ErrorActionPreference = 'Stop'
 $projectRoot = $PSScriptRoot
 $backendRoot = Join-Path $projectRoot 'py'
 $pythonPath = Join-Path $backendRoot '.venv\Scripts\python.exe'
-$frontendScript = Join-Path $projectRoot 'scripts\serve_frontend.py'
+$frontendRoot = Join-Path $projectRoot 'frontend'
+$frontendScript = Join-Path $frontendRoot 'server.mjs'
 $runtimeRoot = Join-Path $projectRoot '.runtime.local'
 
 if (-not (Test-Path -LiteralPath $pythonPath -PathType Leaf)) {
     throw '缺少 py/.venv/Scripts/python.exe。请先在 py 目录运行 uv sync --locked。'
 }
-if (-not (Test-Path -LiteralPath (Join-Path $projectRoot 'index.html') -PathType Leaf)) {
-    throw '项目根目录缺少 index.html。'
+if (-not (Test-Path -LiteralPath $frontendScript -PathType Leaf)) {
+    throw '缺少 frontend/server.mjs。请确认前端代码完整。'
+}
+$nodeCommand = Get-Command node -CommandType Application -ErrorAction SilentlyContinue
+if ($null -eq $nodeCommand) { throw '缺少 Node.js。请先安装 Node.js 20 或更新版本。' }
+$nodePath = $nodeCommand.Source
+$nodeVersion = & $nodePath --version
+if ($LASTEXITCODE -ne 0 -or $nodeVersion -notmatch '^v(\d+)\.' -or [int]$Matches[1] -lt 20) {
+    throw '前端需要 Node.js 20 或更新版本。'
 }
 if (-not (Test-Path -LiteralPath $runtimeRoot)) {
     New-Item -ItemType Directory -Path $runtimeRoot | Out-Null
@@ -33,11 +41,10 @@ function Get-ExpectedListener {
     $process = Get-CimInstance Win32_Process -Filter "ProcessId = $ownerId"
     $commandLine = [string]$process.CommandLine
     $executable = [string]$process.ExecutablePath
-    $expected = $executable -ieq $pythonPath
     if ($Kind -eq 'api') {
-        $expected = $expected -and $commandLine.Contains('uvicorn') -and $commandLine.Contains('knowpath_backend.learning.main:app')
+        $expected = $executable -ieq $pythonPath -and $commandLine.Contains('uvicorn') -and $commandLine.Contains('knowpath_backend.learning.main:app')
     } else {
-        $expected = $expected -and $commandLine.Contains($frontendScript) -and -not $commandLine.Contains('--open-browser')
+        $expected = $executable -ieq $nodePath -and $commandLine.Contains($frontendScript)
     }
     if (-not $expected) {
         throw "无法确认端口 $Port 属于本项目服务。请检查后重试；脚本不会终止现有进程。"
@@ -54,7 +61,10 @@ function Test-ServiceReady {
             return $response.StatusCode -eq 200 -and $body.status -eq 'ok' -and [bool]$response.Headers['X-Request-ID']
         }
         $response = Invoke-WebRequest -Uri 'http://127.0.0.1:5173/' -Method Head -UseBasicParsing -TimeoutSec 3
-        return $response.StatusCode -eq 200 -and $response.Headers['X-KnowPath-Service'] -eq 'knowpath-index-only-v1'
+        if ($response.StatusCode -ne 200 -or $response.Headers['X-KnowPath-Frontend'] -ne 'knowpath-frontend-v1') { return $false }
+        # HEAD checks automatic authentication without retrieving or logging the token.
+        $authResponse = Invoke-WebRequest -Uri 'http://127.0.0.1:5173/__knowpath/local-auth' -Method Head -UseBasicParsing -TimeoutSec 3
+        return $authResponse.StatusCode -eq 200 -and $authResponse.Headers['X-KnowPath-Frontend'] -eq 'knowpath-frontend-v1' -and $authResponse.Headers['Cache-Control'] -eq 'no-store'
     } catch {
         return $false
     }
@@ -74,7 +84,7 @@ function Wait-ServiceReady {
         if ($null -ne $ownerId -and (Test-ServiceReady -Kind $Kind)) { return }
         Start-Sleep -Milliseconds 400
     } while ((Get-Date) -lt $deadline)
-    throw "$Kind 服务未在 45 秒内就绪。请查看 .runtime.local 日志；不会终止其他进程。"
+    throw "$Kind 服务未在 45 秒内就绪。请查看 .runtime.local 日志；前端还需确认 py/.env 或本地令牌文件可读。不会终止其他进程。"
 }
 
 if ($StartStorage) {
@@ -97,9 +107,9 @@ Wait-ServiceReady -Port 8000 -Kind api -StartedProcess $apiProcess
 $frontendOwner = Get-ExpectedListener -Port 5173 -Kind frontend
 $frontendProcess = $null
 if ($null -eq $frontendOwner) {
-    $frontendProcess = Start-Process -FilePath $pythonPath `
-        -ArgumentList @('-u', ('"{0}"' -f $frontendScript)) `
-        -WorkingDirectory $projectRoot -WindowStyle Hidden -PassThru `
+    $frontendProcess = Start-Process -FilePath $nodePath `
+        -ArgumentList @(('"{0}"' -f $frontendScript)) `
+        -WorkingDirectory $frontendRoot -WindowStyle Hidden -PassThru `
         -RedirectStandardOutput (Join-Path $runtimeRoot 'frontend.stdout.log') `
         -RedirectStandardError (Join-Path $runtimeRoot 'frontend.stderr.log')
 }
@@ -107,10 +117,8 @@ Wait-ServiceReady -Port 5173 -Kind frontend -StartedProcess $frontendProcess
 
 Write-Host '本地 API 已连接：http://127.0.0.1:8000/api/v1/health'
 Write-Host '前端已启动：http://127.0.0.1:5173/'
-Write-Host '日志位于 .runtime.local。API 模型调用仍需单独配置模型密钥。'
+Write-Host '日志位于 .runtime.local。图谱与模型后台进程需单独启动，模型密钥需在 py/.env 配置。'
 
 if ($OpenBrowser) {
-    # Only the Python helper reads the token; it is never echoed or embedded here.
-    & $pythonPath $frontendScript --open-browser
-    if ($LASTEXITCODE -ne 0) { throw '打开已认证页面失败。服务仍在运行，请检查本地令牌配置。' }
+    Start-Process 'http://127.0.0.1:5173/'
 }

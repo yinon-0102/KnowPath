@@ -2,7 +2,8 @@ import { storageRead, storageWrite, uid, validateFile } from './store.js';
 
 export const workspacePath = (page, ...ids) => '#/manage/' + [page, ...ids].map(encodeURIComponent).join('/');
 export function workspaceRoute(value) {
-  const [page = '', id = '', item = ''] = value.split('/');
+  const decode = segment => { try { return decodeURIComponent(segment); } catch { return ''; } };
+  const [page = '', id = '', item = ''] = String(value || '').split('/').map(decode);
   return { page, id, item };
 }
 export function workspaceFamily(page) {
@@ -12,7 +13,17 @@ export function workspaceFamily(page) {
   if (['task', 'session'].includes(page)) return 'spaces';
   return 'spaces';
 }
+export function workspaceSection(page) {
+  if (['task', 'session'].includes(page)) return 'plan';
+  if (page.startsWith('assessment')) return 'assessment';
+  if (page.startsWith('knowledge') || page === 'space-scope') return 'materials';
+  if (['learning-state', 'evidence', 'learning-reset'].includes(page)) return 'review';
+  if (['space-settings', 'space-name', 'space-profile', 'export'].includes(page)) return 'settings';
+  return 'overview';
+}
 const arr = value => Array.isArray(value) ? value : [];
+const sessionTopics = data => arr(data.session?.context?.topics ?? data.task?.context?.topics ?? data.topics)
+  .filter(topic => arr(data.task?.topic_ids).includes(topic.id));
 const required = (value, label) => { const text = String(value || '').trim(); if (!text) throw new Error(`请填写${label}。`); return text; };
 const confirmed = values => { if (values.get('confirm') !== 'on') throw new Error('请先阅读并勾选确认。'); };
 const integer = (value, min, max, label) => { const n = Number(value); if (!Number.isInteger(n) || n < min || n > max) throw new Error(`${label}须为 ${min}—${max} 的整数。`); return n; };
@@ -92,10 +103,12 @@ export function createWorkspaceController({ api, context, changed = () => {}, co
   const sessionMap = () => storageRead(storage, SESSIONS, {});
   const correctionMap = () => storageRead(storage, CORRECTIONS, {});
   function sync() {
-    const ctx = context(), key = JSON.stringify([ctx.mode, ctx.route]);
+    // Keep existing pending-operation journal keys so updates can resume an
+    // already accepted backend command instead of submitting it again.
+    const ctx = context(), key = JSON.stringify(['live', ctx.route]);
     if (key !== view.key) {
       generation++; loading = null;
-      view = { key, route: workspaceRoute(ctx.route || ''), data: null, busy: '', error: '', notice: '', editRevision: 0, filters: {}, mode: ctx.mode };
+      view = { key, route: workspaceRoute(ctx.route || ''), data: null, busy: '', error: '', notice: '', editRevision: 0, filters: {} };
     }
     view.pendingRun = Object.entries(pending).find(([slot, entry]) => {
       try { return JSON.parse(slot)[0] === view.key && entry.response?.run_id; } catch { return false; }
@@ -128,7 +141,20 @@ export function createWorkspaceController({ api, context, changed = () => {}, co
       const plan = await api.plan(id), task = arr(plan.tasks).find(task => task.id === item);
       if (!task) throw new Error('这个任务已不存在，请返回学习安排。');
       const space = await api.space(plan.space_id);
-      return { plan, task, space, session: sessionMap()[space.id] || null, topics: await api.topics(space) };
+      if (space.id !== plan.space_id) throw new Error('任务与学习空间不一致，请刷新。');
+      const [topics, workbench] = await Promise.all([api.topics(space), typeof api.workbench === 'function' ? api.workbench(space.id) : Promise.resolve(null)]);
+      const local = sessionMap()[space.id] || null;
+      let session = local;
+      if (typeof api.workbench === 'function') {
+        if (workbench?.space_id !== space.id) throw new Error('学习会话与当前空间不一致，请刷新。');
+        session = workbench.active_session || (local?.status === 'finished' && local.plan_id === id && local.task_id === item ? local : null);
+      }
+      if (session) {
+        const sessionId = session.session_id || session.id;
+        if (!sessionId || session.space_id && session.space_id !== space.id) throw new Error('学习会话与当前空间不一致，请刷新。');
+        session = { ...session, session_id: sessionId, route: workspacePath('session', session.plan_id, session.task_id) };
+      }
+      return { plan, task, space, session, topics };
     }
     const space = await api.space(id);
     if (space.id !== id) throw new Error('空间信息不一致，请刷新。');
@@ -157,7 +183,7 @@ export function createWorkspaceController({ api, context, changed = () => {}, co
     return result;
   }
   async function load(force = false) {
-    sync(); if (view.mode !== 'live' || (!force && (view.data || loading)) || view.busy) return;
+    sync(); if ((!force && (view.data || loading)) || view.busy) return;
     const ticket = generation, route = view.route, filters = { ...view.filters };
     view.busy = '正在读取…'; view.error = ''; changed();
     loading = read(route, filters);
@@ -185,7 +211,7 @@ export function createWorkspaceController({ api, context, changed = () => {}, co
     }
   }
   async function run(label, work) {
-    sync(); if (view.mode !== 'live') return; if (view.busy || !view.data) return;
+    sync(); if (view.busy || !view.data) return;
     const ticket = generation, route = { ...view.route }, data = view.data, key = view.key;
     view.busy = label; view.error = ''; view.notice = ''; changed();
     try { await work({ ticket, route, data, key }); }
@@ -257,6 +283,13 @@ export function createWorkspaceController({ api, context, changed = () => {}, co
         await command(page, body, options => api.updateSpace(id, body, options)); await finish(task, '空间名称已保存。');
       } else if (page === 'space-profile') {
         const body = { goal: required(values.get('goal'), '学习目标'), preferences: { example_first: values.get('example_first') === 'on', concise_explanations: values.get('concise_explanations') === 'on' }, expected_version: data.profile.profile_version };
+        const budget = String(values.get('weekly_minutes') || '').trim();
+        if (budget) body.weekly_minutes = integer(budget, 15, 2400, '每周学习时间');
+        if (values.has('target_date')) {
+          const date = String(values.get('target_date') || '').trim();
+          if (date && (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !Number.isFinite(new Date(date).getTime()) || new Date(date).toISOString().slice(0, 10) !== date)) throw new Error('请选择有效的目标日期。');
+          body.target_date = date || null;
+        }
         await command(page, body, options => api.updateProfile(id, body, options)); await finish(task, '学习目标与偏好已保存。需要时可在空间内重新安排任务。');
       } else if (page === 'space-scope') {
         const included = values.getAll('topic_ids'), excluded = values.getAll('excluded_topic_ids');
@@ -321,7 +354,7 @@ export function createWorkspaceController({ api, context, changed = () => {}, co
   async function action(name, value) {
     if (name === 'reload') return load(true);
     if (name === 'poll-command') {
-      sync(); if (view.busy || view.mode !== 'live' || !view.pendingRun) return;
+      sync(); if (view.busy || !view.pendingRun) return;
       const ticket = generation, key = view.key, route = { ...view.route }, runId = view.pendingRun;
       view.busy = '正在核对原任务的处理结果…'; view.error = ''; changed();
       try {
@@ -386,11 +419,14 @@ export function createWorkspaceController({ api, context, changed = () => {}, co
         storageWrite(storage, SESSIONS, { ...sessionMap(), [data.space.id]: descriptor });
         if (active(task.ticket)) { view.data.session = descriptor; view.notice = '学习操作已记录。'; }
         if (value === 'open_material') {
-          const topic = arr(data.topics).find(topic => arr(data.task.topic_ids).includes(topic.id));
+          const topic = sessionTopics(data)[0];
           const ref = topic?.source_refs?.[0]; if (!ref) throw new Error('任务没有可定位的资料来源，请在图谱中选择来源。');
           await openSource(ref, data.space.id);
         } else if (value === 'request_explanation' || value === 'request_hint') {
-          if (active(task.ticket)) navigate('#/assistant', { spaceId: data.space.id, prompt: value === 'request_hint' ? '请针对当前学习主题给我一个提示，不直接给出答案。' : '请解释当前学习主题，并引用资料依据。', topicIds: data.task.topic_ids });
+          if (active(task.ticket)) navigate('#/space/' + encodeURIComponent(data.space.id) + '/assistant', { spaceId: data.space.id,
+            learningSessionId: session.session_id, planId: id, taskId: item, returnTo: workspacePath('session', id, item),
+            prompt: value === 'request_hint' ? '请针对当前学习主题给我一个提示，不直接给出答案。' : '请解释当前学习主题，并引用资料依据。',
+            topicIds: arr(data.task.topic_ids), topics: sessionTopics(data) });
         }
       }
     });

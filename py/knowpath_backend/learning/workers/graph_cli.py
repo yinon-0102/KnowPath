@@ -7,7 +7,10 @@ import time
 from knowpath_backend.observability import configure_logging, shutdown_logging, log_event
 
 
-from dotenv import load_dotenv
+from knowpath_backend.core.env import load_project_env
+
+# Backward-compatible hook for tests and external launchers that patch load_dotenv.
+load_dotenv = load_project_env
 
 from knowpath_backend.learning.persistence.db import create_db_engine
 from knowpath_backend.learning.knowledge.preparation import configured_graph_preparer
@@ -81,11 +84,9 @@ def main(argv=None):
                         engine.dispose()
         except Exception as exc:
             log_event(logger, 'worker.shutdown.failed', level=logging.ERROR, exc=exc)
-            return 1
         finally:
             log_event(logger, 'worker.stopped')
             shutdown_logging()
-
 
 if __name__ == "__main__":
     raise SystemExit(main())

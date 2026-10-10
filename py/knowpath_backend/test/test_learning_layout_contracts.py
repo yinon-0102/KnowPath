@@ -51,11 +51,26 @@ def test_full_openapi_matches_pre_refactor_contract():
     # its request schema separately from the original pre-refactor snapshot.
     reviews = json.loads((FIXTURES / 'learning_question_reviews_openapi.json').read_text(encoding='utf-8'))
     algorithms = json.loads((FIXTURES / 'learning_algorithms_openapi.json').read_text(encoding='utf-8'))
-    assert set(actual['paths']) - set(expected['paths']) == {'/api/v1/learning-spaces/{space_id}/citations/resolve'} | set(reviews['paths']) | set(algorithms['paths'])
+    notes = json.loads((FIXTURES / 'learning_workbench_notes_openapi.json').read_text(encoding='utf-8'))
+    assert set(actual['paths']) - set(expected['paths']) == {
+        '/api/v1/learning-spaces/{space_id}/citations/resolve',
+        '/api/v1/materials/{material_id}/graph',
+        '/api/v1/materials/{material_id}/versions/{version_id}/file',
+    } | set(reviews['paths']) | set(algorithms['paths']) | set(notes['paths'])
+    assert {path: actual['paths'].pop(path) for path in notes['paths']} == notes['paths']
     assert {path: actual['paths'].pop(path) for path in algorithms['paths']} == algorithms['paths']
     assert {path: actual['paths'].pop(path) for path in reviews['paths']} == reviews['paths']
+    graph_projection = actual['paths'].pop('/api/v1/materials/{material_id}/graph')
+    assert set(graph_projection) == {'get'}
+    assert {param['name'] for param in graph_projection['get']['parameters']} == {'material_id', 'version_id', 'include_inactive', 'include_sources'}
+    material_file = actual['paths'].pop('/api/v1/materials/{material_id}/versions/{version_id}/file')
+    assert set(material_file) == {'get'}
+    assert {param['name'] for param in material_file['get']['parameters']} == {'material_id', 'version_id', 'space_id'}
     actual['paths'].pop('/api/v1/learning-spaces/{space_id}/citations/resolve')
-    assert set(actual['components']['schemas']) - set(expected['components']['schemas']) == {'Citation','SourceSpan'} | set(reviews['schemas']) | set(algorithms['schemas'])
+    assert set(actual['components']['schemas']) - set(expected['components']['schemas']) == {'Citation','SourceSpan'} | set(reviews['schemas']) | set(algorithms['schemas']) | set(notes['schemas'])
+    assert {name: actual['components']['schemas'].pop(name) for name in notes['schemas']} == notes['schemas']
+    assert {name: actual['components']['schemas']['CreateAssessment']['properties'].pop(name)
+            for name in notes['assessment_links']} == notes['assessment_links']
     assert {name: actual['components']['schemas'].pop(name) for name in algorithms['schemas']} == algorithms['schemas']
     assert actual['components']['schemas']['CreateAssessment']['properties'].pop('adaptive') == algorithms['adaptive_property']
     assert {name: actual['components']['schemas'].pop(name) for name in reviews['schemas']} == reviews['schemas']
@@ -71,9 +86,9 @@ def test_full_openapi_matches_pre_refactor_contract():
                 yield from api_routes(included.routes)
 
     routes = list(api_routes(app.routes))
-    assert len(routes) == 57
+    assert len(routes) == 69
     assert all(isinstance(route, ContractRoute) for route in routes)
-    assert len({(route.path, method) for route in routes for method in route.methods}) == 57
+    assert len({(route.path, method) for route in routes for method in route.methods}) == 69
 
 
 def test_mysql_schema_matches_pre_refactor_contract():
@@ -83,6 +98,8 @@ def test_mysql_schema_matches_pre_refactor_contract():
     # 仅替换本次显式迁移的表快照，其他旧表仍逐字匹配历史契约。
     expected['material_raw_files'] = json.loads((FIXTURES / 'learning_raw_object_schema.json').read_text(encoding='utf-8'))
     from knowpath_backend.learning.persistence.rag_models import TABLES
+    notes = json.loads((FIXTURES / 'learning_notes_mysql_schema.json').read_text(encoding='utf-8'))
+    assert {name: actual.pop(name) for name in notes} == notes
     assert set(actual) - set(expected) == set(TABLES)
     assert {name:value for name,value in actual.items() if name not in TABLES} == expected
 

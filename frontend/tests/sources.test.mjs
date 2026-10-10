@@ -80,5 +80,5 @@ test('local PDF lookup is separated by mode, material and version; storage failu
   assert.equal((await library.get(key)).blob.type, 'application/pdf');
   assert.equal((await library.get(key)).name, 'original.pdf');
   assert.equal(library.peek(key).verified, true);
-  for (const other of [pdfKey('demo', 'material1', 'version1'), pdfKey('live', 'material2', 'version1'), pdfKey('live', 'material1', 'version2')]) assert.equal(await library.get(other), undefined);
+  for (const other of [pdfKey('other-session', 'material1', 'version1'), pdfKey('live', 'material2', 'version1'), pdfKey('live', 'material1', 'version2')]) assert.equal(await library.get(other), undefined);
 });

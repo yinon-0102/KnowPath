@@ -114,7 +114,7 @@ test('a failed backend connection retains empty data and reports its error', asy
 });
 
 test('complete application startup renders authenticated material data without reading local examples', async t => {
-  const modules = await Promise.all(['icons', 'api', 'learning', 'workspace', 'workspace-view', 'progress', 'workbench', 'store', 'notes', 'study', 'plan-order', 'home-view'].map(name => import(`../src/${name}.js`)));
+  const modules = await Promise.all(['icons', 'api', 'learning', 'workspace', 'workspace-view', 'progress', 'workbench', 'store', 'notes'].map(name => import(`../src/${name}.js`)));
   const elements = Object.fromEntries(['main', 'header', 'footer', 'modal', 'toast'].map(id => [id, { innerHTML: '', open: false, addEventListener() {}, focus() {} }]));
   const document = { querySelector: selector => elements[selector.replace(/^#/, '')] || null, addEventListener() {} };
   const entries = new Map(), calls = [];
@@ -127,7 +127,6 @@ test('complete application startup renders authenticated material data without r
       calls.push({ url, options });
       if (url === '/__knowpath/local-auth') return new Response(JSON.stringify({ token: 'test-runtime-token', api_base: 'http://127.0.0.1:8000/api/v1' }));
       assert.equal(options.headers['X-Local-Token'], 'test-runtime-token');
-      if (new URL(url).pathname === '/openapi.json') return new Response(JSON.stringify({ paths: { '/api/v1/learning-spaces/{space_id}/messages': { post: { requestBody: { content: { 'application/json': { schema: { $ref: '#/components/schemas/SendMessage' } } } } } } }, components: { schemas: { SendMessage: { properties: { reading_context: {}, answer_mode: { enum: ['auto', 'material', 'general'] } } } } } }));
       if (new URL(url).pathname.endsWith('/learning-spaces')) return new Response(JSON.stringify({ items: [], next_cursor: null }));
       if (new URL(url).pathname.endsWith('/materials')) return new Response(JSON.stringify({ items: [{ id: 'actual-material', name: '后端资料.txt', type: 'txt', status: 'ready' }], next_cursor: null }));
       if (new URL(url).pathname.endsWith('/notebooks')) return new Response(JSON.stringify({ items: [{ space_id: 'actual-space', name: '真实笔记册', directory: 'review-notes/actual-space/', chapter_count: 3, completed_count: 1, correction_count: 2 }] }));
@@ -136,16 +135,14 @@ test('complete application startup renders authenticated material data without r
   });
   t.mock.method(globalThis, 'fetch', context.fetch);
   Object.defineProperty(context.window, 'localStorage', { get() { assert.fail('Application must not read the old example store'); } });
-  // Actual modules are injected above; dependency failure handling is exercised
-  // separately by startup.test.mjs. Keep application globals in this VM scope.
-  vm.runInContext(files.app.slice(files.app.indexOf('const $ =')).replace('void connectBackend();', 'startup = connectBackend();'), context);
+  vm.runInContext(files.app.replace(/^import .*;\r?\n/gm, '').replace('void connectBackend();', 'startup = connectBackend();'), context);
   await context.startup;
   assert.match(elements.main.innerHTML, /后端资料.txt/);
   assert.match(elements.main.innerHTML, /manage\/material-delete\/actual-material/);
   assert.doesNotMatch(elements.main.innerHTML, /演示|示例|connection-form|test-runtime-token/);
-  assert.equal(calls.length, 4);
+  assert.equal(calls.length, 3);
   context.location.hash = '#/overview'; vm.runInContext('render()', context);
-  assert.match(elements.main.innerHTML, /先创建空间并选择资料/);
+  assert.match(elements.main.innerHTML, /先导入一份资料/);
   assert.doesNotMatch(elements.main.innerHTML, /演示|示例|test-runtime-token/);
   context.location.hash = '#/notes';
   await vm.runInContext('loadRoute()', context);

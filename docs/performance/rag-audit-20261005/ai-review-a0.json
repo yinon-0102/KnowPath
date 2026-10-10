@@ -1,0 +1,365 @@
+{
+  "reviewer": "当前 Codex 会话，单一 AI 人工式逐题复核",
+  "review_date": "2026-10-05",
+  "scope": "A0 原始40题答卷；非盲评；没有独立人工复核；对已提供原文作定性核对，不是逐claim全量事实验证",
+  "rubric": "complete=明确回答题目各核心子问；partial=有正确内容但漏核心子问；abstain=没有实质答案；failed=调用失败；unknown=终局未知。风险包括明确错误与需复核过度推断，不能统称幻觉。acceptable_complete=complete且本次未发现风险标记。",
+  "rows": [
+    {
+      "question_id": "tree-v1-01",
+      "domain": "law",
+      "question_completion": "failed",
+      "risk_flag": false,
+      "acceptable_complete": false,
+      "note": "没有可供评分的实质答复。"
+    },
+    {
+      "question_id": "tree-v1-02",
+      "domain": "law",
+      "question_completion": "failed",
+      "risk_flag": false,
+      "acceptable_complete": false,
+      "note": "没有可供评分的实质答复。"
+    },
+    {
+      "question_id": "tree-v1-03",
+      "domain": "law",
+      "question_completion": "failed",
+      "risk_flag": false,
+      "acceptable_complete": false,
+      "note": "没有可供评分的实质答复。"
+    },
+    {
+      "question_id": "tree-v1-04",
+      "domain": "law",
+      "question_completion": "unknown",
+      "risk_flag": false,
+      "acceptable_complete": false,
+      "note": "没有可供评分的实质答复。"
+    },
+    {
+      "question_id": "tree-v1-05",
+      "domain": "law",
+      "question_completion": "partial",
+      "risk_flag": false,
+      "acceptable_complete": false,
+      "note": "主要受托资格已答；未覆盖无正当理由不得委托、每周联系及异常干预等。"
+    },
+    {
+      "question_id": "tree-v1-06",
+      "domain": "law",
+      "question_completion": "complete",
+      "risk_flag": false,
+      "acceptable_complete": true,
+      "note": "已覆盖题目核心要求，所给原文未见明显冲突。"
+    },
+    {
+      "question_id": "tree-v1-07",
+      "domain": "law",
+      "question_completion": "complete",
+      "risk_flag": false,
+      "acceptable_complete": true,
+      "note": "回答禁体罚并概括第二十六条；不强行将相邻条文当成法定例外，保留关系解释争议。"
+    },
+    {
+      "question_id": "tree-v1-08",
+      "domain": "law",
+      "question_completion": "complete",
+      "risk_flag": false,
+      "acceptable_complete": true,
+      "note": "符合题目登记劝返及书面报告要求；金标准还列禁止违规开除，答文未显式写出。"
+    },
+    {
+      "question_id": "tree-v1-09",
+      "domain": "law",
+      "question_completion": "complete",
+      "risk_flag": true,
+      "acceptable_complete": false,
+      "note": "最后一段将严重欺凌规定误写为第四十条，实际为第三十九条；主要处置要求正确。"
+    },
+    {
+      "question_id": "tree-v1-10",
+      "domain": "law",
+      "question_completion": "complete",
+      "risk_flag": false,
+      "acceptable_complete": true,
+      "note": "题目仅问报告部门，答文满足；金标准额外要求第四十条补充关系，不宜据此判错。"
+    },
+    {
+      "question_id": "tree-v1-11",
+      "domain": "law",
+      "question_completion": "complete",
+      "risk_flag": false,
+      "acceptable_complete": true,
+      "note": "回答法定节假日及身份证件要求；金标准额外列禁入限入标志，答文未展开。"
+    },
+    {
+      "question_id": "tree-v1-12",
+      "domain": "law",
+      "question_completion": "complete",
+      "risk_flag": false,
+      "acceptable_complete": true,
+      "note": "已覆盖题目核心要求，所给原文未见明显冲突。"
+    },
+    {
+      "question_id": "tree-v1-13",
+      "domain": "law",
+      "question_completion": "abstain",
+      "risk_flag": false,
+      "acceptable_complete": false,
+      "note": "没有可供评分的实质答复。"
+    },
+    {
+      "question_id": "tree-v1-14",
+      "domain": "law",
+      "question_completion": "partial",
+      "risk_flag": false,
+      "acceptable_complete": false,
+      "note": "实名与22:00—08:00已答；未答第七十四条防沉迷补充。"
+    },
+    {
+      "question_id": "tree-v1-15",
+      "domain": "linear_algebra",
+      "question_completion": "complete",
+      "risk_flag": true,
+      "acceptable_complete": false,
+      "note": "将“只有一个元素的张量”直接等同“零阶张量”缺少维数限定；单元素向量或矩阵也可能只有一个元素。"
+    },
+    {
+      "question_id": "tree-v1-16",
+      "domain": "linear_algebra",
+      "question_completion": "complete",
+      "risk_flag": false,
+      "acceptable_complete": true,
+      "note": "已覆盖题目核心要求，所给原文未见明显冲突。"
+    },
+    {
+      "question_id": "tree-v1-17",
+      "domain": "linear_algebra",
+      "question_completion": "complete",
+      "risk_flag": false,
+      "acceptable_complete": true,
+      "note": "已覆盖题目核心要求，所给原文未见明显冲突。"
+    },
+    {
+      "question_id": "tree-v1-18",
+      "domain": "linear_algebra",
+      "question_completion": "partial",
+      "risk_flag": false,
+      "acceptable_complete": false,
+      "note": "仅说明shape，未完整说明向量维度是长度、张量维度是轴数的区别。"
+    },
+    {
+      "question_id": "tree-v1-19",
+      "domain": "linear_algebra",
+      "question_completion": "complete",
+      "risk_flag": false,
+      "acceptable_complete": true,
+      "note": "已覆盖题目核心要求，所给原文未见明显冲突。"
+    },
+    {
+      "question_id": "tree-v1-20",
+      "domain": "linear_algebra",
+      "question_completion": "abstain",
+      "risk_flag": false,
+      "acceptable_complete": false,
+      "note": "无实质答案；题目问dot，但第二条金标准证据是矩阵排布公式，标注存在不匹配。"
+    },
+    {
+      "question_id": "tree-v1-21",
+      "domain": "linear_algebra",
+      "question_completion": "complete",
+      "risk_flag": false,
+      "acceptable_complete": true,
+      "note": "虽标partial，正文已回答元素换位、形状交换和索引联系。"
+    },
+    {
+      "question_id": "tree-v1-22",
+      "domain": "linear_algebra",
+      "question_completion": "complete",
+      "risk_flag": false,
+      "acceptable_complete": true,
+      "note": "已覆盖题目核心要求，所给原文未见明显冲突。"
+    },
+    {
+      "question_id": "tree-v1-23",
+      "domain": "linear_algebra",
+      "question_completion": "complete",
+      "risk_flag": false,
+      "acceptable_complete": true,
+      "note": "已答不改变形状及shape解释；未复述金标准代码的5×4示例，按提问主旨接受。"
+    },
+    {
+      "question_id": "tree-v1-24",
+      "domain": "linear_algebra",
+      "question_completion": "complete",
+      "risk_flag": false,
+      "acceptable_complete": true,
+      "note": "已答标量逐元素作用及形状不变；附加示例含义已说明。题目锚点仅代码围栏，金标准A*B未明确是标量。"
+    },
+    {
+      "question_id": "tree-v1-25",
+      "domain": "linear_algebra",
+      "question_completion": "abstain",
+      "risk_flag": false,
+      "acceptable_complete": false,
+      "note": "没有可供评分的实质答复。"
+    },
+    {
+      "question_id": "tree-v1-26",
+      "domain": "linear_algebra",
+      "question_completion": "complete",
+      "risk_flag": false,
+      "acceptable_complete": true,
+      "note": "已答累积总和且不降维；金标准额外示例要求未出现在问题中。"
+    },
+    {
+      "question_id": "tree-v1-27",
+      "domain": "linear_algebra",
+      "question_completion": "complete",
+      "risk_flag": false,
+      "acceptable_complete": true,
+      "note": "虽标partial，已完整回答按元素相乘后求和，并给出np.sum示例。"
+    },
+    {
+      "question_id": "tree-v1-28",
+      "domain": "lunyu",
+      "question_completion": "complete",
+      "risk_flag": false,
+      "acceptable_complete": true,
+      "note": "已覆盖题目核心要求，所给原文未见明显冲突。"
+    },
+    {
+      "question_id": "tree-v1-29",
+      "domain": "lunyu",
+      "question_completion": "complete",
+      "risk_flag": false,
+      "acceptable_complete": true,
+      "note": "已覆盖题目核心要求，所给原文未见明显冲突。"
+    },
+    {
+      "question_id": "tree-v1-30",
+      "domain": "lunyu",
+      "question_completion": "complete",
+      "risk_flag": false,
+      "acceptable_complete": true,
+      "note": "已覆盖题目核心要求，所给原文未见明显冲突。"
+    },
+    {
+      "question_id": "tree-v1-31",
+      "domain": "lunyu",
+      "question_completion": "complete",
+      "risk_flag": false,
+      "acceptable_complete": true,
+      "note": "已覆盖题目核心要求，所给原文未见明显冲突。"
+    },
+    {
+      "question_id": "tree-v1-32",
+      "domain": "lunyu",
+      "question_completion": "complete",
+      "risk_flag": false,
+      "acceptable_complete": true,
+      "note": "核心原文正确；“殆”的多种解释不在本次单句原文核验能力内。"
+    },
+    {
+      "question_id": "tree-v1-33",
+      "domain": "lunyu",
+      "question_completion": "complete",
+      "risk_flag": true,
+      "acceptable_complete": false,
+      "note": "由“知之次也”进一步断言次于“生而知之”，属可争议解释，需引用原文或注解支持；核心诚实求知要求已答对。"
+    },
+    {
+      "question_id": "tree-v1-34",
+      "domain": "lunyu",
+      "question_completion": "complete",
+      "risk_flag": false,
+      "acceptable_complete": true,
+      "note": "已覆盖题目核心要求，所给原文未见明显冲突。"
+    },
+    {
+      "question_id": "tree-v1-35",
+      "domain": "lunyu",
+      "question_completion": "abstain",
+      "risk_flag": false,
+      "acceptable_complete": false,
+      "note": "没有可供评分的实质答复。"
+    },
+    {
+      "question_id": "tree-v1-36",
+      "domain": "lunyu",
+      "question_completion": "partial",
+      "risk_flag": true,
+      "acceptable_complete": false,
+      "note": "“唯一现存载体”“无实祭之羊”不能由给定章句直接推出；同时遗漏相邻“射不主皮”的关联。"
+    },
+    {
+      "question_id": "tree-v1-37",
+      "domain": "lunyu",
+      "question_completion": "complete",
+      "risk_flag": true,
+      "acceptable_complete": false,
+      "note": "把义利对举扩大为“二者不可兼容”等绝对结论，超出给定章句能直接支持的范围。"
+    },
+    {
+      "question_id": "tree-v1-38",
+      "domain": "lunyu",
+      "question_completion": "failed",
+      "risk_flag": false,
+      "acceptable_complete": false,
+      "note": "没有可供评分的实质答复。"
+    },
+    {
+      "question_id": "tree-v1-39",
+      "domain": "lunyu",
+      "question_completion": "failed",
+      "risk_flag": false,
+      "acceptable_complete": false,
+      "note": "没有可供评分的实质答复。"
+    },
+    {
+      "question_id": "tree-v1-40",
+      "domain": "lunyu",
+      "question_completion": "failed",
+      "risk_flag": false,
+      "acceptable_complete": false,
+      "note": "没有可供评分的实质答复。"
+    }
+  ],
+  "summary": {
+    "completion_counts": {
+      "failed": 6,
+      "unknown": 1,
+      "partial": 4,
+      "complete": 25,
+      "abstain": 4
+    },
+    "question_complete": 25,
+    "acceptable_complete": 21,
+    "acceptable_complete_all40": 0.525,
+    "acceptable_complete_delivered29": 0.7241379310344828,
+    "risk_flagged_answers": 5,
+    "risk_fraction_delivered": 0.1724137931034483,
+    "descriptive_wilson95_acceptable_all40": [
+      0.37497362106692855,
+      0.6706452988732075
+    ],
+    "note_ci": "只表示把40题当独立伯努利观测时的描述性区间，不涵盖标注偏差、AI评审误差、开发集偏差或同题生成方差"
+  },
+  "by_domain": {
+    "law": {
+      "n": 14,
+      "acceptable_complete": 6,
+      "question_complete": 7
+    },
+    "linear_algebra": {
+      "n": 13,
+      "acceptable_complete": 9,
+      "question_complete": 10
+    },
+    "lunyu": {
+      "n": 13,
+      "acceptable_complete": 6,
+      "question_complete": 8
+    }
+  }
+}

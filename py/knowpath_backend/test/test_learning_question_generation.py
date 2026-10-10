@@ -93,10 +93,34 @@ def test_json_request_source_and_largest_remainder(monkeypatch, topics, payload,
     assert body["response_format"] == {"type": "json_object"}
     assert body["enable_thinking"] is False
     assert "untrusted" in body["messages"][0]["content"].lower()
+    assert "a single source passage may support multiple questions" in body["messages"][0]["content"].lower()
     supplied = json.loads(body["messages"][1]["content"])
     assert supplied["topics"][0]["source_text"] == topics[0]["source_text"]
     assert supplied["difficulty_counts"] == {"easy": 2, "medium": 2, "hard": 1}
 
+
+def test_empty_model_result_retries_with_explicit_support_instruction(monkeypatch, topics, payload, raw):
+    monkeypatch.setenv("DASHSCOPE_API_KEY", "test-key")
+    requests = []
+    responses = iter([
+        httpx.Response(200, json={"choices": [{"message": {"content": json.dumps({"questions": []})}, "finish_reason": "stop"}]}),
+        httpx.Response(200, json={"choices": [{"message": {"content": json.dumps({"questions": raw})}, "finish_reason": "stop"}]}),
+    ])
+
+    def respond(request):
+        requests.append(request)
+        return next(responses)
+
+    with httpx.Client(transport=httpx.MockTransport(respond)) as client:
+        result = DashScopeQuestionGenerator(client=client).generate(topics, payload)
+
+    assert len(result) == 5
+    assert len(requests) == 2
+    retry_body = json.loads(requests[1].content)
+    retry_system = retry_body["messages"][0]["content"].lower()
+    assert "may reuse" in retry_system and "source_refs" in retry_system
+    assert "must generate exactly question_count questions" in retry_system
+    assert "never return an empty questions array" in retry_system
 @pytest.mark.parametrize("response", [httpx.Response(503, text="private upstream body"), httpx.Response(200, json={"choices": []}), httpx.Response(200, json={"choices": [{"message": {"content": "bad private JSON"}}]}), httpx.Response(200, json={"choices": [{"message": {"content": "{}"}}]}), httpx.Response(200, json={"choices": [{"message": {"content": '{"questions":[]}'}, "finish_reason": "length"}]})])
 def test_upstream_failure_safe(monkeypatch, topics, payload, response):
     monkeypatch.setenv("DASHSCOPE_API_KEY", "test-secret")

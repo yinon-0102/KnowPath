@@ -3,7 +3,7 @@
 
 def recover_legacy_runs(runs, repository):
     protected = {event['payload']['run_id']
-                 for kind in ('assessment.generate', 'message.generate')
+                 for kind in ('assessment.generate', 'message.generate', 'note.generate')
                  for event in repository.records('outbox', event_type=kind, lock=False)
                  if event['status'] in {'pending', 'processing'} and event['payload'].get('run_id')}
     return runs.recover_interrupted(

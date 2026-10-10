@@ -1,0 +1,31 @@
+{
+  "learning_notebooks": {
+    "table": "\nCREATE TABLE learning_notebooks (\n\tid VARCHAR(36) NOT NULL, \n\tspace_id VARCHAR(36) NOT NULL, \n\tcontext JSON NOT NULL, \n\tPRIMARY KEY (id), \n\tCONSTRAINT uq_learning_notebooks UNIQUE (space_id), \n\tFOREIGN KEY(space_id) REFERENCES learning_spaces (id) ON DELETE CASCADE\n)\n\n",
+    "indexes": [
+      "CREATE INDEX ix_learning_notebooks_space_id ON learning_notebooks (space_id)"
+    ]
+  },
+  "note_chapters": {
+    "table": "\nCREATE TABLE note_chapters (\n\tid VARCHAR(36) NOT NULL, \n\tspace_id VARCHAR(36) NOT NULL, \n\tnode_id VARCHAR(128) NOT NULL, \n\tcontext JSON NOT NULL, \n\tPRIMARY KEY (id), \n\tCONSTRAINT uq_note_chapters UNIQUE (space_id, node_id), \n\tFOREIGN KEY(space_id) REFERENCES learning_spaces (id) ON DELETE CASCADE\n)\n\n",
+    "indexes": [
+      "CREATE INDEX ix_note_chapters_node_id ON note_chapters (node_id)",
+      "CREATE INDEX ix_note_chapters_space_id ON note_chapters (space_id)"
+    ]
+  },
+  "note_revisions": {
+    "table": "\nCREATE TABLE note_revisions (\n\tid VARCHAR(36) NOT NULL, \n\tchapter_id VARCHAR(36) NOT NULL, \n\tcontext JSON NOT NULL, \n\tPRIMARY KEY (id), \n\tFOREIGN KEY(chapter_id) REFERENCES note_chapters (id) ON DELETE CASCADE\n)\n\n",
+    "indexes": [
+      "CREATE INDEX ix_note_revisions_chapter_id ON note_revisions (chapter_id)"
+    ]
+  },
+  "note_generations": {
+    "table": "\nCREATE TABLE note_generations (\n\tid VARCHAR(36) NOT NULL, \n\tspace_id VARCHAR(36) NOT NULL, \n\tchapter_id VARCHAR(36) NOT NULL, \n\tassessment_id VARCHAR(128) NOT NULL, \n\trun_id VARCHAR(128) NOT NULL, \n\tstatus VARCHAR(128) NOT NULL, \n\tcontext JSON NOT NULL, \n\tPRIMARY KEY (id), \n\tCONSTRAINT uq_note_generations UNIQUE (assessment_id), \n\tFOREIGN KEY(space_id) REFERENCES learning_spaces (id) ON DELETE CASCADE, \n\tFOREIGN KEY(chapter_id) REFERENCES note_chapters (id) ON DELETE CASCADE\n)\n\n",
+    "indexes": [
+      "CREATE INDEX ix_note_generations_assessment_id ON note_generations (assessment_id)",
+      "CREATE INDEX ix_note_generations_chapter_id ON note_generations (chapter_id)",
+      "CREATE INDEX ix_note_generations_run_id ON note_generations (run_id)",
+      "CREATE INDEX ix_note_generations_space_id ON note_generations (space_id)",
+      "CREATE INDEX ix_note_generations_status ON note_generations (status)"
+    ]
+  }
+}

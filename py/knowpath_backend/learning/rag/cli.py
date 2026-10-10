@@ -44,7 +44,7 @@ def main(argv=None):
                 ("retrieval_version_id", "manifest_id", "space_id", "material_version_id")):
                 raise ValueError("invalid manifest identity")
             config = BuildConfiguration(space_id=manifest["space_id"], material_version_id=manifest["material_version_id"])
-        from dotenv import load_dotenv
+        from knowpath_backend.core.env import load_project_env
         from qdrant_client import QdrantClient
         from ..config import LearningSettings
         from ..persistence.db import create_db_engine
@@ -55,7 +55,7 @@ def main(argv=None):
         from .building import RagBuilder
         from .registry import create_plugin
         from .vector import QdrantContentIndex
-        load_dotenv()
+        load_project_env()
         settings = LearningSettings.from_env()
         engine = create_db_engine()
         repo = SqlRagRepository(engine)
