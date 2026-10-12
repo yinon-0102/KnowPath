@@ -143,3 +143,33 @@ test('invalidated automatic content is clearly historical evidence rather than c
   assert.match(html, /依据已失效/); assert.match(html, /当前已验证/); assert.match(html, /MODEL_UNAVAILABLE/);
   assert.ok(html.indexOf('依据已失效') < html.indexOf('旧知识'));
 });
+
+test('legacy note projection and source names render safely without exposing machine labels', () => {
+  const html = notes.renderNotes({ notebook: notebookWithGeneratedChapter(), chapter: { id: 'c', space_id: 's', blocks: [{ id: 'b', kind: 'assessment', markdown: 'opaque-question: incorrect', display_markdown: '## 测评结果\n- 第 1 题：类型转换 — 错误；得分 0', source_refs: [{ material_id: 'm', label: 'Python <img onerror=bad> · 第 3—5 行' }] }] } });
+  assert.match(html, /第 1 题：类型转换/);
+  assert.match(html, /错误；得分 0/);
+  assert.match(html, /查看来源：Python &lt;img onerror=bad&gt; · 第 3—5 行/);
+  assert.doesNotMatch(html, /opaque-question|incorrect|<img/);
+  assert.match(html, /data-block-index="0" data-source-index="0"/);
+});
+
+test('generation draft uses summaries and Chinese verdicts with no hidden answer material', () => {
+  const html = notes.renderNotes({ notebook: notebookWithGeneratedChapter(), chapter: { id: 'c', generations: [{ status: 'failed', snapshot: { topic_ids: ['opaque-topic'], topic_names: ['类型转换'], question_summaries: [{ id: 'opaque-question', summary: '如何处理无效输入？' }], assessment_result: { question_results: [{ question_id: 'opaque-question', verdict: 'incorrect', score: 0, assisted: true }] } } }] } });
+  assert.match(html, /类型转换/); assert.match(html, /第 1 题：如何处理无效输入？ · 错误 · 得分 0 · 有辅助记录/);
+  assert.doesNotMatch(html, /opaque-topic|opaque-question|incorrect/);
+});
+
+test('editing an old note starts from the readable projection and preserves personal blocks', async () => {
+  const controller = notes.createNotesController({ api: { notebook: async () => notebookWithGeneratedChapter(), noteChapter: async () => ({ id: 'c', space_id: 's', blocks: [{ id: 'b', markdown: 'opaque', display_markdown: '第 1 题：正确' }, { id: 'p', kind: 'personal', markdown: '我的内容' }] }), noteRevisions: async () => [] } });
+  await controller.load({ name: 'space', id: 's', query: { chapter: 'c' } });
+  controller.beginEdit(); assert.equal(controller.snapshot().draft[0].markdown, '第 1 题：正确'); assert.equal(controller.snapshot().draft[1].markdown, '我的内容'); controller.dispose();
+});
+
+test('generated source labels appear once as controls while handwritten source text remains', () => {
+  const chapter = { id: 'c', space_id: 's', blocks: [{ id: 'b', kind: 'assessment', markdown: '## 来源\n- 文档 · 第 1 行\n- 文档 · 第 2 行\n', source_refs: [{ label: '文档 · 第 1 行' }, { label: '文档 · 第 2 行' }] }] };
+  const html = notes.renderNotes({ notebook: notebookWithGeneratedChapter(), chapter });
+  assert.equal((html.match(/文档 · 第 1 行/g) || []).length, 1);
+  assert.equal((html.match(/文档 · 第 2 行/g) || []).length, 1);
+  chapter.blocks[0].markdown += '\n我的原文核对备注';
+  assert.match(notes.renderNotes({ notebook: notebookWithGeneratedChapter(), chapter }), /我的原文核对备注/);
+});

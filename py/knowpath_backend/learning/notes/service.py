@@ -187,8 +187,37 @@ class NotesService:
         c, generations = self._read_delivery(identifier)
         sessions = {(b.get('learning_time') or {}).get('id'): b['learning_time'] for b in c['blocks'] if b.get('learning_time')}
         c['elapsed_seconds'] = sum(s['elapsed_seconds'] for s in sessions.values()) if sessions and all(s.get('elapsed_seconds') is not None for s in sessions.values()) else None
-        c['markdown'] = '\n\n'.join(b['markdown'] for b in c['blocks'])
+        self._present(c, generations)
+        c['markdown'] = '\n\n'.join(b.get('display_markdown', b['markdown']) for b in c['blocks'])
         return dict(c, generations=[{k: copy.deepcopy(g.get(k)) for k in ('id', 'status', 'run_id', 'error', 'snapshot')} for g in generations])
+
+    def _source_labels(self, refs):
+        from .presentation import unique_sources, source_label
+        result = []
+        for original in unique_sources(refs):
+            ref = copy.deepcopy(original)
+            material = self.spaces.materials.get_material(ref.get('material_id'))
+            version = self.spaces.materials.get_version(ref.get('material_version_id'))
+            chunk = next((x for x in version.chunks if x.id == ref.get('chunk_id')), None) if version and version.material_id == ref.get('material_id') else None
+            if material: ref['material_name'] = material.name
+            if chunk: ref.update(page=chunk.page, section_path=list(chunk.section_path), line_start=chunk.line_start, line_end=chunk.line_end)
+            ref['label'] = source_label(ref)
+            result.append(ref)
+        return result
+
+    def _present(self, chapter, generations):
+        from .presentation import readable_markdown, question_summaries
+        by_assessment = {g['assessment_id']: g.get('snapshot', {}) for g in generations}
+        for block in chapter.get('blocks', []):
+            block['source_refs'] = self._source_labels(block.get('source_refs', []))
+            if block.get('kind') != 'assessment': continue
+            snapshot = by_assessment.get(block.get('assessment_id'), {})
+            block['display_markdown'] = readable_markdown(block['markdown'], block.get('facts', {}), snapshot.get('questions', []), block['source_refs'], block.get('assessment_id', ''))
+        for g in generations:
+            snapshot = g.get('snapshot', {})
+            snapshot['question_summaries'] = question_summaries(snapshot.get('questions', []))
+            snapshot['topic_names'] = [chapter.get('title') or '知识主题']
+        return chapter
 
     def _read_delivery(self, identifier, revision_id=None):
         from knowpath_backend.learning.materials.source_access import SourceAccessService, AssistanceDeliveryChanged
@@ -278,8 +307,8 @@ class NotesService:
         return [{k: row.get(k) for k in ('id', 'chapter_id', 'version', 'updated_at', 'reason')} for row in self.repository.records('note_revisions', chapter_id=identifier)]
 
     def revision(self, identifier, revision_id):
-        row, _ = self._read_delivery(identifier, revision_id)
-        return row
+        row, generations = self._read_delivery(identifier, revision_id)
+        return self._present(row, generations)
 
     def enqueue_assessment(self, assessment):
         if assessment['status'] != 'completed' or not assessment.get('task_id'): return None
@@ -401,6 +430,7 @@ class NotesService:
                     # Result facts are also sourced; scrubbing must remove the
                     # block if any displayed question dependency is deleted.
                     refs.extend(r for x in snapshot['assessment_result'].get('question_results', []) for r in x.get('source_refs', []))
+                    refs = self._source_labels(refs)
                     elapsed = (snapshot['learning_time'] or {}).get('elapsed_seconds')
                     time_text = f'{elapsed} 秒（包含暂停）' if elapsed is not None else '未记录'
                     result_rows = snapshot['assessment_result'].get('question_results', [])
@@ -410,6 +440,8 @@ class NotesService:
                     corrections_text = '\n'.join('- 纠偏记录：' + assessment['id'] + ':' + existing_evidence[x['evidence_id']]['question_id'] for x in valid_corrections) or '本次暂无已确认纠偏。'
                     pending = '\n'.join('- ' + x['question_id'] for x in result_rows if x['verdict'] != 'correct') or '以当前掌握状态和后续独立复测为准。'
                     markdown = f"## 学习范围\n{c['title']}\n\n## 核心知识\n{core}\n\n## 本次学习时间\n{time_text}\n\n## 测评结果\n{score_text}\n\n## 理解纠偏\n{corrections_text}\n\n## 待巩固内容\n{pending}\n\n## 验收情况\n章节完成状态由任务与当前版本全部主题的后端掌握状态确定。\n\n## 来源\n{source_text}"
+                    from .presentation import readable_markdown
+                    markdown = readable_markdown(markdown, snapshot['assessment_result'], snapshot.get('questions', []), refs, assessment['id'])
                     core_items = [dict(x, question_id=existing_evidence[x['evidence_id']]['question_id'], source_refs=existing_evidence[x['evidence_id']]['source_refs']) for x in items]
                     block = {'id': identifier, 'kind': 'assessment', 'assessment_id': assessment['id'], 'markdown': markdown, 'items': core_items, 'source_refs': refs, 'evidence_ids': [x['evidence_id'] for x in items], 'facts': snapshot['assessment_result'], 'learning_time': snapshot['learning_time'], 'timing_note': '会话计时包含暂停；缺失时间显示未记录', 'created_at': now()}
                     if not any(b['id'] == identifier for b in c['blocks']): c['blocks'].append(block)

@@ -50,6 +50,37 @@ def test_successful_generation_preserves_personal_and_has_real_facts(workbench):
     assert chapter['correction_count'] > 0
     assert 'blocks' not in notes.notebook(sid)['chapters'][0]
     assert all('blocks' not in r for r in notes.revisions(chapter['id']))
+    generated = chapter['blocks'][1]
+    assert '第 1 题：' in generated['markdown']
+    assert 'incorrect；' not in generated['markdown']
+    assert len(generated['source_refs']) == len({(r['material_id'], r['material_version_id'], r['chunk_id']) for r in generated['source_refs']})
+    assert all(r['label'] and r['material_name'] for r in generated['source_refs'])
+
+def test_existing_note_and_history_are_readable_without_rewriting_saved_edits(workbench):
+    _, state, sid, _, _ = workbench
+    _, _, assessment = completed(state, sid, wrong=True)
+    notes = state.notes_service
+    chapter_id = state.assessment_result(assessment['id'])['notes']['chapter_id']
+    generation = notes.repository.records('note_generations', chapter_id=chapter_id)[0]
+    facts = generation['snapshot']['assessment_result']
+    q = facts['question_results'][0]
+    refs = generation['snapshot']['sources']
+    legacy = f"## 测评结果\n- {q['question_id']}：{q['verdict']}；分数 {q['score']}\n\n## 来源\n- [{refs[0]['chunk_id']}](/api/v1/materials/{refs[0]['material_id']}/versions/{refs[0]['material_version_id']}/chunks/{refs[0]['chunk_id']}?space_id={sid})\n\n## 我的补充\n保留个人分析"
+    chapter = notes.repository.get_record('note_chapters', chapter_id)
+    chapter['blocks'] = [{'id': 'legacy', 'kind': 'assessment', 'assessment_id': assessment['id'], 'markdown': legacy, 'facts': facts, 'source_refs': refs, 'edited': True}]
+    notes.repository.put_record('note_chapters', chapter)
+    history = dict(chapter, id='legacy-revision', chapter_id=chapter_id)
+    notes.repository.put_record('note_revisions', history)
+    for displayed in (notes.chapter(chapter_id), notes.revision(chapter_id, 'legacy-revision')):
+        block = displayed['blocks'][0]
+        assert block['markdown'] == legacy
+        assert '第 1 题：' in block['display_markdown']
+        assert '保留个人分析' in block['display_markdown']
+        assert q['question_id'] not in block['display_markdown']
+        assert all(r['label'] for r in block['source_refs'])
+    assert notes.repository.get_record('note_chapters', chapter_id)['blocks'][0]['markdown'] == legacy
+    assert notes.repository.get_record('note_revisions', 'legacy-revision')['blocks'][0]['markdown'] == legacy
+
 
 def test_generation_cannot_publish_fabricated_evidence(workbench):
     _, state, sid, _, _ = workbench
