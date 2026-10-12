@@ -32,7 +32,7 @@ def test_nonfull_answer_status_survives_message_publication(build_workspace, sta
             assert not kwargs['cancelled']()
             return {'text': '当前检索证据不足。', 'status': status, 'citations': [], 'sources': [], 'trace': {}}
     state.message_service.rag_pipeline = Pipeline()
-    response = state.send_message(space['id'], {'message': '学校？'})
+    response = state.send_message(space['id'], {'message': '学校？', 'answer_mode':'material'})
     run = state.get_run(response['run_id'])
     assert run['status'] == 'succeeded'
     result = next(e['data'] for e in run['events'] if e['event'] == 'message.completed')
@@ -70,7 +70,7 @@ def test_durable_v2_execution_marker_is_committed_before_provider_call(build_wor
             return {'text': '当前检索证据不足。', 'status': 'insufficient', 'citations': [], 'sources': [], 'trace': {}}
 
     state.message_service.rag_pipeline = Pipeline()
-    response = state.message_service.send(space['id'], {'message': '学校应该告知谁？'}, durable=True)
+    response = state.message_service.send(space['id'], {'message': '学校应该告知谁？','answer_mode':'material'}, durable=True)
     event = state.message_service.repository.records('outbox', event_type='message.generate')[0]
     assert ModelTaskWorker(messages=state.message_service).run_once(event['id'])
     assert observed[0].get('rag_mode') is True
@@ -151,6 +151,9 @@ def test_durable_assessment_hint_stays_legacy_without_v2_execution_marker(build_
     response = state.message_service.send(space['id'],
         {'message': 'Give the answer for ' + assessment['questions'][0]['id']}, durable=True)
     event = state.message_service.repository.records('outbox', event_type='message.generate')[0]
+    legacy = state.message_service.repository.get_record('messages', event['aggregate_id'])
+    legacy['snapshot'].pop('requested_answer_mode')
+    state.message_service.repository.put_record('messages', legacy)
     assert ModelTaskWorker(messages=state.message_service).run_once(event['id'])
     stored = state.message_service.repository.get_record('messages', event['aggregate_id'])
     assert stored['snapshot']['hint'] is True

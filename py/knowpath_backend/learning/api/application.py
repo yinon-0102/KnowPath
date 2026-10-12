@@ -25,7 +25,7 @@ from .errors import install_error_handlers
 from .middleware import install_middleware
 from .routers import health, materials, graphs, runs, spaces, assessments, plans_sessions, messages, knowledge, exports
 from .routers import diagnostics, evolution, plan_comparisons, policy_replays
-from .routers import notes
+from .routers import notes, lessons
 from knowpath_backend.learning.notes.generation import ConfiguredNoteGenerator
 
 logger = logging.getLogger(__name__)
@@ -41,6 +41,7 @@ def create_app(
     source_retriever=None,
     rag_pipeline=None,
     note_generator=None,
+    lesson_generator=None,
 ) -> FastAPI:
     service = service or MaterialService(InMemoryMaterialRepository())
     settings = settings or LearningSettings.from_env()
@@ -53,6 +54,7 @@ def create_app(
                           context_settings=settings,
                           rag_pipeline=rag_pipeline,
                           note_generator=note_generator if note_generator is not None else ConfiguredNoteGenerator(settings),
+                          lesson_generator=lesson_generator if lesson_generator is not None else ConfiguredNoteGenerator(settings),
                           question_generator=question_generator if question_generator is not None else DashScopeQuestionGenerator(settings),
                           answer_generator=answer_generator if answer_generator is not None else DashScopeAnswerGenerator(settings),
                           source_retriever=source_retriever if source_retriever is not None else configured_retriever(settings))
@@ -99,4 +101,7 @@ def create_app(
     app.include_router(plan_comparisons.router)
     app.include_router(policy_replays.router)
     app.include_router(notes.router)
+    app.include_router(lessons.router)
+    from .routers import personalization
+    app.include_router(personalization.router)
     return app

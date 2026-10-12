@@ -227,7 +227,9 @@ data: {"run_id":"run_001","result_ref":"matver_001"}
 
 SSE 只传执行状态和可展示的摘要，不传完整原始资料或敏感内容。
 
-每条 SSE 事件均有递增的 `id:` 和服务端时间戳。对话另外发送 `message.delta`（可见文本片段）、`message.completed`（消息 ID 与引用）；验证中的候选文本不能先展示。终态事件为 run.completed/run.failed/run.cancelled。15 秒发送心跳注释，支持 Last-Event-ID 续传，7 天之前的历史返回 `410 EVENT_HISTORY_EXPIRED`，调用方改查 run 最终状态。终态后关闭流。
+每条 SSE 事件均有递增的 `id:` 和服务端时间戳。对话发送 `message.delta`（文本片段）、`message.completed`（最终正文、消息 ID 与引用）。`provisional: true` 表示生成中的候选正文，页面必须标注依据待核对；最终结果替换候选正文，不能拼接重复内容。`message.reset` 清除失败、取消或自动重试前的暂存正文。终态事件为 run.completed/run.failed/run.cancelled。15 秒发送心跳注释，支持 Last-Event-ID 续传，7 天之前的历史返回 `410 EVENT_HISTORY_EXPIRED`，调用方改查 run 最终状态。终态后关闭流。
+
+节点讲义在同一事件接口发送 `lesson.stage` 和 `lesson.section`。section 数据包含 `lesson_id`、累计 `sections`、引用定位 `citations` 和 `provisional: true`；客户端替换累计快照，不重复追加。每个完整小节通过结构及引用 ID 校验后才交付，完整讲义仍须等 Run 成功后重新读取 `/study-lessons/{lesson_id}`。`lesson.reset` 清除失效草稿。事件读取沿用来源交付与辅助作答审计；失败、取消、租约过期、来源删除不能继续重放撤销正文。
 
 重读历史回答时，只对 Last-Event-ID 之后实际返回的消息文本重新执行来源辅助审计，匹配当时活动的测验；仅查询 Run 元数据或游标已跳过全部文本不会标记 assisted。来源审计与返回事件读取共享事务，审计失败不交付文本。旧会话缺少新增来源记录时，从保留的原始历史/召回消息重建来源；无法追溯时拒绝重放，也不把该内容重新交给模型。
 
@@ -504,6 +506,18 @@ result 响应至少包含：assessment_id、graded_at、topic_results（topic_id
 练习与复测统一使用 Assessment，不额外建设 practice 提交资源，避免出现两套判分和证据更新入口。
 
 ## 7. 计划和学习会话接口
+
+### 学习顺序与重排
+
+创建计划可选 `order_mode: "source" | "adaptive"` 和 `material_order`。新计划默认 `source`，按当前绑定资料版本的原文位置排序；已确认必要前置关系优先满足。`material_order` 必须恰好包含所有绑定资料 ID；省略时沿用绑定顺序。局部重规划省略顺序参数时继承基础计划偏好。
+
+`POST /plans/{plan_id}/order-preview` 为只读预览，仍需本地鉴权，不要求幂等键；`PATCH /plans/{plan_id}/order` 应用排序，要求 `Idempotency-Key`，原子递增计划 `version`。请求共同包含 `expected_plan_version`、`order_mode: "source" | "adaptive" | "custom"`、可选 `material_order`；只有 `custom` 接受并要求 `ordered_node_ids`，必须为全部可移动稳定节点 ID 的完整排列。
+
+预览返回 `plan_id`、`expected_plan_version`、`can_apply`、`candidate_plan`、`fixed_nodes`、`movable_node_ids`、`order_explanations`、`before_schedule`、`after_schedule`、`conflicts`、`conflict_code`、`adjustable_constraints`。应用成功返回完整更新计划。版本竞争、非当前可执行计划、前置或容量/日期冲突均拒绝应用，不部分写入。已完成、已跳过、历史及存在活动会话的任务保留固定槽位；任务 ID、node_id、稳定 sequence、学习记录、讲义与笔记编号保持不变。顺序策略保存在计划 JSON，变化位置保存在 `context.position`，不修改学习周期的策略版本。
+
+自定义前置冲突另含 `suggested_order`、`suggested_plan`：仅在替代排列通过固定节点与完整日程校验后提供。不可行时返回 `suggestion_unavailable_reason`、`suggestion_conflicts`；应用 409 保留相同建议详情。建议不覆盖原自定义候选。计划 JSON 的 `custom_node_order` 保存稳定节点排列，局部重规划恢复重复主题任务的交错位置；新增主题依原文及必要前置约束加入，移出范围的主题不参与当前排序。
+
+出题 Run 的 `assessment_stage` 为 `queued`、`generating_questions`、`validating_questions`、`ready`，从持久化事件恢复；前端分别显示等待、生成、校验、就绪及真实等待时间。继续、刷新与超时恢复沿用同一 Run，不重新生成一套题目。
 
 ### `POST /learning-spaces/{space_id}/plans`
 
@@ -890,3 +904,28 @@ limit 为 1–1000，minimum_delay_hours 为 24–8760；时间必须带时区�
 3. observed_retests：同主题、同版本、同重置轮次、不同题族与测验的连续已记录独立答题，真实间隔满足要求后才统计 followup_score / score_change。中间练习会重启间隔，已知提示或重复题练习打断配对。无法恢复真实答题时间的旧记录不计入延迟复测。真实复测统计使用报告时间窗口内的全部可用观测，决策 limit 只截断策略明细；配对明细也单独标记截断。
 
 causal_effect_estimated 固定为 false：题目难度、自选练习和其他学习活动都可能影响结果，不能把观测差值解释为策略因果收益。无数据时明确给出原因。报告带 snapshot_hash、policy_version、limits、truncated；在线历史总行数上限 20000，决策主题总数上限 2048，估计行访问量上限 2000000。超出组合计算量返回 REPLAY_LIMIT_EXCEEDED，应缩小 limit / 决策时间范围或做离线评估。
+
+### 16. 节点学习讲义与追问
+
+接口沿用本地鉴权、错误契约和 `/api/v1` 前缀。生成讲义不改变任务完成或知识掌握状态；讲义与测评后的总结笔记分别保存。
+
+- `GET /learning-spaces/{space_id}/nodes/{node_id}/lessons`：讲义版本元数据、生成状态、实际处理阶段、覆盖范围与空间讲解偏好；不返回正文。
+- `POST /learning-spaces/{space_id}/nodes/{node_id}/lessons`：显式生成。请求含 `plan_id`、`task_id`，可选 `style`、`instructions`、`learning_session_id`、`regenerate`；返回 `lesson_id`、`run_id`、`status`。使用 `Idempotency-Key`，相同内容与风格复用既有有效版本，`regenerate=true` 请求新版本。
+- `GET /study-lessons/{lesson_id}`：经过辅助作答审计后返回版本正文、来源、覆盖主题及失效标记；原始输入快照不对外返回。
+- `POST /study-lessons/{lesson_id}/retry`：请求 `{}`，重试失败或已取消任务，返回新的 Run；仍需有效上下文。
+- `POST /learning-spaces/{space_id}/messages`：可选 `lesson_id` 将追问严格限定到该节点的原始来源，保留原有消息请求字段。连续追问仅使用同讲义、同有效资料范围的历史；范围缩小到无法包含整份讲义来源时，不注入讲义正文，依据所选原文回答。
+- `GET /learning-spaces/{space_id}/conversations/{session_id}/messages`：默认读取最新 20 条，页内按会话顺序排列；`limit` 为 1—100，`cursor` 继续读取更早记录。正文返回前重新记录辅助作答访问，不返回内部输入快照。
+
+#### 原文问答上下文
+
+`POST /learning-spaces/{space_id}/messages` 可选 `reading_context: {"material_id": "...", "material_version_id": "..."}`，与 `lesson_id` 互斥。原文问答无需先生成讲义；只能读取空间当前绑定的指定资料版本，候选覆盖该文档全部允许的原始 parsed chunks。有显式 `topic_ids` 时仅允许选中主题的来源；`excluded_topic_ids` 引用的 chunk 始终排除，无显式主题白名单时可读取未映射到图谱主题的原文 chunk。原始行号、页码和章节定位保持有效。
+
+如同时提供 `material_ids`，只能包含同一 `material_id`。原文上下文写入消息快照，后台执行、流式文本交付和最终发布均重新校验版本与空间范围。旧版本返回 `409 STALE_LEARNING_CONTEXT`，空间外资料返回 `409 MATERIAL_OUT_OF_SCOPE`，混用文档选择或复用其他原文、讲义、普通会话返回 `409 READING_CONTEXT_MISMATCH`。每轮原文请求均显式携带 `reading_context`，不会继承会话的隐式 `lesson_id`。
+
+原文问答复用讲义问答的 source-bound 生成链，采用配置的 retriever、模型 provider、上下文预算、引用验证、worker 租约及辅助作答审计；不进入主 RAG pipeline 的空间 publication 路径。配置向量检索但原文候选缺少索引时返回 `VECTOR_INDEX_NOT_READY`，不会扩展到其他资料或自动切换检索方式。历史与记忆仅使用同原文版本、同有效空间及请求范围的已完成消息，不注入讲义或普通问答记忆。
+
+历史列表每项保留原字段，并新增可空 `reading_context` 与 `lesson_id`，供界面识别会话类型。删除资料时清除其冻结的 `reading_context`；已删除来源的旧回答仍遵守现有拒绝重放规则。未提供（或传 `null`）该字段的旧消息请求保持兼容。
+
+`style` 为 `plain`（通俗易懂）、`examples_first`、`concise` 或 `deep`；`instructions` 最多 1000 字。空间档案偏好扩展 `lesson_style`、`lesson_instructions`，仅更新这两个表达偏好不要求重新规划，原有偏好字段保留。
+
+正文采用 `sections`（`kind`、`title`、`markdown`、`citation_ids`）和 `citations`。四个分区为核心知识、讲解、示例、易错点；引用只允许冻结节点原文，模型不得判断掌握或伪造成绩。长内容分批处理，不能完整覆盖时明确返回未覆盖主题。模型失败不影响原文阅读、已有讲义或测评结果。

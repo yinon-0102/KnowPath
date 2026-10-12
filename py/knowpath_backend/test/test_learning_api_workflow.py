@@ -68,7 +68,8 @@ def test_learning_api_workflow_from_material_to_plan():
 
 def test_message_events_publish_text_before_terminal():
     from knowpath_backend.test.test_learning_state_persistence import FixedAnswer
-    app = create_app(answer_generator=FixedAnswer())
+    from knowpath_backend.learning.rag.retrieval import KeywordRetriever
+    app = create_app(answer_generator=FixedAnswer(), source_retriever=KeywordRetriever())
     with ParsedUploadClient(app) as client:
         material = client.post(
             "/api/v1/materials",
@@ -89,7 +90,7 @@ def test_message_events_publish_text_before_terminal():
         run_id = response.json()["run_id"]
         stream = client.get(f"/api/v1/runs/{run_id}/events")
         names = [line.removeprefix("event: ") for line in stream.text.splitlines() if line.startswith("event: ")]
-        assert names == ["run.started", "tool.completed", "message.delta", "message.completed", "run.completed"]
+        assert names == ["run.started", "message.route", "tool.completed", "message.delta", "tool.completed", "message.completed", "run.completed"]
         run = app.state.learning_state.get_run(run_id)
-        assert run["events"][3]["data"]["message_id"] == run["result_ref"]["id"]
-        assert "citations" in run["events"][3]["data"]
+        assert next(e["data"] for e in run["events"] if e["event"] == "message.completed")["message_id"] == run["result_ref"]["id"]
+        assert "citations" in next(e["data"] for e in run["events"] if e["event"] == "message.completed")

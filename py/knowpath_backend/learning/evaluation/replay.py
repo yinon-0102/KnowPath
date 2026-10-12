@@ -12,6 +12,8 @@ import json
 
 from knowpath_backend.learning.assessments.adaptive import rank_topics
 from knowpath_backend.learning.assessments.mastery import aggregate
+from knowpath_backend.learning.assessments.review_policy import evidence_sufficiency
+from knowpath_backend.learning.plans.ordering import source_key
 from knowpath_backend.learning.errors import DomainConflict
 from knowpath_backend.learning.evaluation.schemas import ReplayRequest
 from knowpath_backend.learning.spaces.service import now
@@ -80,10 +82,10 @@ def _rules_order(topics, states, cutoff):
         state = states[topic["id"]]
         status = state["status"]
         due = state.get("next_review_at")
-        if status == "mastered" and due and _time(due).date() <= cutoff.date():
+        if status == "mastered" and due and _time(due) <= cutoff:
             status = "needs_review"
         return (rank.get(status, 4), -len(state.get("error_tags", [])),
-                state.get("last_assessed_at") or "9999", topic["id"])
+                state.get("last_assessed_at") or "9999", source_key(topic, []))
     while remaining:
         ready = [topic for topic in remaining.values() if all(parent in known and parent not in remaining
                  for parent in topic.get("prerequisites", []))]
@@ -190,7 +192,7 @@ def build_replay(assessments, evidence, *, as_of, limit=200, minimum_delay_hours
                 continue
             state = states[chosen]; score = state["mastery_score"]
             totals[name]["decision_count"] += 1
-            totals[name]["weak_or_unknown_choices"] += int(score is None or score < .8 or state["independent_evidence_count"] < 3)
+            totals[name]["weak_or_unknown_choices"] += int(score is None or score < .8 or state.get('evidence_sufficiency', {}).get('status') != 'sufficient')
             totals[name]["prerequisite_choices"] += int(chosen in prerequisites)
             totals[name]["different_from_fixed"] += int(chosen != choices["fixed_order"])
         projections = {identifier: {key: state[key] for key in ("mastery_score", "status",

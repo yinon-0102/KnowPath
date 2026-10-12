@@ -196,6 +196,22 @@ test('profile editing saves weekly budget and clears the target date with the cu
   assert.deepEqual(body, { goal: '准备期末考试', preferences: { example_first: true, concise_explanations: false }, weekly_minutes: 120, target_date: null, expected_version: 2 });
 });
 
+test('personalization controls default on and preserve unrelated preferences when saved', async () => {
+  let body;
+  const env = environment('space-profile/s1', {
+    profile: async () => ({ profile_version: 3, profile: { preferences: { value: { lesson_style: 'concise', automatic_adjustment: true } } } }),
+    updateProfile: async (id, payload) => { body = payload; return {}; },
+  });
+  await env.controller.load();
+  const html = renderWorkspace(env.controller.snapshot());
+  assert.match(html, /name="automatic_adjustment"[^>]+checked/);
+  assert.match(html, /name="time_personalization"[^>]+checked/);
+  assert.match(html, /name="lesson_adaptation"[^>]+checked/);
+  await env.controller.submit(values({ goal: '理解资料', personalization_controls: '1', time_personalization: 'on' }));
+  assert.deepEqual(body.preferences, { lesson_style: 'concise', example_first: false, concise_explanations: false, automatic_adjustment: false, time_personalization: true, lesson_adaptation: false });
+  assert.equal(body.expected_version, 3);
+});
+
 test('optional profile budget stays unset and invalid budgets or dates never reach PATCH', async () => {
   const calls = [];
   const env = environment('space-profile/s1', { updateProfile: async (id, body) => { calls.push(body); return {}; } });
@@ -302,7 +318,10 @@ test('graph conflict publication requires a decision and reason for every confli
 });
 test('API wrappers send exact routes, authentication, multipart versions and source-proof bodies', async t => {
   const calls = [];
-  t.mock.method(globalThis, 'fetch', async (url, options) => { calls.push({ url: new URL(url), options }); return new Response(JSON.stringify({ items: [], next_cursor: null })); });
+  t.mock.method(globalThis, 'fetch', async (url, options) => {
+    if (url.endsWith('/openapi.json')) return new Response(JSON.stringify({ paths: { '/api/v1/learning-spaces/{space_id}/messages': { post: { requestBody: { content: { 'application/json': { schema: { properties: { reading_context: {}, answer_mode: { enum: ['auto', 'material', 'general'] } } } } } } } } } }));
+    calls.push({ url: new URL(url), options }); return new Response(JSON.stringify({ items: [], next_cursor: null }));
+  });
   const api = createApi(() => 'fixture-token');
   await api.uploadVersion('m /', new File(['hello'], 'note.txt'), '版本说明', { key: 'upload-key' });
   assert.equal(calls[0].url.pathname, '/api/v1/materials/m%20%2F/versions'); assert.equal(calls[0].options.body.get('change_note'), '版本说明'); assert.equal(calls[0].options.headers['Idempotency-Key'], 'upload-key');

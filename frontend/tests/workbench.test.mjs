@@ -3,6 +3,11 @@ import assert from 'node:assert/strict';
 import * as workbench from '../src/workbench.js';
 const { parseRoute, spacePath, routeState, nextLearningStep, createWorkbenchController } = workbench;
 
+test('study workspace has a refreshable node route and maps to learning view', () => {
+  assert.equal(parseRoute('#/space/s1/study?task=t1&plan=p1').section, 'study');
+  assert.deepEqual(routeState('study'), { tab: 'study', learningSection: 'diagnostic' });
+});
+
 test('space sections survive links, encoded ids, refresh and legacy tabs', () => {
   const id = '空间/一';
   assert.deepEqual(parseRoute(spacePath(id, 'plan')), { name: 'space', id, section: 'plan', query: {} });

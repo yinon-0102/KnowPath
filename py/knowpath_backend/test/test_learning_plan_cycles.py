@@ -149,11 +149,12 @@ def test_clock_only_review_transition_marks_plan_for_replanning(cycle_workspace)
     state, space_id, topic, clock = cycle_workspace
     save_state(state, space_id, topic, status="mastered", next_review_at="2026-09-08T10:00:00+00:00")
     plan = state.create_plan(space_id, {})
-    assert executable(plan) == []
+    assert all(t.get('context', {}).get('not_required') for t in executable(plan))
     clock[0] = "2026-09-02T10:00:00+00:00"
     assert state.get_plan(plan["id"])["status"] == "ready"
     clock[0] = "2026-09-09T10:00:00+00:00"
-    assert state.get_plan(plan["id"])["status"] == "needs_replan"
+    assert state.get_plan(plan["id"])["status"] == "ready"
+    assert state.get_plan(plan["id"])["adjustment_pending"]
     rebuilt = replan(state, space_id, plan)
     assert [t["kind"] for t in executable(rebuilt)] == ["review"]
     assert state.get_plan(rebuilt["id"])["status"] == "ready"
@@ -166,7 +167,8 @@ def test_clock_only_deferral_transition_marks_plan_for_replanning(cycle_workspac
         "expected_plan_version": 1, "defer_until": "2026-09-02T12:00:00+00:00"})
     assert state.get_plan(plan["id"])["status"] == "ready"
     clock[0] = "2026-09-02T12:00:00+00:00"
-    assert state.get_plan(plan["id"])["status"] == "needs_replan"
+    assert state.get_plan(plan["id"])["status"] == "ready"
+    assert state.get_plan(plan["id"])["adjustment_pending"]
 
 
 @pytest.mark.parametrize("kind,status", [("learn", "learning"), ("review", "mastered")])

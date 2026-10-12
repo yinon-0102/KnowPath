@@ -5,7 +5,17 @@ from knowpath_backend.learning.errors import DomainConflict, DomainNotFound
 from knowpath_backend.test.test_learning_state_persistence import workspace, create
 
 
+@pytest.fixture(autouse=True)
+def isolated_message_retrieval(monkeypatch):
+    monkeypatch.setenv('LEARNING_RETRIEVAL_BACKEND', 'keyword')
+    monkeypatch.setenv('LEARNING_RAG_PLUGIN', 'legacy')
+
+
 class FixedAnswer:
+    def classify(self, snapshot):
+        """Explicit frozen semantic provider for source-bound command fixtures."""
+        return {'document_related': True, 'educational': True, 'topic_ids': [],
+                'scope_uncertain': True, 'reason': 'Frozen material fixture'}
     def __init__(self):
         self.calls = []
     def generate(self, snapshot):
@@ -60,7 +70,7 @@ def test_message_rejects_invented_citations_without_publishing_text(workspace):
     run = factory().get_run(message["run_id"])
     assert run["status"] == "failed"
     assert run["error"]["code"] == "MESSAGE_VALIDATION_FAILED"
-    assert not any(e["event"].startswith("message.") for e in run["events"])
+    assert not any(e["event"] in {"message.delta", "message.completed"} for e in run["events"])
 
 
 def test_legacy_message_persists_stream_deltas_before_completion(workspace):
@@ -91,13 +101,13 @@ def test_message_scope_change_discards_model_output(workspace):
     assert run["error"]["code"] == "STALE_LEARNING_CONTEXT"
 
 
-def test_active_question_request_becomes_hint_without_model_or_score(workspace):
+def test_active_question_request_gets_explanation_with_assistance_without_score(workspace):
     factory, space_id, _, _ = workspace
     state, generator = service(factory)
     assessment = create(state, space_id)
     question = assessment["questions"][0]
     response = state.send_message(space_id, {"message": "Give the answer for " + question["id"]})
-    assert generator.calls == []
+    assert len(generator.calls) == 1
     stored = factory().assessment_service.repository.get_record("assessments", assessment["id"])
     assert stored["questions"][0]["assisted"] is True
     assert factory().get_state(space_id)["state_version"] == 0
@@ -170,7 +180,7 @@ def test_message_cancel_during_model_call_and_duplicate_worker(workspace):
     run = factory().get_run(response["run_id"])
     assert len(generator.calls) == 1
     assert run["status"] == "cancelled"
-    assert not any(e["event"].startswith("message.") for e in run["events"])
+    assert not any(e["event"] in {"message.delta", "message.completed"} for e in run["events"])
 
 
 def test_stale_history_is_not_sent_to_model(workspace):
@@ -197,7 +207,7 @@ def test_learning_session_finishing_during_generation_discards_output(workspace)
         run = factory().get_run(response["run_id"])
         assert run["status"] == "failed"
         assert run["error"]["code"] == "SESSION_FINISHED"
-        assert not any(e["event"].startswith("message.") for e in run["events"])
+        assert not any(e["event"] in {"message.delta", "message.completed"} for e in run["events"])
         with pytest.raises(DomainConflict) as exc:
             state.send_message(space_id, {"message": "Again", "session_id": session["id"]})
         assert exc.value.code == "SESSION_FINISHED"
@@ -303,7 +313,7 @@ def test_sources_remain_on_pinned_version_after_material_upload(workspace):
     "Choose the correct options for this quiz", "Complete this test for me",
     "帮我做完这个测验", "这道题怎么选",
 ])
-def test_explicit_assessment_help_phrases_never_call_answer_model(message_text):
+def test_explicit_assessment_help_phrases_call_answer_model_and_audit(message_text):
     from knowpath_backend.learning.state import LearningState
     from knowpath_backend.test.test_learning_state_persistence import FixedQuestions
     generator = FixedAnswer()
@@ -312,7 +322,7 @@ def test_explicit_assessment_help_phrases_never_call_answer_model(message_text):
     space = state.create_space({"name": "Help", "material_ids": [material.material.id]})
     assessment = create(state, space["id"])
     response = state.send_message(space["id"], {"message": message_text})
-    assert generator.calls == []
+    assert len(generator.calls) == 1
     stored = state.assessment_service.repository.get_record("assessments", assessment["id"])
     assert all(q["assisted"] for q in stored["questions"])
     assert state.get_state(space["id"])["state_version"] == 0

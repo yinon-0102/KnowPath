@@ -99,6 +99,8 @@ class RunService:
                "result_ref": copy.deepcopy(result_ref), "error": None,
                "created_at": now, "finished_at": now if status == "succeeded" else None,
                "events": []}
+        if kind == "assessment_generation":
+            run["assessment_stage"] = "queued" if status == "queued" else None
         if status != "queued":
             self._event(run, "run.started", {"kind": kind})
         if status == "succeeded":
@@ -107,7 +109,13 @@ class RunService:
         return copy.deepcopy(run)
 
     def get(self, run_id: str) -> Run:
-        return self.repository.get(run_id)
+        run = self.repository.get(run_id)
+        if run["kind"] == "assessment_generation":
+            run["assessment_stage"] = next(
+                (event["data"]["stage"] for event in reversed(run["events"])
+                 if event["event"] == "assessment.stage" and event.get("data")),
+                "queued" if run["status"] == "queued" else None)
+        return run
 
     def start(self, run_id: str) -> Run:
         def change(run):
@@ -119,15 +127,21 @@ class RunService:
 
     def append_event(self, run_id: str, name: str, data: dict[str, Any]) -> Run:
         # Lifecycle events must be emitted by the transitions below.
-        if name not in {"progress", "tool.started", "tool.completed", "message.delta", "message.completed"}:
+        if name not in {"progress", "tool.started", "tool.completed", "message.delta", "message.completed", "message.route", "lesson.stage", "lesson.section", "lesson.reset", "assessment.stage"}:
             raise DomainConflict("INVALID_RUN_EVENT", "事件类型不合法")
         if name == "progress":
             percent = data.get("percent")
             if type(percent) is not int or not 0 <= percent <= 100:
                 raise DomainConflict("INVALID_RUN_PROGRESS", "进度须为 0 到 100 的整数")
+        if name == "assessment.stage" and data.get("stage") not in {"generating_questions", "validating_questions", "ready"}:
+            raise DomainConflict("INVALID_ASSESSMENT_STAGE", "测验阶段不合法")
 
         def change(run):
             self._require_running(run)
+            if name == "assessment.stage":
+                if run["kind"] != "assessment_generation":
+                    raise DomainConflict("INVALID_RUN_EVENT", "事件类型不合法")
+                run["assessment_stage"] = data["stage"]
             if name == "progress":
                 run["progress"] = max(run["progress"], data["percent"])
             self._event(run, name, data)
@@ -152,6 +166,7 @@ class RunService:
         def change(run):
             if run["status"] in TERMINAL_STATUSES:
                 return
+            self._withdraw(run)
             run.update(status="failed", error=copy.deepcopy(error), finished_at=self.clock().isoformat())
             self._event(run, "run.failed", {"error": error})
         return self.repository.mutate(run_id, change)
@@ -160,9 +175,30 @@ class RunService:
         def change(run):
             if run["status"] in TERMINAL_STATUSES or run["status"] == "cancelling":
                 return
+            self._withdraw(run)
             run["status"] = "cancelling"
             self._event(run, "run.cancelling", {})
         return self.repository.mutate(run_id, change)
+
+    def _withdraw(self,run,*,include_completed=False,lesson_id=None):
+        """Keep sequence identities while removing withdrawn source prose."""
+        lesson_id=lesson_id or next(((e.get('data') or {}).get('lesson_id') for e in reversed(run['events']) if (e.get('data') or {}).get('lesson_id')),None)
+        had_message_body=any(e['event'] in {'message.delta','message.completed'} and ((e.get('data') or {}).get('delta') or (e.get('data') or {}).get('text')) for e in run['events'])
+        for event in run['events']:
+            data=event.get('data')
+            if data is None:continue
+            if event['event']=='lesson.section':
+                lesson_id=lesson_id or data.get('lesson_id')
+                event['data']={'run_id':run['id'],'timestamp':data.get('timestamp'),'lesson_id':lesson_id,'sections':[],'citations':[],'withdrawn':True,'provisional':True}
+            if event['event']=='message.delta':
+                event['data']={'run_id':run['id'],'timestamp':data.get('timestamp'),'delta':'','withdrawn':True,'provisional':True}
+            if include_completed and event['event']=='message.completed':
+                event['data']={'run_id':run['id'],'timestamp':data.get('timestamp'),'text':'','citations':[],'withdrawn':True}
+        if run['kind']=='lesson_generate' and lesson_id:self._event(run,'lesson.reset',{'lesson_id':lesson_id,'sections':[],'provisional':True})
+        if had_message_body:self._event(run,'message.reset',{'provisional':True})
+
+    def withdraw_drafts(self,run_id,*,include_completed=False,lesson_id=None):
+        return self.repository.mutate(run_id,lambda run:self._withdraw(run,include_completed=include_completed,lesson_id=lesson_id))
 
     def acknowledge_cancel(self, run_id: str) -> Run:
         def change(run):

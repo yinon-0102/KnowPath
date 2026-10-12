@@ -282,7 +282,10 @@ export function createWorkspaceController({ api, context, changed = () => {}, co
         const body = { name: required(values.get('name'), '空间名称'), expected_version: data.space.space_version };
         await command(page, body, options => api.updateSpace(id, body, options)); await finish(task, '空间名称已保存。');
       } else if (page === 'space-profile') {
-        const body = { goal: required(values.get('goal'), '学习目标'), preferences: { example_first: values.get('example_first') === 'on', concise_explanations: values.get('concise_explanations') === 'on' }, expected_version: data.profile.profile_version };
+        const existing = data.profile.profile?.preferences?.value || {};
+        const preferences = { ...existing, example_first: values.get('example_first') === 'on', concise_explanations: values.get('concise_explanations') === 'on' };
+        for (const key of ['automatic_adjustment', 'time_personalization', 'lesson_adaptation']) if (values.has('personalization_controls')) preferences[key] = values.get(key) === 'on';
+        const body = { goal: required(values.get('goal'), '学习目标'), preferences, expected_version: data.profile.profile_version };
         const budget = String(values.get('weekly_minutes') || '').trim();
         if (budget) body.weekly_minutes = integer(budget, 15, 2400, '每周学习时间');
         if (values.has('target_date')) {

@@ -105,7 +105,10 @@ class WorkbenchReads:
         from knowpath_backend.learning.plans.service import iso, now
         if self.sql:
             with self.uow.session() as session:
-                raw = list(session.scalars(select(SessionRow).where(SessionRow.space_id == space_id)))
+                query = select(SessionRow).where(SessionRow.space_id == space_id)
+                if self.uow.active:
+                    query = query.with_for_update().execution_options(populate_existing=True)
+                raw = list(session.scalars(query))
                 rows = [{"id": row.id, "session_id": row.id, "space_id": row.space_id,
                          "plan_id": row.plan_id, "task_id": row.task_id, "status": row.status,
                          "started_at": iso(row.started_at), "finished_at": iso(row.finished_at),
@@ -143,6 +146,12 @@ class WorkbenchReads:
                 except (ValueError, TypeError):
                     elapsed = None
             row["elapsed_seconds"] = max(0, int(elapsed)) if elapsed is not None else None
+            from .activity import activity_snapshot
+            if context.get('activity'):
+                row['activity'] = activity_snapshot(context['activity'], now())
+                row['context']['activity'] = copy.deepcopy(row['activity'])
+                if row['status'] == 'active':
+                    row['paused'] = bool(row['activity']['pause_reasons'])
         return sorted(rows, key=lambda row: (timestamp(row["started_at"]) if row.get("started_at") else "", row["id"]))
 
     def get_workbench(self, space_id):
@@ -204,7 +213,9 @@ class WorkbenchReads:
                 "task_id": task["id"], "sequence": earliest_task["sequence"], "title": title,
                 "kind": task["kind"], "status": status, "topic_ids": copy.deepcopy(task["topic_ids"]),
                 "estimated_minutes": task["estimated_minutes"], "active_session_id": active_id,
-                "historical": historical})
+                "historical": historical, 'duration_forecast': copy.deepcopy(context.get('duration_forecast')),
+                'allocations': copy.deepcopy(context.get('allocations', [])),
+                'allocation_state': context.get('allocation_state'), 'allocation_reason': context.get('allocation_reason')})
         for nodes in rounds.values():
             nodes.sort(key=lambda node: (node["sequence"], node["node_id"]))
         return rounds
@@ -246,7 +257,7 @@ class WorkbenchReads:
     @staticmethod
     def _record_context(context):
         allowed = {"task_id", "node_id", "topic_ids", "kind", "estimated_minutes", "reason",
-                   "topics", "source_refs", "paused", "finish_elapsed_seconds"}
+                   "topics", "source_refs", "paused", "finish_elapsed_seconds", 'activity', 'duration_baseline'}
         result = {key: copy.deepcopy(value) for key, value in context.items() if key in allowed}
         if "source_refs" in result:
             result["source_refs"] = sources(result["source_refs"])
@@ -319,8 +330,11 @@ class WorkbenchReads:
                 "node_id": task["node_id"], "task": task, "current": current, "plan_status": plan["status"],
                 "topics": self._record_topics(space, task, sessions),
                 "sessions": [{**{key: copy.deepcopy(row.get(key)) for key in (
-                    "session_id", "plan_id", "task_id", "status", "started_at", "finished_at", "elapsed_seconds", "paused")},
+                    "session_id", "plan_id", "task_id", "status", "started_at", "finished_at", "elapsed_seconds", "paused", "activity")},
                     "context": self._record_context(row.get("context", {}))} for row in sessions],
+                "total_study_active_seconds": sum(row.get('activity', {}).get('active_seconds', 0) for row in sessions),
+                "total_answer_active_seconds": sum(sum(a.get('active_seconds', 0) for a in row.get('snapshot', {}).get('answer_activity', {}).values()) for row in self.repository.records('assessments', space_id=plan['space_id'], lock=False) if (row.get('plan_id'), row.get('task_id')) in copies or row.get('learning_session_id') in session_ids),
+                "timing_quality": 'server_active' if sessions and all(row.get('activity', {}).get('reliable') for row in sessions) else 'missing_or_legacy',
                 "assessments": assessments, "total_elapsed_seconds": (sum(row["elapsed_seconds"] for row in sessions)
                     if all(row["elapsed_seconds"] is not None for row in sessions) else None)}
 

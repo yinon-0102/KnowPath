@@ -31,6 +31,7 @@ def test_heartbeat_keeps_slow_generation_owned_beyond_original_lease(workspace, 
         return result
     monkeypatch.setattr(ModelLease, 'renew', notify)
     class SlowProvider:
+        classify = FixedAnswer.classify
         def generate(self, *args):
             for _ in range(3):
                 wall[0] += timedelta(seconds=1)
@@ -96,6 +97,7 @@ def test_total_execution_limit_discards_late_success_and_preserves_safe_error(wo
                                lease_seconds=3, max_execution_seconds=1, monotonic=lambda: elapsed[0], max_attempts=1)
     state.message_service.retriever = KeywordRetriever()
     class LateSuccess:
+        classify = FixedAnswer.classify
         def generate(self, *args):
             elapsed[0] = 2.0
             return (FixedQuestions() if kind == 'assessment' else FixedAnswer()).generate(*args)
@@ -233,6 +235,7 @@ def test_heartbeat_observed_cancellation_settles_when_provider_returns(workspace
         return result
     monkeypatch.setattr(ModelLease, 'renew', notify)
     class CancelWhileBlocked:
+        classify = FixedAnswer.classify
         def generate(self, *args):
             state.run_service.request_cancel(response['run_id'])
             assert observed.wait(2), 'heartbeat ignored cancellation'

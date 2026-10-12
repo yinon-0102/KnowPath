@@ -18,6 +18,7 @@ from knowpath_backend.observability import context_fields, job_observed, log_eve
 logger = logging.getLogger(__name__)
 
 EVENTS = {"assessment.generate": "assessments", "message.generate": "messages", "note.generate": "note_generations"}
+EVENTS['lesson.generate'] = 'study_lessons'
 TRANSIENT_ERRORS = frozenset({"MODEL_UNAVAILABLE", "EMBEDDING_UNAVAILABLE", "VECTOR_UNAVAILABLE", "VECTOR_INDEX_NOT_READY", "RATE_LIMITED"})
 
 
@@ -197,9 +198,9 @@ class ModelJob:
 
 
 class ModelTaskWorker:
-    def __init__(self, assessments=None, messages=None, *, notes=None, clock=None, lease_seconds=300, max_attempts=3,
+    def __init__(self, assessments=None, messages=None, *, notes=None, lessons=None, clock=None, lease_seconds=300, max_attempts=3,
                  max_execution_seconds=1200, heartbeat_interval=None, monotonic=None):
-        service = assessments or messages or notes
+        service = assessments or messages or notes or lessons
         heartbeat_interval = lease_seconds / 3 if heartbeat_interval is None else heartbeat_interval
         if (service is None or not isfinite(lease_seconds) or lease_seconds <= 0 or max_attempts < 1
                 or not isfinite(max_execution_seconds) or not 1 <= max_execution_seconds <= 3600
@@ -207,6 +208,7 @@ class ModelTaskWorker:
             raise ValueError("A service, positive lease/retry limit, 1-3600 second execution budget and bounded heartbeat interval are required")
         self.assessments, self.messages = assessments, messages
         self.notes = notes
+        self.lessons = lessons
         self.repository, self.runs = service.repository, service.runs
         self.clock = clock or (lambda: datetime.now(timezone.utc))
         self.lease_seconds, self.max_attempts = lease_seconds, max_attempts
@@ -215,7 +217,7 @@ class ModelTaskWorker:
 
     def _service(self, event):
         return {"assessment.generate": self.assessments, "message.generate": self.messages,
-                "note.generate": self.notes}.get(event["event_type"])
+                "note.generate": self.notes, "lesson.generate": self.lessons}.get(event["event_type"])
 
     @contextmanager
     def _locked(self, initial):
@@ -241,6 +243,15 @@ class ModelTaskWorker:
             except DomainNotFound:
                 missing = True
             event = self.repository.get_record("outbox", initial["id"])
+            if resource is not None and resource.get('run_id') != event['payload'].get('run_id'):
+                # An explicit retry replaced the owner's Run. An earlier event
+                # may settle itself but must never mutate or execute that owner.
+                if event['status'] in {'pending','processing'}:
+                    event.update(status='cancelled',lease_token=None,lease_until=None,available_at=None)
+                    self.repository.put_record('outbox',event)
+                resource = None
+                yield event, resource
+                return
             try:
                 run = self.runs.get(event["payload"]["run_id"])
             except DomainNotFound:

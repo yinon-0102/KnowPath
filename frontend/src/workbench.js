@@ -1,5 +1,5 @@
 const aliases = { tasks: 'plan', scope: 'materials', evolution: 'review', diagnostic: 'assessment', comparison: 'plan', replay: 'analysis' };
-export const spaceSections = ['overview', 'plan', 'materials', 'assistant', 'assessment', 'review', 'settings', 'analysis', 'notes'];
+export const spaceSections = ['overview', 'study', 'plan', 'materials', 'assistant', 'assessment', 'review', 'settings', 'analysis', 'notes'];
 export function spacePath(id, section = 'overview', query = {}) {
   const params = new URLSearchParams(Object.entries(query).filter(([, value]) => value != null && value !== ''));
   return `#/space/${encodeURIComponent(id)}/${aliases[section] || section}${params.size ? '?' + params : ''}`;
@@ -18,6 +18,7 @@ export function parseRoute(hash) {
   } catch { return { name: parts[0] || 'overview', id: '', section: 'overview', query }; }
 }
 export function routeState(section) {
+  if (section === 'study') return { tab: 'study', learningSection: 'diagnostic' };
   if (section === 'review') return { tab: 'assessment', learningSection: 'evolution' };
   if (section === 'analysis') return { tab: 'assessment', learningSection: 'replay' };
   if (section === 'plan') return { tab: 'tasks', learningSection: 'comparison' };

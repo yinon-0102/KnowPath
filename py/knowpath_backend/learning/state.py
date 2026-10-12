@@ -28,7 +28,7 @@ from knowpath_backend.learning.notes.service import NotesService
 
 class LearningState:
     def __init__(self, material_repository: MaterialRepository | None = None, *,
-                 run_service: RunService | None = None, space_service: SpaceService | None = None, question_generator=None, answer_generator=None, source_retriever=None, context_settings=None, rag_pipeline=None, note_generator=None) -> None:
+                 run_service: RunService | None = None, space_service: SpaceService | None = None, question_generator=None, answer_generator=None, source_retriever=None, context_settings=None, rag_pipeline=None, note_generator=None, lesson_generator=None) -> None:
         self.material_repository = material_repository or InMemoryMaterialRepository()
         self.material_service = MaterialService(self.material_repository)
         uow = getattr(self.material_repository, "unit_of_work", None)
@@ -62,10 +62,20 @@ class LearningState:
         self.changes: list[dict[str, Any]] = []
         self.plan_sessions = PlanSessionService(learning_repository, space_service, self.run_service, self.assessment_service, self.plans, self.sessions)
         self.assessment_service.plan_sessions = self.plan_sessions
+        from .plans.adjustments import PlanAdjustmentService
+        self.plan_adjustments = PlanAdjustmentService(self.plan_sessions)
+        self.plan_sessions.adjustments = self.plan_adjustments
+        self.assessment_service.adjustments = self.plan_adjustments
+        from .evaluation.recommendations import PolicyRecommendationService
+        self.policy_recommendations = PolicyRecommendationService(self.plan_sessions, self.plan_adjustments)
         self.notes_service = NotesService(learning_repository, space_service, self.assessment_service,
                                          self.plan_sessions, self.run_service, generator=note_generator)
         self.assessment_service.notes = self.notes_service
         self.plan_sessions.notes = self.notes_service
+        from knowpath_backend.learning.lessons.service import StudyLessonService
+        self.lesson_service = StudyLessonService(learning_repository, space_service, self.assessment_service, self.plan_sessions, self.run_service, generator=lesson_generator)
+        self.notes_service.lessons = self.lesson_service
+        self.message_service.lessons = self.lesson_service
         self.material_deletion_service.notes = self.notes_service
         self.knowledge_update_service.notes = self.notes_service
         self.export_service = ExportService(learning_repository, space_service, self.assessment_service, self.plan_sessions, self.run_service)
@@ -77,10 +87,12 @@ class LearningState:
         return self.run_service.create(kind, result_ref, status=status)
 
     def events_for(self, run_id: str, *, after_id: int = 0) -> list[dict[str, Any]]:
+        if self.run_service.get(run_id)['kind']=='lesson_generate':return self.lesson_service.read_run(run_id,after_id=after_id)
         return self.message_service.read_run(run_id, after_id=after_id)
 
     def get_run(self, run_id: str, *, include_events: bool = True) -> dict[str, Any]:
         if include_events:
+            if self.run_service.get(run_id)['kind']=='lesson_generate':return self.lesson_service.read_run(run_id,include_run=True)
             return self.message_service.read_run(run_id, include_run=True)
         return {key: value for key, value in self.run_service.get(run_id).items() if key != "events"}
 
@@ -124,7 +136,9 @@ class LearningState:
         return copy.deepcopy(self.get_space(space_id)["profile"])
 
     def update_profile(self, space_id: str, payload: dict[str, Any], *, idempotency_key: str | None = None) -> dict[str, Any]:
-        return self.space_service.update_profile(space_id, payload, idempotency_key)
+        result = self.space_service.update_profile(space_id, payload, idempotency_key)
+        self.plan_adjustments.enqueue(space_id, 'profile_updated')
+        return result
 
     def _index_material_topics(self, material_id: str, version: Any) -> None:
         for topic in topics_for_version(material_id, version):
@@ -169,6 +183,12 @@ class LearningState:
 
     def get_plan(self, plan_id: str) -> dict[str, Any]:
         return self.plan_sessions.get_plan(plan_id)
+
+    def preview_plan_order(self, plan_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        return self.plan_sessions.preview_plan_order(plan_id, payload)
+
+    def update_plan_order(self, plan_id: str, payload: dict[str, Any], *, idempotency_key=None) -> dict[str, Any]:
+        return self.plan_sessions.update_plan_order(plan_id, payload, idempotency_key)
 
     def get_workbench(self, space_id: str) -> dict[str, Any]:
         return self.plan_sessions.get_workbench(space_id)

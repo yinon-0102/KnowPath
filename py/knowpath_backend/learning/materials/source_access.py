@@ -43,6 +43,15 @@ def matches_delivery(assessment, keys, bound_versions=None):
     return bool(assessment_source_keys(assessment) & keys)
 
 
+def matches_topic_help(assessment, space_id, scope):
+    if not scope or assessment['space_id'] != space_id or assessment['status'] not in ACTIVE_ASSESSMENTS:
+        return False
+    if scope['all_topics']:return True
+    targets={t['id'] for t in assessment['snapshot'].get('topics', [])}
+    targets.update(q.get('topic_id') for q in assessment['questions'])
+    return bool(targets & set(scope['topic_ids']))
+
+
 def apply_source_assistance(questions, snapshot):
     consulted = {source_key(ref) for ref in snapshot.get("consulted_sources", [])}
     for question in questions:
@@ -56,7 +65,7 @@ class SourceAccessService:
         self.assessments = assessments
         self.repository = assessments.repository
 
-    def prepare_delivery(self, sources, space_id, *, include_bound_assessments=False):
+    def prepare_delivery(self, sources, space_id, *, include_bound_assessments=False, assistance_scope=None):
         """Discover related aggregates outside the publication transaction.
 
         The store represents one learner. Every space sharing these original
@@ -66,11 +75,14 @@ class SourceAccessService:
         keys = {source_key(ref) for ref in refs}
         bindings = {(ref["material_id"], ref["material_version_id"]) for ref in refs}
         bound_versions = bindings if include_bound_assessments else None
+        def related_assessment(a):
+            return matches_delivery(a, keys, bound_versions) or matches_topic_help(a, space_id, assistance_scope)
         candidates = [a for a in self.repository.records("assessments", lock=False)
-                      if matches_delivery(a, keys, bound_versions)]
+                      if related_assessment(a)]
         related = {space["id"] for space in self.assessments.spaces.repository.list()
                    if any((b["material_id"], b["material_version_id"]) in bindings for b in space["bindings"])}
         return {"sources": refs, "keys": keys, "bound_versions": bound_versions,
+                "help_space_id": space_id, "assistance_scope": assistance_scope,
                 "assessment_ids": sorted(a["id"] for a in candidates),
                 "space_ids": sorted(related | ({space_id} if space_id is not None else set())
                                     | {a["space_id"] for a in candidates})}
@@ -83,7 +95,7 @@ class SourceAccessService:
                 assessment = self.repository.get_record("assessments", identifier)
             except DomainNotFound:
                 continue
-            if matches_delivery(assessment, plan["keys"], plan["bound_versions"]):
+            if matches_delivery(assessment, plan["keys"], plan["bound_versions"]) or matches_topic_help(assessment, plan.get("help_space_id"), plan.get("assistance_scope")):
                 active.append(assessment)
         spaces = {}
         for identifier in plan["space_ids"]:
@@ -105,7 +117,7 @@ class SourceAccessService:
         # locks. Creation uses the same space lock. A newly discovered aggregate
         # requires rollback/retry, never an assessment lock taken after a space.
         current = {a["id"] for a in self.repository.records("assessments", lock=False)
-                   if matches_delivery(a, plan["keys"], plan["bound_versions"])}
+                   if matches_delivery(a, plan["keys"], plan["bound_versions"]) or matches_topic_help(a, plan.get("help_space_id"), plan.get("assistance_scope"))}
         if current - set(plan["assessment_ids"]):
             raise AssistanceDeliveryChanged()
         return active, spaces.get(space_id)
@@ -124,15 +136,28 @@ class SourceAccessService:
                 continue
             keys = assessment_source_keys(assessment)
             refs = [dict(ref, accessed_at=timestamp) for ref in plan["sources"] if source_key(ref) in keys]
-            if not refs:
+            topic_help = matches_topic_help(assessment, plan.get("help_space_id"), plan.get("assistance_scope"))
+            if not refs and not topic_help:
                 continue
             previous = snapshot.setdefault("consulted_sources", [])
             seen = {source_key(ref) for ref in previous}
             previous.extend(ref for ref in refs if source_key(ref) not in seen)
             topics = [topic["id"] for topic in snapshot.get("topics", [])
                       if any(source_key(ref) in plan["keys"] for ref in topic.get("source_refs", []))]
+            if topic_help:
+                help_scope=plan["assistance_scope"]
+                if help_scope["all_topics"]:
+                    snapshot["all_topics_assisted"] = True
+                    topics = sorted({t["id"] for t in snapshot.get("topics", [])} | {q["topic_id"] for q in assessment["questions"]})
+                else:
+                    topics = sorted(set(topics) | set(help_scope["topic_ids"]))
+                consulted=snapshot.setdefault("consulted_topic_ids", [])
+                consulted.extend(t for t in topics if t not in consulted)
             event = {"kind": kind, "delivery_id": delivery_id, "space_id": space_id,
                      "delivered_at": timestamp, "source_refs": refs, "topic_ids": topics}
+            if topic_help:
+                event["general_assistance"] = True
+                event["scope_uncertain"] = plan["assistance_scope"]["all_topics"]
             if message_id is not None or kind == "message":
                 event["message_id"] = message_id or delivery_id
             events.append(event)

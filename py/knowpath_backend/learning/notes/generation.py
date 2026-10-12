@@ -9,3 +9,6 @@ class ConfiguredNoteGenerator:
 
     def generate_json(self, messages):
         return chat_model(self.settings).generate_json(messages)
+
+    def stream(self,messages):
+        yield from chat_model(self.settings).stream(messages,response_format={'type':'json_object'})

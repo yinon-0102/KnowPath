@@ -19,6 +19,16 @@ def payload():
 def raw(topics):
     return [{"type": "single_choice", "prompt": f"What does function {i} return?", "topic_id": "topic-1", "options": [{"id": "A", "text": "A value"}, {"id": "B", "text": "Nothing"}], "answer_key": "A", "rubric": "Select A.", "source_refs": copy.deepcopy(topics[0]["source_refs"]), "difficulty": ["easy", "easy", "medium", "medium", "hard"][i], "is_application": False} for i in range(5)]
 
+
+def compact_wire(raw):
+    """Provider fixtures speak the short-handle wire; injected fixtures stay legacy."""
+    wire = copy.deepcopy(raw)
+    for question in wire:
+        question["topic_id"] = "t1"
+        refs = question.pop("source_refs")
+        question["source_ids"] = ["s1" if ref["chunk_id"] == "chunk-1" else "unknown" for ref in refs]
+    return wire
+
 def test_server_owned_metadata_and_stable_family(raw, topics, payload):
     raw[0].update(id="forged", family_id="forged", topic_revision_id="wrong", rubric_version="wrong")
     first = validate_questions(raw, topics, payload)
@@ -84,7 +94,7 @@ def test_json_request_source_and_largest_remainder(monkeypatch, topics, payload,
     requests = []
     def respond(request):
         requests.append(request)
-        return httpx.Response(200, json={"choices": [{"message": {"content": json.dumps({"questions": raw})}, "finish_reason": "stop"}]})
+        return httpx.Response(200, json={"choices": [{"message": {"content": json.dumps({"questions": compact_wire(raw)})}, "finish_reason": "stop"}]})
     with httpx.Client(transport=httpx.MockTransport(respond)) as client:
         assert DashScopeQuestionGenerator(client=client).generate(topics, payload) == raw
     assert str(requests[0].url) == "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
@@ -93,9 +103,10 @@ def test_json_request_source_and_largest_remainder(monkeypatch, topics, payload,
     assert body["response_format"] == {"type": "json_object"}
     assert body["enable_thinking"] is False
     assert "untrusted" in body["messages"][0]["content"].lower()
-    assert "a single source passage may support multiple questions" in body["messages"][0]["content"].lower()
+    assert "a single source passage may support" in body["messages"][0]["content"].lower()
     supplied = json.loads(body["messages"][1]["content"])
-    assert supplied["topics"][0]["source_text"] == topics[0]["source_text"]
+    assert supplied["sources"][0]["text"] == topics[0]["source_text"]
+    assert supplied["topics"][0]["source_ids"] == ["s1"]
     assert supplied["difficulty_counts"] == {"easy": 2, "medium": 2, "hard": 1}
 
 
@@ -104,7 +115,7 @@ def test_empty_model_result_retries_with_explicit_support_instruction(monkeypatc
     requests = []
     responses = iter([
         httpx.Response(200, json={"choices": [{"message": {"content": json.dumps({"questions": []})}, "finish_reason": "stop"}]}),
-        httpx.Response(200, json={"choices": [{"message": {"content": json.dumps({"questions": raw})}, "finish_reason": "stop"}]}),
+        httpx.Response(200, json={"choices": [{"message": {"content": json.dumps({"questions": compact_wire(raw)})}, "finish_reason": "stop"}]}),
     ])
 
     def respond(request):
@@ -118,8 +129,8 @@ def test_empty_model_result_retries_with_explicit_support_instruction(monkeypatc
     assert len(requests) == 2
     retry_body = json.loads(requests[1].content)
     retry_system = retry_body["messages"][0]["content"].lower()
-    assert "may reuse" in retry_system and "source_refs" in retry_system
-    assert "must generate exactly question_count questions" in retry_system
+    assert "may reuse" in retry_system and "source_ids" in retry_system
+    assert "must generate exactly question_count" in retry_system
     assert "never return an empty questions array" in retry_system
 @pytest.mark.parametrize("response", [httpx.Response(503, text="private upstream body"), httpx.Response(200, json={"choices": []}), httpx.Response(200, json={"choices": [{"message": {"content": "bad private JSON"}}]}), httpx.Response(200, json={"choices": [{"message": {"content": "{}"}}]}), httpx.Response(200, json={"choices": [{"message": {"content": '{"questions":[]}'}, "finish_reason": "length"}]})])
 def test_upstream_failure_safe(monkeypatch, topics, payload, response):
@@ -187,7 +198,7 @@ def test_configured_endpoint_and_unselected_sources(monkeypatch, topics, payload
         body = json.loads(request.content)
         assert body["model"] == "qwen-turbo"
         assert "excluded text" not in body["messages"][1]["content"]
-        return httpx.Response(200, json={"choices": [{"message": {"content": json.dumps({"questions": raw})}}]})
+        return httpx.Response(200, json={"choices": [{"message": {"content": json.dumps({"questions": compact_wire(raw)})}}]})
     with httpx.Client(transport=httpx.MockTransport(respond)) as client:
         assert len(DashScopeQuestionGenerator(LearningSettings.from_env(), client=client).generate(topics, payload)) == 5
         assert not client.is_closed
@@ -196,7 +207,7 @@ def test_configured_endpoint_and_unselected_sources(monkeypatch, topics, payload
 def test_invalid_model_questions_never_become_generated_fallback(monkeypatch, topics, payload, raw):
     monkeypatch.setenv("DASHSCOPE_API_KEY", "secret")
     raw[0]["source_refs"][0]["chunk_id"] = "invented"
-    response = {"choices": [{"message": {"content": json.dumps({"questions": raw})}}]}
+    response = {"choices": [{"message": {"content": json.dumps({"questions": compact_wire(raw)})}}]}
     with httpx.Client(transport=httpx.MockTransport(lambda request: httpx.Response(200, json=response))) as client:
         with pytest.raises(QuestionGenerationError) as error:
             DashScopeQuestionGenerator(client=client).generate(topics, payload)

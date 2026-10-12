@@ -15,6 +15,10 @@ from knowpath_backend.learning.state import LearningState
 
 
 class FixedAnswer:
+    def classify(self, snapshot):
+        """Explicit frozen semantic provider for source-bound command fixtures."""
+        return {'document_related': True, 'educational': True, 'topic_ids': [],
+                'scope_uncertain': True, 'reason': 'Frozen material fixture'}
     def generate(self, snapshot):
         return {"text": "Functions group reusable behavior.", "citation_ids": [snapshot["sources"][0]["chunk_id"]]}
 
@@ -31,7 +35,11 @@ class FixedQuestions:
 
 
 @pytest.fixture(params=["memory", "sql", "mysql"])
-def workspace(request, tmp_path):
+def workspace(request, tmp_path, monkeypatch):
+    # These command tests intentionally use frozen local facts, regardless of
+    # developer dotenv settings loaded by migration/CLI tests in the same run.
+    monkeypatch.setenv('LEARNING_RETRIEVAL_BACKEND', 'keyword')
+    monkeypatch.setenv('LEARNING_RAG_PLUGIN', 'legacy')
     engine = None
     label = "assessment-test-" + uuid4().hex
     if request.param == "mysql":

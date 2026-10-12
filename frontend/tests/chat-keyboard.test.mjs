@@ -12,6 +12,7 @@ function press(overrides = {}) {
     document: { addEventListener: (_, callback) => { handler = callback; } },
     modal: { classList: { contains: () => false } },
     state: { sending: false },
+    study: { snapshot: () => ({ drawerOpen: false }) },
     $: () => ({ requestSubmit: () => { submissions++; } }),
   });
   vm.runInContext(keyboard, context);
@@ -41,5 +42,12 @@ test('keyboard sending remains scoped to the chat input', () => {
 test('Ctrl and Cmd Enter remain supported', () => {
   for (const event of [{ ctrlKey: true }, { metaKey: true }]) {
     assert.deepEqual(press(event), { submissions: 1, prevented: true });
+  }
+});
+
+test('sidebar Enter submits while Shift and IME preserve the draft', () => {
+  assert.deepEqual(press({ target: { id: 'study-question-input' } }), { submissions: 1, prevented: true });
+  for (const event of [{ shiftKey: true }, { isComposing: true }, { keyCode: 229 }]) {
+    assert.deepEqual(press({ target: { id: 'study-question-input' }, ...event }), { submissions: 0, prevented: false });
   }
 });

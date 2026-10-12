@@ -48,13 +48,22 @@ def main(argv=None):
         state = LearningState(materials)
         worker = ModelTaskWorker(state.assessment_service, state.message_service,
                                  notes=state.notes_service,
+                                 lessons=state.lesson_service,
                                  lease_seconds=args.lease_seconds, max_attempts=args.max_attempts,
                                  max_execution_seconds=args.max_execution_seconds)
         ready = True
         log_event(logger, 'worker.started', poll_seconds=args.poll_seconds)
         while True:
             try:
-                handled = worker.run_once()
+                # Pure planning jobs share the process, not the model executor.
+                rule_handled = False
+                try:
+                    state.plan_adjustments.tick()
+                    rule_handled = state.plan_adjustments.run_once()
+                except Exception as exc:
+                    log_event(logger, 'worker.rules.failed', level=logging.ERROR, exc=exc)
+                handled = False if args.once and rule_handled else worker.run_once()
+                handled = handled or rule_handled
                 if failures:
                     log_event(logger, 'worker.poll.recovered', consecutive_failures=failures)
                 failures = 0

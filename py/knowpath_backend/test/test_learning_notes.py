@@ -5,6 +5,7 @@ from knowpath_backend.learning.notes.service import NotesService
 from knowpath_backend.test.test_learning_workbench import workbench
 from knowpath_backend.test.test_learning_note_integration import completed
 from knowpath_backend.learning.workers.model_tasks import ModelTaskWorker
+from uuid import uuid4
 
 def notes_fixture():
     state, sid, _ = seed(InMemoryMaterialRepository())
@@ -96,3 +97,55 @@ def test_material_scrub_cancels_snapshot_and_keeps_personal(workbench):
     generation = notes.repository.get_record('note_generations', ref['generation_id'])
     assert generation['snapshot'] == {} and generation['status'] == 'cancelled'
     assert state.get_run(ref['run_id'])['status'] == 'cancelled'
+
+def test_scrub_preserves_unrelated_job_in_same_chapter(workbench):
+    _, state, sid, _, _ = workbench
+    _, _, assessment = completed(state, sid)
+    notes = state.notes_service
+    ref = state.assessment_result(assessment['id'])['notes']
+    original = notes.repository.get_record('note_generations', ref['generation_id'])
+    deleted = original['snapshot']['sources'][0]['material_id']
+    other = dict(original, id=str(uuid4()), assessment_id=str(uuid4()), run_id=state.run_service.create('note_generate')['id'], snapshot={'sources': [{'material_id': 'unrelated-B', 'material_version_id': 'B-version', 'chunk_id': 'B-chunk'}]})
+    notes.repository.put_record('note_generations', other)
+    notes.delete_material(deleted)
+    surviving = notes.repository.get_record('note_generations', other['id'])
+    assert surviving['status'] == 'generating' and surviving['snapshot'] == other['snapshot']
+    assert state.get_run(other['run_id'])['status'] == 'queued'
+
+def test_duplicate_model_corrections_have_stable_unique_identity(workbench):
+    _, state, sid, _, _ = workbench
+    _, _, assessment = completed(state, sid, wrong=True)
+    notes = state.notes_service
+    ref = state.assessment_result(assessment['id'])['notes']
+    class Generator:
+        def generate(self, snapshot):
+            e = snapshot['evidence'][0]
+            item = {'evidence_id': e['id'], 'markdown': '纠正解释'}
+            return {'items': [dict(item), dict(item)], 'corrections': [dict(item), dict(item)]}
+    notes.generator = Generator()
+    ModelTaskWorker(notes=notes, max_attempts=1).run_once()
+    chapter = notes.chapter(ref['chapter_id'])
+    assert chapter['correction_count'] == 1
+    assert len(chapter['corrections']) == 1
+    assert len(chapter['blocks'][0]['items']) == 1
+
+def test_personal_without_locators_resolves_topics_and_audits_new_assessment(workbench, monkeypatch):
+    _, state, sid, _, _ = workbench
+    plan = state.create_plan(sid, {})
+    notes = state.notes_service
+    cid = notes.notebook(sid)['chapters'][0]['id']
+    chapter = notes.repository.get_record('note_chapters', cid)
+    chapter['source_refs'] = []
+    chapter['blocks'] = [{'id': 'personal', 'kind': 'personal', 'markdown': '理解记录', 'source_refs': []}]
+    notes.repository.put_record('note_chapters', chapter)
+    from knowpath_backend.learning.materials.source_access import SourceAccessService
+    original = SourceAccessService.prepare_delivery
+    created = []
+    def create_during_discovery(self, refs, space_id, **kwargs):
+        if not created:
+            created.append(state.create_assessment(sid, {'kind': 'practice', 'question_count': 5, 'difficulty_mix': {'easy': 1.0, 'medium': 0.0, 'hard': 0.0}})['id'])
+        return original(self, refs, space_id, **kwargs)
+    monkeypatch.setattr(SourceAccessService, 'prepare_delivery', create_during_discovery)
+    notes.chapter(cid)
+    active = notes.repository.get_record('assessments', created[0])
+    assert any(q.get('assisted') for q in active['questions'])

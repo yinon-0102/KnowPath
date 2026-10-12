@@ -22,9 +22,13 @@ from knowpath_backend.learning.assessments.question_reviews import report_questi
 from knowpath_backend.learning.assessments.generation import DashScopeQuestionGenerator, QuestionGenerationError, validate_questions
 from knowpath_backend.learning.spaces.service import SpaceService, now
 from knowpath_backend.learning.materials.source_access import apply_source_assistance
-from knowpath_backend.learning.workers.model_tasks import ModelTaskWorker, TRANSIENT_ERRORS, enqueue
+from knowpath_backend.learning.workers.model_tasks import ModelTaskWorker, TRANSIENT_ERRORS, enqueue, LeaseLost
 
 logger = logging.getLogger(__name__)
+
+
+class _GenerationStopped(Exception):
+    """A stage boundary found that this execution no longer owns publication."""
 
 
 def uid():
@@ -35,7 +39,10 @@ def revision(topic):
     return topic.get("learning_revision_id") or sha256(json.dumps(topic["source_refs"], sort_keys=True).encode()).hexdigest()
 
 
-class AssessmentService:
+from .activity import AssessmentActivity
+
+
+class AssessmentService(AssessmentActivity):
     def __init__(self, repository, spaces, runs, generator=None, *, mastery_policy=None):
         self.repository, self.spaces, self.runs = repository, spaces, runs
         self.generator = generator if generator is not None else DashScopeQuestionGenerator()
@@ -50,6 +57,10 @@ class AssessmentService:
                 if diagnostic is not None and payload["question_id"] not in diagnostic["presented_question_ids"]:
                     raise DomainConflict("QUESTION_NOT_PRESENTED", "未展示的诊断题目不可复核")
             response = change()
+            if getattr(self, 'adjustments', None) is not None and operation in {
+                    'assessment.grade_review', 'assessment.question_report', 'assessment.question_resolution'}:
+                owner = self.repository.get_record('assessments', identifier)['space_id']
+                self.adjustments.enqueue(owner, operation)
             notes = getattr(self, "notes", None)
             if notes is not None and operation in {"assessment.finalize", "assessment.attempt",
                     "assessment.grade_review", "assessment.question_report",
@@ -94,11 +105,13 @@ class AssessmentService:
             topics = [t for t in topics if t["id"] in requested]
             # Freeze actual source text and refs before leaving the transaction.
             for topic in topics:
-                texts = []
+                passages = []
                 for ref in topic["source_refs"]:
                     version = self.spaces.materials.get_version(ref["material_version_id"])
-                    texts.extend(c.text for c in version.chunks if c.id == ref["chunk_id"])
-                topic["source_text"] = "\n\n".join(texts)
+                    passages.extend({"text": c.text, "source_refs": [copy.deepcopy(ref)]}
+                                    for c in version.chunks if c.id == ref["chunk_id"])
+                topic["source_passages"] = passages
+                topic["source_text"] = "\n\n".join(p["text"] for p in passages)
             run = self.runs.create("assessment_generation", status="queued" if durable else "running")
             assessment = {"id": uid(), "space_id": space_id, "kind": payload["kind"],
                 "status": "generating", "topic_ids": requested, "questions": [], "result": None,
@@ -132,6 +145,32 @@ class AssessmentService:
                 dispatch(self.generate, response["id"])
         return response
 
+    def _generation_stage(self, assessment_id, run_id, stage, job=None):
+        """Fence each persisted phase with the current owner, lease and Run."""
+        with self.repository.transaction():
+            try:
+                current = self.repository.get_record("assessments", assessment_id)
+                self.spaces.repository.get(current["space_id"])
+                if current["status"] != "generating" or current["run_id"] != run_id:
+                    return False
+                if job is not None:
+                    job.check()
+                run = self.runs.get(run_id)
+                if run["status"] in {"cancelling", "cancelled"}:
+                    self.runs.acknowledge_cancel(run_id)
+                    current["status"] = "cancelled"
+                    self.repository.put_record("assessments", current)
+                    if job is not None:
+                        job.settle()
+                    return False
+                if run["status"] != "running":
+                    return False
+                if run.get("assessment_stage") != stage:
+                    self.runs.append_event(run_id, "assessment.stage", {"stage": stage})
+                return True
+            except DomainNotFound:
+                return False
+
     def generate(self, assessment_id, *, job=None):
         try:
             assessment = self.repository.get_record("assessments", assessment_id)
@@ -140,12 +179,24 @@ class AssessmentService:
         if assessment["status"] != "generating":
             return
         snapshot = assessment["snapshot"]
+        def stage_boundary(stage):
+            if not self._generation_stage(assessment_id, assessment["run_id"], stage, job):
+                raise _GenerationStopped()
         error = None
         try:
             with span(logger, 'assessment.generate', assessment_id=assessment_id) as metrics:
-                raw = self.generator.generate(snapshot["topics"], snapshot["request"])
+                if getattr(self.generator.generate, "__func__", None) is DashScopeQuestionGenerator.generate:
+                    raw = self.generator.generate(snapshot["topics"], snapshot["request"], on_stage=stage_boundary)
+                else:
+                    stage_boundary("generating_questions")
+                    raw = self.generator.generate(snapshot["topics"], snapshot["request"])
+                stage_boundary("validating_questions")
                 questions = validate_questions(raw, snapshot["topics"], snapshot["request"])
                 metrics['question_count'] = len(questions)
+        except _GenerationStopped:
+            return
+        except LeaseLost:
+            raise
         except QuestionGenerationError as exc:
             error = {"code": exc.code, "message": str(exc), "details": {}, "retryable": exc.code in TRANSIENT_ERRORS}
         except Exception:
@@ -159,7 +210,7 @@ class AssessmentService:
                 return  # Discard output generated while the space was deleted.
             if job is not None:
                 job.check()
-            if current["status"] != "generating":
+            if current["status"] != "generating" or current["run_id"] != assessment["run_id"]:
                 return
             run = self.runs.get(current["run_id"])
             if run["status"] in {"cancelling", "cancelled"}:
@@ -180,6 +231,7 @@ class AssessmentService:
                 current.update(status="ready", questions=questions)
                 if current["snapshot"].get("adaptive") and self._refresh_runtime_exposures(current):
                     adaptive.select_next(current)
+                self.runs.append_event(run["id"], "assessment.stage", {"stage": "ready"})
                 self.runs.complete(run["id"], {"type": "assessment", "id": assessment_id})
             self.repository.put_record("assessments", current)
             if job is not None:
@@ -305,6 +357,7 @@ class AssessmentService:
                 question = questions.get(item["question_id"])
                 if question is None:
                     raise DomainConflict("QUESTION_NOT_IN_ASSESSMENT", "题目不属于当前测验")
+                self.finish_question_activity(assessment, question['id'])
                 old = latest.get(item["question_id"])
                 current_revision = old["answer_revision"] if old else 0
                 if current_revision != item["expected_answer_revision"]:
@@ -395,6 +448,7 @@ class AssessmentService:
             self._recompute(space["id"], topic_id, current_topics[topic_id], epochs.get(topic_id, 0), version, timestamp)
         space["state_version"] = version
         self.spaces.repository.put(space)
+        self.finish_assessment_activity(assessment)
         assessment.update(status="completed", result={"assessment_id": assessment["id"], "graded_at": timestamp,
             "topic_results": topic_results, "question_results": question_results, "state_version": version,
             "plan_replan_run_id": None})
@@ -405,6 +459,12 @@ class AssessmentService:
             adaptive.update_hypotheses(assessment, self._diagnostic_observations(assessment, answers))
         self.repository.put_record("assessments", assessment)
         self.runs.complete(run["id"], {"type": "assessment", "id": assessment["id"]})
+        if getattr(self, 'adjustments', None) is not None:
+            adjustment = self.adjustments.enqueue(space['id'], 'assessment_completed')
+            if adjustment:
+                assessment['result']['plan_replan_run_id'] = adjustment['run_id']
+                assessment['result']['adjustment'] = adjustment
+                self.repository.put_record('assessments', assessment)
         if getattr(self, "notes", None) is not None:
             self.notes.enqueue_assessment(assessment)
         return {"run_id": run["id"], "assessment_id": assessment["id"], "status": "processing"}
@@ -439,6 +499,14 @@ class AssessmentService:
         result = copy.deepcopy(assessment["result"])
         if getattr(self, "notes", None) is not None:
             result["notes"] = self.notes.assessment_reference(assessment_id)
+        adjustment = result.get('adjustment')
+        if adjustment and getattr(self, 'adjustments', None):
+            try:
+                record = self.repository.get_record('plan_adjustments', adjustment['id'], lock=False)
+                result['adjustment'] = {k: record.get(k) for k in ('id', 'status', 'run_id', 'plan_id', 'error', 'changed_count')}
+            except DomainNotFound:
+                result.pop('adjustment', None)
+                result['plan_replan_run_id'] = None
         return result
 
     def state(self, space_id, *, topic_id=None, status=None, include_evidence=False):
@@ -545,6 +613,8 @@ class AssessmentService:
                 self._recompute(space_id, topic_id, topics[topic_id], version, version, timestamp)
             space["state_version"] = version
             self.spaces.repository.put(space)
+            if getattr(self, 'adjustments', None):
+                self.adjustments.enqueue(space_id, 'state_reset')
             return self.state(space_id)
         return self._execute("state.reset", space_id, payload, key, change)
 

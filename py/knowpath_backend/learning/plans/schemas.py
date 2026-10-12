@@ -17,9 +17,15 @@ class StrictPlanRequest(BaseModel):
         return value
 
 class CreatePlan(StrictPlanRequest):
+    schedule_mode: Literal['session_window', 'budget_rolling'] | None = None
+    daily_minutes: int = Field(default=30, ge=1, le=480)
+    horizon_days: int = Field(default=7, ge=1, le=30)
+    calendar_timezone: str = Field(default='Asia/Shanghai', min_length=1, max_length=64)
     session_count: int = Field(default=3, ge=3, le=5)
     minutes_per_session: int = Field(default=30, ge=10, le=120)
     include_review: bool = True
+    order_mode: Literal["source", "adaptive"] | None = None
+    material_order: list[str] | None = None
     rebuild_mode: Literal["initial", "local_replan"] = "initial"
     base_plan_id: str | None = Field(default=None, min_length=1)
     expected_plan_version: int | None = Field(default=None, ge=1)
@@ -62,3 +68,18 @@ class SessionEvent(StrictPlanRequest):
     question_id: str | None = Field(default=None, min_length=1)
     client_timestamp: datetime | None = None
     event_id: str | None = Field(default=None, min_length=1, max_length=128)
+
+
+class OrderPlan(StrictPlanRequest):
+    expected_plan_version: int = Field(ge=1)
+    order_mode: Literal["source", "adaptive", "custom"]
+    material_order: list[str] | None = None
+    ordered_node_ids: list[str] | None = None
+
+    @model_validator(mode="after")
+    def custom_fields(self):
+        if self.order_mode == "custom" and self.ordered_node_ids is None:
+            raise ValueError("custom 必须提供 ordered_node_ids")
+        if self.order_mode != "custom" and self.ordered_node_ids is not None:
+            raise ValueError("只有 custom 可以提供 ordered_node_ids")
+        return self

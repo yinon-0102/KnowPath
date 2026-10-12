@@ -1,5 +1,29 @@
 import { esc } from './store.js';
 
+export function createProgressDock({ Observer = globalThis.IntersectionObserver, offset = 80 } = {}) {
+  let observer, panel, dock, visible, generation = 0;
+  function setVisible(value) {
+    if (!dock || visible === value) return;
+    visible = value; dock.classList.toggle('visible', value); dock.inert = !value;
+    dock.setAttribute('aria-hidden', String(!value));
+  }
+  function dispose() { generation++; observer?.disconnect(); observer = panel = dock = null; visible = undefined; }
+  function mount(nextPanel, nextDock, top = offset) {
+    if (panel === nextPanel && dock === nextDock) return;
+    dispose(); panel = nextPanel; dock = nextDock;
+    if (!panel || !dock) return;
+    const ticket = generation;
+    setVisible(panel.getBoundingClientRect().bottom <= top);
+    if (!Observer) return;
+    observer = new Observer(entries => {
+      if (ticket !== generation) return;
+      for (const entry of entries) if (entry.target === panel) setVisible(entry.boundingClientRect.bottom <= top);
+    }, { rootMargin: `-${top}px 0px 0px 0px`, threshold: 0 });
+    observer.observe(panel);
+  }
+  return { mount, dispose };
+}
+
 const rows = value => Array.isArray(value) ? value : [];
 const present = value => value !== undefined && value !== null && value !== '';
 const finite = value => present(value) && Number.isFinite(Number(value));
@@ -9,6 +33,27 @@ const taskStates = { completed: '已完成', pending: '待学习', active: '学�
 const labels = { ...taskStates, ready: '可学习', in_progress: '学习中', needs_replan: '需更新计划', superseded: '已有更新计划', stale: '需更新计划', archived: '已归档', finished: '已结束', paused: '已暂停', failed: '失败', cancelled: '已取消', generating: '正在出题', grading: '正在评分', diagnostic: '诊断测评', practice: '练习测评', retest: '复测', learn: '学习', review: '复习', correct: '正确', incorrect: '错误', unverified: '未验证', partial: '部分正确', invalid: '已作废' };
 const label = value => labels[value] || value || '未记录';
 const unavailablePlan = status => ['superseded', 'stale', 'archived', 'cancelled', 'failed'].includes(status);
+
+export function taskDisplay(task, index, { historical = false } = {}) {
+  const original = taskName(task);
+  const prefix = original.match(/^\s*(\d+(?:\.\d+)*|第[一二三四五六七八九十百零\d]+[章节])[.、．]?\s+(.+)$/);
+  const sealedSequence = task?.sequence ?? task?.context?.sequence;
+  const keepHistorical = historical || task?.historical || task?.context?.historical;
+  const ordinal = keepHistorical && finite(sealedSequence) ? Number(sealedSequence) : Number.isInteger(index) ? index + 1 : finite(task?.context?.position) ? Number(task.context.position) + 1 : finite(sealedSequence) ? Number(sealedSequence) : null;
+  const name = prefix ? prefix[2] : original;
+  const refs = rows(task?.context?.source_refs || task?.source_refs);
+  const located = refs.find(ref => ref.section_path?.length || finite(ref.page) || finite(ref.line_start));
+  const location = located?.section_path?.length ? rows(located.section_path).join(' / ') : finite(located?.page) ? `第 ${located.page} 页` : finite(located?.line_start) ? `第 ${located.line_start} 行` : '';
+  const sourceLabel = task?.context?.source_label || task?.source_label || (prefix ? `原文章节 ${prefix[1]}` : location || '原文位置未记录');
+  return { ordinal, name, sourceLabel, title: ordinal ? `节点 ${ordinal} · ${name}` : name };
+}
+
+export function nodeSessionState(node, session) {
+  const active = present(node.active_session_id);
+  const matched = active && session && (session.id || session.session_id) === node.active_session_id && session.status === 'active';
+  const eligible = !node.historical && !node.context?.historical && ['pending', 'in_progress', 'active'].includes(node.status);
+  return { active: active && eligible, running: !!(matched && eligible && session.paused === false), paused: !!(matched && eligible && session.paused === true) };
+}
 
 function sortedNodes(nodes, schedule = false) {
   return rows(nodes).filter(Boolean).map((node, index) => ({ node, index })).sort((a, b) => {
@@ -48,37 +93,41 @@ export function currentProgressNodes(progress, currentPlan = null) {
   }), true);
 }
 
-function nodeStrip(nodes, heading) {
+function nodeStrip(nodes, heading, { activeSession = null, historical = false } = {}) {
   if (!nodes.length) return '<p class="progress-empty">暂无学习节点</p>';
   return `<div class="progress-scroll" role="region" aria-label="${esc(heading)}节点，可横向滚动" tabindex="0"><ol class="progress-track">${nodes.map((node, index) => {
     const state = ['completed', 'pending', 'skipped', 'deferred'].includes(node.status) ? node.status : 'pending';
-    const active = present(node.active_session_id);
-    const status = active && state !== 'completed' ? '学习中' + (state === 'pending' || state === 'active' ? '' : ' · ' + label(node.status)) : label(node.status);
-    const ordinal = finite(node.sequence) && Number(node.sequence) > 0 ? Number(node.sequence) : index + 1;
-    const name = taskName(node);
+    const { active, running, paused } = nodeSessionState(node, activeSession);
+    const status = paused ? '已暂停' : active ? '学习中' : label(node.status);
+    const { ordinal, name, sourceLabel } = taskDisplay(node, index, { historical });
+    const forecast = node.duration_forecast || node.context?.duration_forecast;
     const minutes = finite(node.estimated_minutes) && Number(node.estimated_minutes) >= 0 ? ` · 预计 ${Number(node.estimated_minutes)} 分钟` : '';
+    const allocations = rows(node.allocations || node.context?.allocations);
+    const allocationState = node.allocation_state || node.context?.allocation_state;
+    const splitTime = forecast ? `学习 ${Number(forecast.study_minutes || 0)} · 作答 ${Number(forecast.answer_minutes || 0)} 分钟` : '';
+    const scheduling = allocationState === 'not_required' ? '当前无需安排' : ['waiting_capacity', 'blocked', 'partial'].includes(allocationState) ? node.allocation_reason || node.context?.allocation_reason || '等待可用预算' : allocations.length > 1 ? `分 ${allocations.length} 个时段安排` : '';
     const accessible = `${ordinal}. ${name}，${status}${minutes}${node.historical ? '，历史任务' : ''}`;
     const connector = index ? `<span class="progress-connector ${nodes[index - 1].status === 'completed' && node.status === 'completed' ? 'completed' : 'pending'}" aria-hidden="true"></span>` : '';
     const glyph = state === 'completed' ? '<svg class="progress-check" viewBox="0 0 20 20" aria-hidden="true"><path d="m5 10 3 3 7-7" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>' : state === 'skipped' ? '<span aria-hidden="true">−</span>' : state === 'deferred' ? '<span aria-hidden="true">↷</span>' : '<span class="progress-hollow" aria-hidden="true"></span>';
-    return `<li class="progress-step">${connector}<button type="button" class="progress-node ${state}${active ? ' active' : ''}${node.selected ? ' selected' : ''}" data-action="progress-node" data-plan="${esc(node.plan_id)}" data-task="${esc(node.task_id)}" data-node="${esc(node.node_id)}" aria-label="${esc(accessible)}"${node.selected ? ' aria-pressed="true"' : ''}${!present(node.plan_id) || !present(node.task_id) ? ' disabled' : ''}><span class="progress-dot">${glyph}</span><span class="progress-node-title"><span class="progress-ordinal">${esc(ordinal)}.</span> ${esc(name)}</span><span class="progress-node-status">${esc(status)}${node.historical ? ' · 历史' : ''}</span></button></li>`;
+    return `<li class="progress-step">${connector}<button type="button" class="progress-node ${state}${active ? ' active' : ''}${running ? ' running' : ''}${paused ? ' paused' : ''}${node.selected ? ' selected' : ''}" data-action="progress-node" data-plan="${esc(node.plan_id)}" data-task="${esc(node.task_id)}" data-node="${esc(node.node_id)}" aria-label="${esc(accessible + '，' + sourceLabel)}" aria-pressed="${Boolean(node.selected)}"${!present(node.plan_id) || !present(node.task_id) ? ' disabled' : ''}><span class="progress-dot">${glyph}</span><span class="progress-node-title"><span class="progress-ordinal">节点 ${esc(ordinal)}</span> · ${esc(name)}</span><span class="progress-node-source">${esc(sourceLabel)}</span>${splitTime ? `<span class="progress-node-source">${esc(splitTime)}</span>` : ''}${scheduling ? `<span class="progress-node-source">${esc(scheduling)}</span>` : ''}<span class="progress-node-status">${esc(status)}${node.historical ? ' · 历史' : ''}</span></button></li>`;
   }).join('')}</ol></div>`;
 }
 
 const countText = nodes => `已完成 ${nodes.filter(node => node.status === 'completed').length} / ${nodes.length}`;
 const timestamp = value => !present(value) ? '未记录' : `<time${Number.isFinite(Date.parse(value)) ? ` datetime="${esc(value)}"` : ''}>${esc(String(value).replace('T', ' ').replace(/Z$/, ' UTC'))}</time>`;
 
-export function renderProgress(progress, { currentPlan = null, compact = false, expandedRounds = [] } = {}) {
+export function renderProgress(progress, { currentPlan = null, compact = false, expandedRounds = [], showHeading = true, historyOnly = false, activeSession = null } = {}) {
   const current = currentRound(progress, currentPlan);
   const currentNodes = currentProgressNodes(progress, currentPlan);
-  let html = `<div class="learning-node-progress${compact ? ' compact' : ''}"><section class="progress-current" data-progress-view="current" aria-label="当前计划进度"><div class="progress-heading"><h3>当前计划</h3>${current ? `<span>${esc(countText(currentNodes))}</span>` : ''}</div>${current ? nodeStrip(currentNodes, '当前计划') : '<p class="progress-empty">尚未生成当前计划，暂无学习节点</p>'}</section>`;
+  let html = `<div class="learning-node-progress${compact ? ' compact' : ''}">${historyOnly ? '' : `<section class="progress-current" data-progress-view="current" aria-label="当前计划进度">${showHeading ? `<div class="progress-heading"><h3>当前计划</h3>${current ? `<span>${esc(countText(currentNodes))}</span>` : ''}</div>` : ''}${current ? nodeStrip(currentNodes, '当前计划', { activeSession }) : '<p class="progress-empty">尚未生成当前计划，暂无学习节点</p>'}</section>`}`;
   if (!compact) {
-    const rounds = chronologicalRounds(progress);
+    const rounds = chronologicalRounds(progress).filter(round => !historyOnly || round.plan_id !== current?.plan_id);
     const expanded = new Set(rows(expandedRounds));
     const counters = finite(progress?.completed_count) && finite(progress?.total_count) && Number(progress.completed_count) >= 0 && Number(progress.total_count) >= Number(progress.completed_count) ? `已完成 ${Number(progress.completed_count)} / ${Number(progress.total_count)}` : '';
     html += `<section class="progress-cumulative" data-progress-view="cumulative" aria-label="空间累计进度"><div class="progress-heading"><h3>空间累计</h3>${counters ? `<span>${esc(counters)}</span>` : ''}</div>${rounds.length ? rounds.map(round => {
       const isCurrent = round.plan_id === current?.plan_id;
       const nodes = sortedNodes(round.nodes);
-      return `<details class="progress-round${isCurrent ? ' current' : ''}" data-round="${esc(round.plan_id)}"${isCurrent || expanded.has(round.plan_id) ? ' open' : ''}><summary><span>${isCurrent ? '当前轮次' : '历史轮次'} · ${timestamp(round.created_at)}</span><span>${esc(label(round.status))} · ${esc(countText(nodes))}</span></summary>${nodeStrip(nodes, '累计轮次')}</details>`;
+      return `<details class="progress-round${isCurrent ? ' current' : ''}" data-round="${esc(round.plan_id)}"${isCurrent || expanded.has(round.plan_id) ? ' open' : ''}><summary><span>${isCurrent ? '当前轮次' : '历史轮次'} · ${timestamp(round.created_at)}</span><span>${esc(label(round.status))} · ${esc(countText(nodes))}</span></summary>${nodeStrip(nodes, '累计轮次', { historical: true })}</details>`;
     }).join('') : '<p class="progress-empty">暂无学习节点</p>'}${present(progress?.next_cursor) ? `<div class="progress-pagination"><button type="button" class="button button-secondary" data-action="progress-more" data-space="${esc(progress.space_id)}" data-cursor="${esc(progress.next_cursor)}">加载更多历史轮次</button></div>` : ''}</section>`;
   }
   return html + '</div>';

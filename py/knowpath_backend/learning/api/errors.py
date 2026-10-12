@@ -30,6 +30,11 @@ def install_error_handlers(app: FastAPI) -> None:
 
     @app.exception_handler(RequestValidationError)
     async def validation_error(_: Request, exc: RequestValidationError) -> JSONResponse:
+        import logging
+        from knowpath_backend.observability import log_event
+        record_http_error("INVALID_REQUEST")
+        log_event(logging.getLogger(__name__), "http.validation.failed",
+                  errors=[{"loc": list(e["loc"]), "type": e["type"]} for e in exc.errors()])
         return _error_response(
             status_code=422,
             code="INVALID_REQUEST",

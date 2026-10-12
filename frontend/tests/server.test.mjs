@@ -60,6 +60,9 @@ test('every module imported by the app is served as JavaScript', async t => {
     for (const match of source.matchAll(/\bimport\s+(?:[^'";]*?\s+from\s+)?['"](\.[^'"]+)['"]/g)) {
       pending.push(new URL(match[1], base + pathname).pathname);
     }
+    for (const match of source.matchAll(/\bimport\s*\(\s*['"](\.[^'"]+)['"]\s*\)/g)) {
+      pending.push(new URL(match[1], base + pathname).pathname);
+    }
   }
 });
 

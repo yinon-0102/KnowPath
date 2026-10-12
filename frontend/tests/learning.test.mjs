@@ -55,7 +55,7 @@ test('knowledge setup reaches generation exactly and survives a page reload', as
 test('learning routes render one functional panel at a time', () => {
   for (const section of ['diagnostic', 'evolution', 'comparison', 'replay']) {
     const html = renderLearning({ mode: 'live', section, space: { id: 's1', name: 'Space' }, state: {} });
-    assert.equal(html.split('<section class="panel learning-panel"').length - 1, 1);
+    assert.equal(html.split('<section class="panel learning-panel"').length - 1, section === 'replay' ? 2 : 1);
     assert.ok(html.includes(`id="learning-${section}"`));
     assert.ok(html.includes(`href="#/learning/${section}" aria-current="page"`));
   }
@@ -251,7 +251,7 @@ test('adaptive controller starts, polls, answers only current question and final
   assert.equal(calls[0].adaptive, true);
   assert.equal(calls[1], 'r1');
   await controller.answer('A');
-  assert.deepEqual(calls[2], { answers: [{ question_id: 'q1', expected_answer_revision: 0, answer: 'A', elapsed_seconds: 0 }] });
+  assert.deepEqual(calls[2], { answers: [{ question_id: 'q1', expected_answer_revision: 0, answer: 'A' }] });
   assert.equal(controller.snapshot().diagnostic.current_question.id, 'q2');
   await controller.answer('B');
   await controller.finalize();

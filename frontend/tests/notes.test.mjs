@@ -8,6 +8,44 @@ import { readFile } from 'node:fs/promises';
 test('notes space route keeps chapter and revision', () => {
   assert.equal(parseRoute('#/space/s/notes?chapter=c&revision=v').section, 'notes');
 });
+
+const notebookWithGeneratedChapter = () => ({
+  space_id: 's', name: 'Python 入门', directory: 'review-notes/python-s/',
+  chapters: [{ id: 'c', number: '1.1', title: '3. 循环、range 与列表', filename: '1.1-3. 循环、range 与列表.md', status: 'IN_PROGRESS', generation_status: '已生成' }],
+  readme_markdown: '# Python 入门\n\n| 章节 | 状态 |\n| --- | --- |\n| [1.1 3. 循环、range 与列表](1.1-3. 循环、range 与列表.md) | 进行中 |',
+});
+
+test('README links with Chinese filenames and spaces open the cloud chapter rather than a local file', () => {
+  const html = notes.renderNotes({ notebook: notebookWithGeneratedChapter() });
+  const readme = html.slice(html.indexOf('<summary>查看 README</summary>'));
+  assert.match(readme, /<a href="#\/space\/s\/notes\?chapter=c"[^>]*>1\.1 3\. 循环、range 与列表<\/a>/);
+  assert.doesNotMatch(readme, /\[1\.1 3\./);
+  assert.doesNotMatch(readme, /href="1\.1-/);
+});
+
+test('generated chapters have an explicit reading action even while mastery remains in progress', () => {
+  const html = notes.renderNotes({ notebook: notebookWithGeneratedChapter() });
+  assert.match(html, /<a[^>]+href="#\/space\/s\/notes\?chapter=c"[^>]*>查看笔记<\/a>/);
+  assert.match(html, /进行中/);
+});
+
+test('opening a chapter displays generated body before the notebook index and exposes the selected chapter', () => {
+  const html = notes.renderNotes({ notebook: notebookWithGeneratedChapter(), chapter: {
+    id: 'c', space_id: 's', number: '1.1', title: '3. 循环、range 与列表', status: 'IN_PROGRESS', generation_status: '已生成',
+    blocks: [{ id: 'b', kind: 'assessment', markdown: '## 核心知识\n\n循环用于重复执行。' }],
+  } });
+  assert.ok(html.indexOf('循环用于重复执行。') < html.indexOf('notes-index'), 'the chapter must not be buried below the README index');
+  assert.match(html, /aria-current="page"/);
+  assert.match(html, /返回笔记索引/);
+});
+
+test('README does not make unrelated relative files or executable addresses into chapter links', () => {
+  const book = notebookWithGeneratedChapter();
+  book.readme_markdown += '\n\n[未知资料](other.md)\n[危险](javascript:alert)\n[外部来源](https://example.com)';
+  const html = notes.renderNotes({ notebook: book });
+  assert.doesNotMatch(html, /href="(?:other\.md|javascript:)/);
+  assert.match(html, /href="https:\/\/example.com"/);
+});
 test('notebook API methods use authenticated backend routes and optimistic version', async () => {
   const original = globalThis.fetch, seen = [];
   globalThis.fetch = async (url, options) => { seen.push({ url, options }); return { ok: true, status: 200, json: async () => ({ items: [] }) }; };
@@ -36,6 +74,13 @@ test('Markdown escapes HTML and unsafe links while preserving code and safe link
   assert.match(html, /<h1>标题<\/h1>/);
   assert.match(html, /<pre><code/);
   assert.match(html, /href="https:\/\/example.com"/);
+});
+
+test('Markdown preserves ordered steps, quotes and tables in real learning documents', () => {
+  const html = notes.renderNoteMarkdown('## 操作步骤\n\n2. 定义变量\n3. 输出结果\n\n> 注意变量类型\n\n| 类型 | 示例 |\n| --- | --- |\n| `int` | **42** |\n\n---');
+  assert.match(html, /<ol start="2">/); assert.match(html, /<blockquote>/);
+  assert.match(html, /<table>/); assert.match(html, /<th>类型<\/th>/);
+  assert.match(html, /<td><code>int<\/code><\/td>/); assert.match(html, /<hr/);
 });
 test('generation refresh preserves draft and conflict save preserves user content', async () => {
   const chapter = { id: 'c', space_id: 's', version: 1, blocks: [{ id: 'b', kind: 'summary', markdown: 'original' }], generations: [] };

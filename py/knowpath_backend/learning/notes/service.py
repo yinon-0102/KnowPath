@@ -80,6 +80,7 @@ class NotesService:
         lines = ['# ' + book['name'], '', '| 章节 | 状态 | 纠偏数量 | 更新时间 |', '| --- | --- | --- | --- |']
         for c in chapters:
             lines.append(f"| [{c['number']} {c['title']}]({c['filename']}) | {'已完成' if c['status'] == 'COMPLETED' else '进行中'} | {c['correction_count']} | {c['updated_at']} |")
+        lines.extend(['', f"完成比例：{completed}/{len(chapters)}（{completed / len(chapters):.0%}）" if chapters else '完成比例：0/0（暂无章节）'])
         summaries = [{k: copy.deepcopy(v) for k, v in c.items() if k not in {'blocks', 'corrections'}} for c in chapters]
         return dict(book, chapters=summaries, readme='\n'.join(lines), readme_markdown='\n'.join(lines), completion_ratio=completed / len(chapters) if chapters else 0, chapter_count=len(chapters), completed_count=completed, correction_count=sum(c['correction_count'] for c in chapters))
 
@@ -437,6 +438,7 @@ class NotesService:
         else: self.repository.materials.assessment_data[table].pop(identifier, None)
 
     def delete_material(self, material_id):
+        if hasattr(self, 'lessons'): self.lessons.delete_material(material_id)
         def depends(value):
             if isinstance(value, dict): return value.get('material_id') == material_id or any(depends(v) for v in value.values())
             if isinstance(value, list): return any(depends(v) for v in value)
@@ -469,6 +471,7 @@ class NotesService:
                         self._put('outbox', event)
 
     def delete_space(self, space_id):
+        if hasattr(self, 'lessons'): self.lessons.delete_space(space_id)
         with self.repository.transaction():
             chapters = self.repository.records('note_chapters', space_id=space_id)
             for g in self.repository.records('note_generations', space_id=space_id):

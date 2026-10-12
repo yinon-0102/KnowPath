@@ -52,6 +52,42 @@ def test_finalize_enqueues_exactly_once_and_returns_note_reference(workbench, vi
     assert factory().assessment_result(assessment['id'])['notes']['generation_id'] == ref['generation_id']
 
 
+def test_note_job_freezes_final_result_including_adjustment_reference(workbench):
+    _, state, space_id, _, _ = workbench
+    _, _, assessment = completed(state, space_id)
+    repository = state.assessment_service.repository
+    stored = repository.get_record('assessments', assessment['id'])
+    ref = state.assessment_result(assessment['id'])['notes']
+    generation = repository.get_record('note_generations', ref['generation_id'])
+    assert stored['result']['plan_replan_run_id'] is not None
+    assert generation['snapshot']['assessment_result'] == stored['result']
+    from knowpath_backend.learning.notes.service import fingerprint
+    assert generation['fingerprint'] == fingerprint(stored['result'])
+
+
+def test_adjustment_worker_completion_keeps_graded_note_fingerprint_and_publishes(workbench):
+    factory, state, space_id, _, _ = workbench
+    _, _, assessment = completed(state, space_id)
+    repository = state.assessment_service.repository
+    stored = repository.get_record('assessments', assessment['id'])
+    ref = state.assessment_result(assessment['id'])['notes']
+    generation = repository.get_record('note_generations', ref['generation_id'])
+    frozen_fingerprint = generation['fingerprint']
+    adjustment = stored['result']['adjustment']
+    assert state.plan_adjustments.run_once(adjustment['event_id'])
+    assert state.get_run(adjustment['run_id'])['status'] == 'succeeded'
+    from knowpath_backend.learning.notes.service import fingerprint
+    after = repository.get_record('assessments', assessment['id'])
+    assert fingerprint(after['result']) == frozen_fingerprint
+    assert repository.get_record('note_generations', ref['generation_id'])['fingerprint'] == frozen_fingerprint
+    restored = factory()
+    restored.notes_service.generator = DeterministicNotes()
+    assert ModelTaskWorker(notes=restored.notes_service).run_once(generation['event_id'])
+    assert restored.get_run(ref['run_id'])['status'] == 'succeeded'
+    chapter = restored.notes_service.chapter(ref['chapter_id'])
+    assert any(b['kind'] == 'assessment' and b['assessment_id'] == assessment['id'] for b in chapter['blocks'])
+
+
 def test_free_assessment_has_no_note_job(workbench):
     _, state, space_id, _, _ = workbench
     _, _, assessment = completed(state, space_id, linked=False)

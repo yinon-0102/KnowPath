@@ -5,6 +5,18 @@ import json
 from ..errors import DomainConflict
 
 
+def resolve_reading_scope(space, reading_context, material_ids=None):
+    identifier = reading_context['material_id']
+    binding = next((b for b in space['bindings'] if b['material_id'] == identifier), None)
+    if binding is None:
+        raise DomainConflict('MATERIAL_OUT_OF_SCOPE', '原文资料不在当前学习空间的绑定范围内')
+    if binding['material_version_id'] != reading_context['material_version_id']:
+        raise DomainConflict('STALE_LEARNING_CONTEXT', '原文版本已变化，请打开当前绑定版本')
+    if material_ids is not None and material_ids != [identifier]:
+        raise DomainConflict('READING_CONTEXT_MISMATCH', '原文问答只能选择当前文档')
+    return resolve_document_scope(space, [identifier])
+
+
 def resolve_document_scope(space, material_ids=None):
     bindings = {b['material_id']: b for b in space['bindings']}
     selected = sorted(bindings) if material_ids is None else sorted(set(material_ids))

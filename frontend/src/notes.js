@@ -10,20 +10,44 @@ export function renderNoteMarkdown(markdown = '') {
   const inline = text => {
     const codes = [];
     let safe = esc(text).replace(/`([^`]+)`/g, (_, code) => { codes.push(`<code>${code}</code>`); return `\u0000${codes.length - 1}\u0000`; });
-    safe = safe.replace(/\[([^\]]+)\]\(([^\s)]+)\)/g, (_, label, url) => /^(https?:\/\/|#\/)/i.test(url) ? `<a href="${url}" rel="noopener noreferrer">${label}</a>` : label);
+    safe = safe.replace(/\[([^\]]+)\]\(([^\s)]+)\)/g, (_, label, url) => /^(https?:\/\/|#)/i.test(url) ? `<a href="${url}" rel="noopener noreferrer">${label}</a>` : label);
     safe = safe.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>').replace(/\*([^*]+)\*/g, '<em>$1</em>');
     return safe.replace(/\u0000(\d+)\u0000/g, (_, index) => codes[Number(index)]);
   };
-  const output = [], lines = String(markdown).split(/\r?\n/); let code = null, list = false;
-  const closeList = () => { if (list) { output.push('</ul>'); list = false; } };
-  for (const line of lines) {
-    if (/^```/.test(line)) { closeList(); if (code === null) code = []; else { output.push(`<pre><code>${esc(code.join('\n'))}</code></pre>`); code = null; } continue; }
-    if (code !== null) { code.push(line); continue; }
-    const heading = /^(#{1,6})\s+(.+)$/.exec(line), item = /^\s*(?:[-*]|\d+\.)\s+(.+)$/.exec(line);
-    if (item) { if (!list) { output.push('<ul>'); list = true; } output.push(`<li>${inline(item[1])}</li>`); }
-    else { closeList(); if (heading) output.push(`<h${heading[1].length}>${inline(heading[2])}</h${heading[1].length}>`); else if (line.trim()) output.push(`<p>${inline(line)}</p>`); }
+  const output = [], lines = String(markdown).split(/\r?\n/); let list = '', paragraph = [];
+  const closeList = () => { if (list) { output.push(`</${list}>`); list = ''; } };
+  const closeParagraph = () => { if (paragraph.length) { output.push(`<p>${inline(paragraph.join('\n')).replace(/ {2}\n/g, '<br>').replace(/\n/g, ' ')}</p>`); paragraph = []; } };
+  const boundary = () => { closeParagraph(); closeList(); };
+  const cells = line => line.trim().replace(/^\||\|$/g, '').split(/(?<!\\)\|/).map(cell => cell.trim().replace(/\\\|/g, '|'));
+  for (let index = 0; index < lines.length; index++) {
+    const line = lines[index], fence = /^\s*(`{3,}|~{3,})([\w+-]*)\s*$/.exec(line);
+    if (fence) {
+      boundary(); const code = [], marker = fence[1];
+      while (++index < lines.length && !new RegExp(`^\\s*${marker[0]}{${marker.length},}\\s*$`).test(lines[index])) code.push(lines[index]);
+      output.push(`<pre><code${fence[2] ? ` class="language-${esc(fence[2])}"` : ''}>${esc(code.join('\n'))}</code></pre>`); continue;
+    }
+    if (!line.trim()) { boundary(); continue; }
+    if (/^\s*>/.test(line)) {
+      boundary(); const quote = [];
+      while (index < lines.length && /^\s*>/.test(lines[index])) quote.push(lines[index++].replace(/^\s*>\s?/, ''));
+      index--; output.push(`<blockquote>${renderNoteMarkdown(quote.join('\n'))}</blockquote>`); continue;
+    }
+    if (line.includes('|') && lines[index + 1] && cells(lines[index + 1]).every(cell => /^:?-{3,}:?$/.test(cell))) {
+      boundary(); const headings = cells(line), alignment = cells(lines[++index]); const body = [];
+      while (index + 1 < lines.length && lines[index + 1].trim() && lines[index + 1].includes('|')) body.push(cells(lines[++index]));
+      const cell = (text, column, tag) => `<${tag}${alignment[column]?.endsWith(':') ? ` class="markdown-align-${alignment[column].startsWith(':') ? 'center' : 'right'}"` : ''}>${inline(text || '')}</${tag}>`;
+      output.push(`<div class="markdown-table"><table><thead><tr>${headings.map((text, column) => cell(text, column, 'th')).join('')}</tr></thead><tbody>${body.map(row => `<tr>${headings.map((_, column) => cell(row[column], column, 'td')).join('')}</tr>`).join('')}</tbody></table></div>`); continue;
+    }
+    if (/^\s*(?:-{3,}|\*{3,}|_{3,})\s*$/.test(line)) { boundary(); output.push('<hr>'); continue; }
+    const heading = /^(#{1,6})\s+(.+?)\s*#*\s*$/.exec(line), item = /^\s*(?:([-*+])|(\d+)[.)])\s+(.+)$/.exec(line);
+    if (heading) { boundary(); output.push(`<h${heading[1].length}>${inline(heading[2])}</h${heading[1].length}>`); }
+    else if (item) {
+      closeParagraph(); const type = item[2] ? 'ol' : 'ul';
+      if (list !== type) { closeList(); list = type; output.push(`<${type}${type === 'ol' && Number(item[2]) !== 1 ? ` start="${Number(item[2])}"` : ''}>`); }
+      output.push(`<li>${inline(item[3])}</li>`);
+    } else { closeList(); paragraph.push(line); }
   }
-  closeList(); if (code !== null) output.push(`<pre><code>${esc(code.join('\n'))}</code></pre>`);
+  boundary();
   return output.join('');
 }
 
@@ -89,16 +113,26 @@ function renderGenerationDraft(snapshot) {
   return `<details class="workspace-details" open><summary>结构化草稿 · 正文待生成</summary><p>学习时间：${elapsed == null ? '未记录' : Number(elapsed) + ' 秒'}（包含暂停）</p><p>本次涉及主题：${rows(snapshot.topic_ids).map(esc).join('、') || '未记录'}</p><h3>已记录测评结果</h3>${rows(snapshot.assessment_result?.question_results).map(q => `<p>${esc(q.question_id)} · ${esc(q.verdict || '未验证')} · ${q.score == null ? '分数未记录' : '得分 ' + esc(q.score)}${q.assisted ? ' · 有辅助记录' : ''}</p>`).join('') || '<p>暂无逐题结果。</p>'}<p class="subtle">这些是后端记录的事实，尚未生成笔记正文；测评得分不等同于掌握状态。</p></details>`;
 }
 
+function renderNotebookReadme(book) {
+  let markdown = book.readme_markdown || '';
+  // Filenames describe virtual database chapters, not files served by the browser.
+  // Resolve only this notebook's registered filenames; keep other link restrictions.
+  for (const chapter of rows(book.chapters)) {
+    if (chapter.filename && chapter.id) markdown = markdown.replaceAll(`](${chapter.filename})`, `](${notePath(book.space_id, chapter.id)})`);
+  }
+  return renderNoteMarkdown(markdown);
+}
+
 export function renderNotes(state) {
   const action = (text, name, attrs = '') => `<button type="button" class="button button-secondary" data-action="notes-${name}" ${attrs} ${state.busy ? 'disabled' : ''}>${text}</button>`;
   const error = state.error ? `<div class="notice error" role="alert">${esc(state.error)}</div>` : '';
   const loading = state.busy && !state.notebook && !state.notebooks ? '<p role="status">正在读取学习笔记…</p>' : '';
   if (!state.notebook) return `<section class="panel notes-page"><h1>学习笔记</h1><p class="subtle">按学习空间整理，关联测评完成后自动总结。笔记保存在后端数据库中。</p>${error}${loading}${rows(state.notebooks).length ? rows(state.notebooks).map(book => `<article class="workspace-question"><h2><a href="${notePath(book.space_id)}">${esc(book.name)}</a></h2><p>${esc(book.directory || '')}</p><p>${Number(book.completed_count || 0)} / ${Number(book.chapter_count || book.total_count || 0)} 个章节已完成 · ${Number(book.correction_count || 0)} 项纠偏</p></article>`).join('') : !state.busy ? '<p class="record-empty">还没有学习笔记册。创建学习计划并完成关联测评后，会自动整理笔记。</p>' : ''}${action('刷新', 'refresh')}</section>`;
   const book = state.notebook, chapters = rows(book.chapters), completed = chapters.filter(c => c.status === 'COMPLETED').length;
-  const index = `<section class="panel notes-index"><h2>README · ${esc(book.name)}</h2><p class="subtle">${esc(book.directory)}</p><p>${completed} / ${chapters.length} 已完成 · ${chapters.reduce((n,c) => n + Number(c.correction_count || 0), 0)} 项纠偏</p><progress max="${Math.max(1, chapters.length)}" value="${completed}" aria-label="笔记章节完成进度"></progress>${chapters.length ? `<ul>${chapters.map(c => `<li><a href="${notePath(book.space_id, c.id)}">${esc(c.number)} ${esc(c.title)}</a><span class="badge">${status(c.status)}</span><small>${status(c.generation_status)} · 纠偏 ${Number(c.correction_count || 0)} · ${dateText(c.updated_at)}</small></li>`).join('')}</ul>` : '<p>尚未创建计划节点；章节正文不会预填未学习内容。</p>'}${book.readme_markdown ? `<details><summary>查看 README</summary>${renderNoteMarkdown(book.readme_markdown)}</details>` : ''}</section>`;
+  const index = `<section class="panel notes-index"><h2>README · ${esc(book.name)}</h2><p class="subtle">${esc(book.directory)}</p><p>${completed} / ${chapters.length} 已完成 · ${chapters.reduce((n,c) => n + Number(c.correction_count || 0), 0)} 项纠偏</p><p class="subtle">已生成的笔记可以直接阅读；章节完成状态按后端掌握记录判定。</p><progress max="${Math.max(1, chapters.length)}" value="${completed}" aria-label="笔记章节完成进度"></progress>${chapters.length ? `<ul>${chapters.map(c => `<li><div class="notes-index-entry"><a class="notes-chapter-link" href="${notePath(book.space_id, c.id)}" ${state.chapter?.id === c.id ? 'aria-current="page"' : ''}>${esc(c.number)} ${esc(c.title)}</a><div class="notes-index-meta"><span class="badge">${status(c.status)}</span><small>${status(c.generation_status)} · 纠偏 ${Number(c.correction_count || 0)} · ${dateText(c.updated_at)}</small></div></div><a class="button button-secondary notes-read-link" href="${notePath(book.space_id, c.id)}">${status(c.generation_status) === '已生成' ? '查看笔记' : '查看状态'}</a></li>`).join('')}</ul>` : '<p>尚未创建计划节点；章节正文不会预填未学习内容。</p>'}${book.readme_markdown ? `<details><summary>查看 README</summary><div class="note-markdown">${renderNotebookReadme(book)}</div></details>` : ''}</section>`;
   const c = state.chapter;
   if (!c) return `<div class="notes-page">${error}${action('刷新', 'refresh')}${index}</div>`;
   const blocks = state.editing ? state.draft : rows(c.blocks);
   const body = rows(blocks).map((block, blockIndex) => `<article class="note-block" data-block="${esc(block.id)}">${block.evidence_validity === 'stale' ? '<div class="notice warning" role="status">本段依据已失效，保留为历史学习记录；不能视为当前已验证知识，请重新测评。</div>' : ''}${state.historical && block.kind === 'assessment' ? '<p class="subtle">历史版本反映当时的记录，不代表当前证据仍然有效。</p>' : ''}${state.editing ? `<label>章节正文<textarea data-note-block="${esc(block.id)}" rows="10">${esc(block.markdown || '')}</textarea></label>` : `<div class="note-markdown">${renderNoteMarkdown(block.markdown || '')}</div>`}${rows(block.corrections).map(correction => `<div class="note-correction"><strong>${correction.confirmed || correction.eligible ? '已确认纠偏' : '纠偏说明'}</strong>${state.editing ? `<textarea data-note-block="${esc(block.id)}" data-note-correction="${esc(correction.id)}">${esc(correction.explanation || correction.description || '')}</textarea>` : `<p>${esc(correction.explanation || correction.description || '')}</p>`}</div>`).join('')}${rows(block.source_refs).map((ref, sourceIndex) => action(`来源 ${sourceIndex + 1}`, 'source', `data-block-index="${blockIndex}" data-source-index="${sourceIndex}"`)).join('')}</article>`).join('');
-  return `<div class="notes-page">${error}${index}<section class="panel notes-chapter">${c.error ? `<div class="notice error" role="alert">${esc(typeof c.error === 'string' ? c.error : c.error.message || c.error.code || '生成失败')}</div>` : ''}<div class="panel-title"><h2>${esc(c.number)} ${esc(c.title)}</h2><span class="badge">${status(c.status)}</span></div><p class="subtle">${esc(c.filename)} · 版本 ${Number(c.version)}${state.historical ? ' · 历史版本（只读）' : ''}</p><p>学习时间：${c.elapsed_seconds == null ? '未记录' : Math.round(Number(c.elapsed_seconds) / 60) + ' 分钟'}（起止间隔包含暂停） · 纠偏 ${Number(c.correction_count || 0)}</p>${rows(c.generations).map(g => `<p role="status">${status(g.status)}${g.error ? ' · ' + esc(typeof g.error === 'string' ? g.error : g.error.message || '') : ''}${g.status === 'failed' && !state.historical ? action('重试生成', 'retry', `data-id="${esc(g.id)}"`) : ''}</p>${g.snapshot && ['pending', 'generating', 'failed'].includes(g.status) ? renderGenerationDraft(g.snapshot) : ''}`).join('')}<div class="record-actions">${state.historical ? `<a class="text-link" href="${notePath(c.space_id, c.id)}">返回当前章节</a>` : state.editing ? action('保存修改', 'save') + action('取消编辑', 'cancel') + action('添加个人段落', 'personal') + action('查看最新内容（保留修改）', 'refresh') : action('编辑笔记', 'edit') + action('刷新', 'refresh')}</div>${state.editing && c.version !== state.expectedVersion ? `<details open><summary>服务器最新内容（请比较后合并）</summary>${rows(c.blocks).map(b => renderNoteMarkdown(b.markdown)).join('')}${action('合并最新版本并保留我的修改', 'merge')}</details>` : ''}${rows(state.editing ? state.draftCorrections : c.corrections).map(correction => `<div class="note-correction"><strong>${correction.confirmed ? '已确认纠偏' : '纠偏依据待验证'}</strong><p class="subtle">${correction.independent_retest_passed ? '独立复测已通过' : '纠偏说明不代表独立复测通过'}</p>${state.editing ? `<textarea data-note-correction-id="${esc(correction.id)}">${esc(correction.markdown || '')}</textarea>` : renderNoteMarkdown(correction.markdown || '')}</div>`).join('')}${body || '<p class="record-empty">待总结。完成关联测评后只追加已学习、已验证的内容。</p>'}<details class="workspace-details"><summary>版本历史</summary>${rows(state.revisions).map(r => `<p><a href="${notePath(c.space_id, c.id, r.id)}">版本 ${Number(r.version)} · ${dateText(r.created_at || r.updated_at)} · ${esc(r.kind || r.reason || '')}</a></p>`).join('') || '<p>暂无历史版本。</p>'}</details></section></div>`;
+  return `<div class="notes-page">${error}<a class="text-link" href="${notePath(book.space_id)}">返回笔记索引</a><section class="panel notes-chapter" aria-label="章节笔记正文">${c.error ? `<div class="notice error" role="alert">${esc(typeof c.error === 'string' ? c.error : c.error.message || c.error.code || '生成失败')}</div>` : ''}<div class="panel-title"><h2>${esc(c.number)} ${esc(c.title)}</h2><span class="badge">${status(c.status)}</span></div><p class="subtle">${esc(c.filename)} · 版本 ${Number(c.version)}${state.historical ? ' · 历史版本（只读）' : ''}</p><p>学习时间：${c.elapsed_seconds == null ? '未记录' : Math.round(Number(c.elapsed_seconds) / 60) + ' 分钟'}（起止间隔包含暂停） · 纠偏 ${Number(c.correction_count || 0)}</p>${rows(c.generations).map(g => `<p role="status">${status(g.status)}${g.error ? ' · ' + esc(typeof g.error === 'string' ? g.error : g.error.message || '') : ''}${g.status === 'failed' && !state.historical ? action('重试生成', 'retry', `data-id="${esc(g.id)}"`) : ''}</p>${g.snapshot && ['pending', 'generating', 'failed'].includes(g.status) ? renderGenerationDraft(g.snapshot) : ''}`).join('')}<div class="record-actions">${state.historical ? `<a class="text-link" href="${notePath(c.space_id, c.id)}">返回当前章节</a>` : state.editing ? action('保存修改', 'save') + action('取消编辑', 'cancel') + action('添加个人段落', 'personal') + action('查看最新内容（保留修改）', 'refresh') : action('编辑笔记', 'edit') + action('刷新', 'refresh')}</div>${state.editing && c.version !== state.expectedVersion ? `<details open><summary>服务器最新内容（请比较后合并）</summary>${rows(c.blocks).map(b => renderNoteMarkdown(b.markdown)).join('')}${action('合并最新版本并保留我的修改', 'merge')}</details>` : ''}${rows(state.editing ? state.draftCorrections : c.corrections).map(correction => `<div class="note-correction"><strong>${correction.confirmed ? '已确认纠偏' : '纠偏依据待验证'}</strong><p class="subtle">${correction.independent_retest_passed ? '独立复测已通过' : '纠偏说明不代表独立复测通过'}</p>${state.editing ? `<textarea data-note-correction-id="${esc(correction.id)}">${esc(correction.markdown || '')}</textarea>` : renderNoteMarkdown(correction.markdown || '')}</div>`).join('')}${body || '<p class="record-empty">待总结。完成关联测评后只追加已学习、已验证的内容。</p>'}<details class="workspace-details"><summary>版本历史</summary>${rows(state.revisions).map(r => `<p><a href="${notePath(c.space_id, c.id, r.id)}">版本 ${Number(r.version)} · ${dateText(r.created_at || r.updated_at)} · ${esc(r.kind || r.reason || '')}</a></p>`).join('') || '<p>暂无历史版本。</p>'}</details></section><details class="notes-index-toggle"><summary>笔记册索引</summary>${index}</details></div>`;
 }

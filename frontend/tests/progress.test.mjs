@@ -10,6 +10,15 @@ const progress = nodes => ({ space_id: 's1', rounds: [{ plan_id: 'p1', created_a
 const section = (html, view) => html.split(`data-progress-view="${view}"`)[1]?.split('</section>')[0] || '';
 const record = (extra = {}) => ({ space_id: 's1', plan_id: 'p1', task_id: 't1', node_id: 'n1', task: { id: 't1', title: '线性变换', status: 'pending', estimated_minutes: 25 }, topics: [], sessions: [], assessments: [], total_elapsed_seconds: null, ...extra });
 
+test('rolling nodes show separate forecasts and capacity reason without blocking reading', () => {
+  const data = progress([node('a', 'pending', 1, { context: { duration_forecast: { study_minutes: 15, answer_minutes: 10 }, allocation_state: 'partial', allocation_reason: '<script>窗口容量不足</script>', allocations: [{ date: '2026-10-12', minutes: 15 }] } })]);
+  const html = renderProgress(data, { compact: true });
+  assert.match(html, /学习 15 · 作答 10 分钟/);
+  assert.match(html, /&lt;script&gt;窗口容量不足&lt;\/script&gt;/);
+  assert.doesNotMatch(html, /<script>/);
+  assert.doesNotMatch(html, /data-node="node-a"[^>]+ disabled/);
+});
+
 test('current view keeps copied nodes using current plan task ids and authoritative task states', () => {
   const data = { ...progress([]), rounds: [{ plan_id: 'old', created_at: '2026-09-01', status: 'superseded', nodes: [node('latest', 'pending', 8, { node_id: 'stable', plan_id: 'p1', historical: false })] }, ...progress([]).rounds] };
   const currentPlan = { id: 'p1', tasks: [{ id: 'latest', node_id: 'stable', sequence: 2, title: '当前副本', status: 'completed' }] };
@@ -28,6 +37,17 @@ test('nodes are ordered by sequence and only adjacent completed nodes color a co
   assert.equal((html.match(/progress-connector completed/g) || []).length, 1);
   assert.equal((html.match(/progress-connector pending/g) || []).length, 1);
   assert.match(html, /aria-label="1\. 任务a，已完成/);
+});
+
+test('top route hides duplicate section headings and source chapter numbering', () => {
+  const html = renderProgress(progress([node('a', 'pending', 1, { title: '3. 循环与列表' })]), { compact: true, showHeading: false });
+  assert.doesNotMatch(html, /<h3>当前计划/); assert.doesNotMatch(html, /1\.<\/span> 3\./);
+  assert.match(html, /循环与列表/);
+});
+
+test('history-only progress does not repeat the current route', () => {
+  const html = renderProgress(progress([node('a', 'pending', 1)]), { historyOnly: true });
+  assert.doesNotMatch(html, /data-progress-view="current"/); assert.doesNotMatch(html, /progress-track/);
 });
 
 test('an active session adds a ring but never marks a pending task complete', () => {

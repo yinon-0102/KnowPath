@@ -26,12 +26,17 @@ def _relevant_excerpt(text, query, limit=600):
     return max(windows, key=lambda part: bigram_relevance(part.casefold(), query.casefold()))
 
 
-def project_memory(rows, space, conversation_id, query, *, request_scope=None):
+def project_memory(rows, space, conversation_id, query, *, request_scope=None, reading_context=None):
     """Only original completed turns enter the index; projections never recurse."""
     eligible = [r for r in rows if r["space_id"] == space["id"] and r["status"] == "completed"
                 and not r['snapshot'].get('request_scope_invalidated')
                 and r.get("response") and r["snapshot"].get("scope_version") == space["scope_version"]
                 and r["snapshot"].get("bindings") == space["bindings"]]
+    if reading_context is not None:
+        eligible = [r for r in eligible if r['snapshot'].get('reading_context') == reading_context
+                    and not r['snapshot'].get('lesson_id')]
+    else:
+        eligible = [r for r in eligible if not r['snapshot'].get('reading_context')]
     if request_scope is not None:
         eligible = [r for r in eligible if (
             r['snapshot'].get('request_scope', {}).get('request_scope_id') == request_scope['request_scope_id']
@@ -171,8 +176,8 @@ def prompt_data(snapshot):
 
 
 def prompt_tokens(snapshot):
-    from knowpath_backend.learning.conversations.generation import SYSTEM_PROMPT
-    return count_tokens(SYSTEM_PROMPT) + count_tokens(json.dumps(prompt_data(snapshot), ensure_ascii=False)) + 32
+    from knowpath_backend.learning.conversations.generation import answer_prompt
+    return count_tokens(answer_prompt(snapshot)) + count_tokens(json.dumps(prompt_data(snapshot), ensure_ascii=False)) + 32
 
 
 def bound_snapshot(snapshot, *, budget):
@@ -191,7 +196,7 @@ def bound_snapshot(snapshot, *, budget):
     original_source_count = len(sources)
     while len(sources) > 1 and prompt_tokens(result) > budget:
         sources.pop()
-    if not sources or prompt_tokens(result) > budget:
+    if (not sources and "requested_answer_mode" not in result) or prompt_tokens(result) > budget:
         raise MessageGenerationError("CONTEXT_BUDGET_EXCEEDED")
 
     candidates = []

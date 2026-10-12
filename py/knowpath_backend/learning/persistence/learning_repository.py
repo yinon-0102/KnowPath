@@ -10,7 +10,7 @@ from sqlalchemy import select, exists
 
 from knowpath_backend.learning.persistence.db import AssessmentRow, AttemptRow, EvidenceRow, LearnerStateRow, StateResetRow, IdempotencyRow, StudyPlanRow, StudyTaskRow, SessionRow, SessionEventRow, ConversationRow, LearningMessageRow, GraphRevisionRow, OutboxEventRow, KnowledgeCorrectionRow
 from knowpath_backend.learning.errors import DomainConflict, DomainNotFound
-from knowpath_backend.learning.persistence.db import NotebookRow, NoteChapterRow, NoteRevisionRow, NoteGenerationRow
+from knowpath_backend.learning.persistence.db import NotebookRow, NoteChapterRow, NoteRevisionRow, NoteGenerationRow, StudyLessonRow
 from knowpath_backend.learning.persistence.space_repository import InMemorySpaceRepository, SqlAlchemySpaceRepository
 
 
@@ -18,6 +18,9 @@ TABLES = {"assessments": AssessmentRow, "attempts": AttemptRow, "evidence": Evid
           "states": LearnerStateRow, "resets": StateResetRow,
           "plans": StudyPlanRow, "tasks": StudyTaskRow, "sessions": SessionRow, "session_events": SessionEventRow, "conversations": ConversationRow, "messages": LearningMessageRow, "graph_revisions": GraphRevisionRow, "outbox": OutboxEventRow, "corrections": KnowledgeCorrectionRow}
 TABLES.update(notebooks=NotebookRow, note_chapters=NoteChapterRow, note_revisions=NoteRevisionRow, note_generations=NoteGenerationRow)
+TABLES['study_lessons'] = StudyLessonRow
+from knowpath_backend.learning.persistence.db import BudgetComparisonRow, PlanAdjustmentRow, PolicyRecommendationRow
+TABLES.update(budget_comparisons=BudgetComparisonRow, plan_adjustments=PlanAdjustmentRow, policy_recommendations=PolicyRecommendationRow)
 DATE_FIELDS = {"lease_until", "available_at", "created_at", "last_assessed_at", "next_review_at", "defer_until", "started_at", "finished_at", "received_at"}
 
 

@@ -204,7 +204,8 @@ def test_completed_current_task_can_retest_but_historical_copy_cannot(workbench)
     task = first["tasks"][0]
     state.update_task(first["id"], task["id"], {"status": "completed", "expected_plan_version": 1})
     save_state(state, space_id, topic, status="learning", mastery_score=0.7)
-    assert state.get_plan(first["id"])["status"] == "needs_replan"
+    assert state.get_plan(first["id"])["status"] == "ready"
+    assert state.get_plan(first["id"])["adjustment_pending"]
     assert assessment(state, space_id, plan_id=first["id"], task_id=task["id"])["id"]
     save_state(state, space_id, topic, status="mastered", mastery_score=1.0,
                next_review_at="2026-09-02T10:00:00+00:00")
@@ -261,7 +262,8 @@ def test_read_projections_do_not_mutate_persisted_plan_status_or_context(workben
     repository = state.plan_sessions.repository
     before = repository.get_record("plans", plan["id"], lock=False)
     save_state(state, space_id, topic, status="learning", mastery_score=0.7)
-    assert state.get_workbench(space_id)["current_plan"]["status"] == "needs_replan"
+    assert state.get_workbench(space_id)["current_plan"]["status"] == "ready"
+    assert state.get_workbench(space_id)["current_plan"]["adjustment_pending"]
     state.get_progress(space_id)
     state.get_learning_record(plan["id"], task["id"])
     assert repository.get_record("plans", plan["id"], lock=False) == before
