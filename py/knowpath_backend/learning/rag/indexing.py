@@ -8,7 +8,7 @@ import argparse
 import json
 import sys
 
-from dotenv import load_dotenv
+from knowpath_backend.core.env import load_project_env
 
 from knowpath_backend.learning.persistence.db import create_db_engine
 from knowpath_backend.learning.persistence.material_repository import SqlAlchemyMaterialRepository
@@ -37,7 +37,7 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description="Prepare a parsed material version's Qdrant index; does not publish graphs")
     parser.add_argument("--version-id", required=True, help="Exact material_version_id to index")
     args = parser.parse_args(argv)
-    load_dotenv()
+    load_project_env()
     engine = retriever = materials = None
     try:
         engine = create_db_engine()

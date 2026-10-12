@@ -5,11 +5,11 @@ from __future__ import annotations
 from typing import Annotated
 
 from fastapi import APIRouter
-from fastapi import Header
+from fastapi import Header, Query
 from fastapi.responses import JSONResponse
 
 from ...errors import DomainConflict, DomainNotFound
-from knowpath_backend.learning.plans.schemas import CreatePlan, UpdateTask, StartSession, SessionEvent, EmptyObject
+from knowpath_backend.learning.plans.schemas import CreatePlan, UpdateTask, StartSession, SessionEvent, EmptyObject, OrderPlan
 from ..contract import ContractRoute
 from ..dependencies import LearningStateDep
 from ..errors import _domain_error, _error_response
@@ -18,10 +18,36 @@ from ..errors import _domain_error, _error_response
 router = APIRouter(route_class=ContractRoute)
 
 
+@router.get("/api/v1/learning-spaces/{space_id}/workbench")
+async def get_workbench(state: LearningStateDep, space_id: str) -> JSONResponse:
+    try:
+        return JSONResponse(status_code=200, content=state.get_workbench(space_id))
+    except (DomainNotFound, DomainConflict) as exc:
+        return _domain_error(exc)
+
+
+@router.get("/api/v1/learning-spaces/{space_id}/progress")
+async def get_progress(state: LearningStateDep, space_id: str,
+                       limit: Annotated[int, Query(ge=1, le=50)] = 10,
+                       cursor: Annotated[str | None, Query(min_length=1, max_length=2048)] = None) -> JSONResponse:
+    try:
+        return JSONResponse(status_code=200, content=state.get_progress(space_id, limit=limit, cursor=cursor))
+    except (DomainNotFound, DomainConflict) as exc:
+        return _domain_error(exc)
+
+
+@router.get("/api/v1/plans/{plan_id}/tasks/{task_id}/learning-record")
+async def get_learning_record(state: LearningStateDep, plan_id: str, task_id: str) -> JSONResponse:
+    try:
+        return JSONResponse(status_code=200, content=state.get_learning_record(plan_id, task_id))
+    except (DomainNotFound, DomainConflict) as exc:
+        return _domain_error(exc)
+
+
 @router.post("/api/v1/learning-spaces/{space_id}/plans", status_code=202)
 async def create_plan(state: LearningStateDep, space_id: str, payload: CreatePlan, idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None) -> JSONResponse:
     try:
-        plan = state.create_plan(space_id, payload.model_dump(mode="json", exclude_none=True), idempotency_key=idempotency_key)
+        plan = state.create_plan(space_id, payload.model_dump(mode="json", exclude_none=True, exclude_unset=True), idempotency_key=idempotency_key)
         return JSONResponse(status_code=202, content={"run_id": plan["run_id"], "plan_id": plan["plan_id"], "status": plan["status"]})
     except (DomainNotFound, DomainConflict) as exc:
         return _domain_error(exc)
@@ -65,5 +91,22 @@ async def add_learning_event(state: LearningStateDep, session_id: str, payload: 
 async def finish_learning_session(state: LearningStateDep, session_id: str, _: EmptyObject) -> JSONResponse:
     try:
         return JSONResponse(status_code=200, content=state.finish_session(session_id))
+    except (DomainNotFound, DomainConflict) as exc:
+        return _domain_error(exc)
+
+
+@router.post("/api/v1/plans/{plan_id}/order-preview")
+async def preview_plan_order(state: LearningStateDep, plan_id: str, payload: OrderPlan) -> JSONResponse:
+    try:
+        return JSONResponse(status_code=200, content=state.preview_plan_order(plan_id, payload.model_dump(mode="json", exclude_none=True)))
+    except (DomainNotFound, DomainConflict) as exc:
+        return _domain_error(exc)
+
+
+@router.patch("/api/v1/plans/{plan_id}/order")
+async def update_plan_order(state: LearningStateDep, plan_id: str, payload: OrderPlan,
+                            idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None) -> JSONResponse:
+    try:
+        return JSONResponse(status_code=200, content=state.update_plan_order(plan_id, payload.model_dump(mode="json", exclude_none=True), idempotency_key=idempotency_key))
     except (DomainNotFound, DomainConflict) as exc:
         return _domain_error(exc)

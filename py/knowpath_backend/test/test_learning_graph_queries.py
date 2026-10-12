@@ -41,6 +41,19 @@ def test_graph_reads_persisted_edges_without_space_or_cache(graph_client):
     assert all("source_refs" not in n for n in two["nodes"] + two["edges"])
     assert client.get(f"/api/v1/topics/{ids['A']}/graph", params={"depth": 4}).status_code == 422
 
+def test_material_graph_returns_complete_projection_in_one_read(graph_client):
+    client, upload, staged, _ = graph_client
+    response = client.get(f"/api/v1/materials/{upload.material.id}/graph",
+                          params={"version_id": upload.version.id, "include_sources": True})
+    assert response.status_code == 200
+    result = response.json()
+    assert result["material_id"] == upload.material.id
+    assert result["version_id"] == upload.version.id
+    assert result["graph_version"] == 1
+    assert {node["name"] for node in result["nodes"]} == {"Root", "A", "B", "C"}
+    assert {edge["type"] for edge in result["edges"]} == {"contains", "prerequisite_of"}
+    assert result["sources"]
+
 def test_topic_graph_unknown_is_not_found(graph_client):
     client, _, _, _ = graph_client
     assert client.get("/api/v1/topics/missing/graph").status_code == 404

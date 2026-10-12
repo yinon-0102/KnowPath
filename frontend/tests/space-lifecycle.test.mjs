@@ -2,11 +2,22 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createApi, ApiError, changeSpace } from '../src/api.js';
 import { createLearningController } from '../src/learning.js';
-import { makeDemo, loadDemo, storageWrite, DEMO_KEY, removeSpaceData } from '../src/store.js';
+import { storageWrite, removeSpaceData } from '../src/store.js';
 
 const space = () => ({ id: 'space / 中文', name: '学习空间', status: 'active', space_version: 7 });
 const response = value => new Response(JSON.stringify(value), { headers: { 'Content-Type': 'application/json' } });
+const fixture = () => ({ spaces: [space(), { id: 's2', status: 'active', space_version: 1 }], materials: [{ id: 'shared-material' }], tasks: [{ id: 't1', space_id: space().id }, { id: 't2', space_id: 's2' }] });
 const memory = () => { const values = new Map(); return { getItem: key => values.get(key) ?? null, setItem: (key,value) => values.set(key,value) }; };
+
+test('space mutations always require the backend to confirm the operation', async () => {
+  let calls = 0;
+  const selected = space();
+  const api = { setSpaceStatus: async (snapshot, status) => { calls++; return { ...snapshot, status, space_version: 8 }; } };
+  const result = await changeSpace({ api, space: selected, action: 'archive' });
+  assert.equal(calls, 1);
+  assert.equal(result.status, 'archived');
+  assert.equal(selected.status, 'active');
+});
 
 test('space archive and deletion call versioned authenticated backend endpoints', async t => {
   const calls = [];
@@ -36,22 +47,6 @@ test('deletion requires explicit confirmation and a valid captured version befor
   assert.equal(calls, 0);
 });
 
-test('archive and restore preserve source data and survive a demo reload', async () => {
-  const data = makeDemo(), storage = memory();
-  const target = data.spaces[0], originalTasks = structuredClone(data.tasks), originalMaterials = structuredClone(data.materials);
-  Object.assign(target, await changeSpace({ mode: 'demo', space: target, action: 'archive' }));
-  assert.equal(target.status, 'archived');
-  assert.equal(target.space_version, 2);
-  storageWrite(storage, DEMO_KEY, data);
-  const reloaded = loadDemo(storage);
-  assert.equal(reloaded.spaces[0].status, 'archived');
-  Object.assign(reloaded.spaces[0], await changeSpace({ mode: 'demo', space: reloaded.spaces[0], action: 'restore' }));
-  assert.equal(reloaded.spaces[0].status, 'active');
-  assert.equal(reloaded.spaces[0].space_version, 3);
-  assert.deepEqual(reloaded.materials, originalMaterials);
-  assert.deepEqual(reloaded.tasks, originalTasks);
-});
-
 test('live archive accepts only the matching updated version and status', async () => {
   const selected = space();
   const api = { setSpaceStatus: async (snapshot,status) => ({ ...snapshot, status, space_version: 8 }) };
@@ -63,7 +58,7 @@ test('live archive accepts only the matching updated version and status', async 
 });
 
 test('delete removes only the selected space and its tasks, retaining shared materials and other spaces', async () => {
-  const data = makeDemo(), originalMaterials = structuredClone(data.materials), remainingSpaces = structuredClone(data.spaces.slice(1));
+  const data = fixture(), originalMaterials = structuredClone(data.materials), remainingSpaces = structuredClone(data.spaces.slice(1));
   const selected = data.spaces[0];
   const api = { deleteSpace: async snapshot => ({ space_id: snapshot.id, status: 'succeeded', run_id: 'fixture-run' }) };
   await changeSpace({ api, mode: 'live', space: selected, action: 'delete', confirmed: true });
@@ -76,12 +71,10 @@ test('delete removes only the selected space and its tasks, retaining shared mat
   assert.deepEqual(data.spaces, []);
   assert.deepEqual(data.tasks, []);
   assert.deepEqual(data.materials, originalMaterials);
-  const storage = memory(); storageWrite(storage, DEMO_KEY, data);
-  assert.deepEqual(loadDemo(storage).spaces, []);
 });
 
 test('failed, mismatched and ambiguous delete responses never remove local records', async () => {
-  const data = makeDemo(), selected = data.spaces[0], original = structuredClone(data);
+  const data = fixture(), selected = data.spaces[0], original = structuredClone(data);
   const outcomes = [
     { space_id: 'another-space', status: 'succeeded' }, { space_id: selected.id, status: 'failed' }, {},
     new ApiError('版本冲突，请刷新', 409, 'VERSION_CONFLICT'), new ApiError('连接中断', 0, 'NETWORK'),
@@ -99,7 +92,7 @@ test('failed, mismatched and ambiguous delete responses never remove local recor
 });
 
 test('queued deletion waits for successful completion before removing a space', async () => {
-  const data = makeDemo(), selected = data.spaces[0];
+  const data = fixture(), selected = data.spaces[0];
   let finish;
   const completion = new Promise(resolve => { finish = resolve; });
   const api = { deleteSpace: async () => ({ space_id: selected.id, status: 'queued', run_id: 'fixture-run' }), waitRun: async id => { assert.equal(id, 'fixture-run'); await completion; } };

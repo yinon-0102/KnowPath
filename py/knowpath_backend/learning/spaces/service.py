@@ -77,7 +77,7 @@ class SpaceService:
             if not material_ids:
                 raise DomainConflict("MATERIAL_REQUIRED", "至少需要一份资料")
             bindings = []
-            for material_id in sorted(material_ids):
+            for material_id in material_ids:
                 material = self.materials.get_material(material_id)
                 if material is None:
                     raise DomainNotFound("material", material_id)
@@ -231,6 +231,13 @@ class SpaceService:
         def change():
             space = self.repository.get(space_id)
             self.check_version(space, payload, "profile_version")
+            prior_profile_version = space['profile_version']
+            if (space['status']=='archived' and isinstance(payload.get('preferences'),dict)
+                    and {'lesson_style','lesson_instructions'}.intersection(payload['preferences'])):
+                raise DomainConflict('SPACE_ARCHIVED','归档空间不能修改课件偏好')
+            if (space['status']=='archived' and 'preferences' in payload and payload['preferences'] is None
+                    and {'lesson_style','lesson_instructions'}.intersection(space.get('profile',{}).get('preferences',{}).get('value') or {})):
+                raise DomainConflict('SPACE_ARCHIVED','归档空间不能清除课件偏好')
             timestamp = now()
             for field in ("goal", "weekly_minutes", "target_date", "preferences"):
                 if field not in payload:
@@ -254,6 +261,19 @@ class SpaceService:
                 from knowpath_backend.learning.spaces.profile_candidates import confirm_candidates
                 confirm_candidates(self.graphs.repository, space_id, payload.get("preferences"), timestamp)
             space["profile_version"] += 1
+            lesson_only = (set(payload) <= {'expected_version','preferences'}
+                           and isinstance(payload.get('preferences'),dict)
+                           and bool(payload['preferences'])
+                           and set(payload['preferences']) <= {'lesson_style','lesson_instructions'})
+            if lesson_only and self.graphs is not None:
+                # Expression preferences do not change task choice or frozen
+                # evidence. Preserve already-stale plans rather than healing
+                # an earlier goal/budget change by advancing their snapshot.
+                for plan in self.graphs.repository.records('plans',space_id=space_id):
+                    snapshot = plan.get('config',{}).get('snapshot',{})
+                    if plan['status']=='ready' and snapshot.get('profile_version')==prior_profile_version:
+                        snapshot['profile_version']=space['profile_version']
+                        self.graphs.repository.put_record('plans',plan)
             space["updated_at"] = timestamp
             self.repository.put(space)
             return {"profile": copy.deepcopy(space["profile"]), "profile_version": space["profile_version"]}

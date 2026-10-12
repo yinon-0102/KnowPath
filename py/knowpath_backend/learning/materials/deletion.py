@@ -109,7 +109,10 @@ class MaterialDeletionService:
         for message in self.repository.records('messages', space_id=space['id']):
             if not references(message['snapshot'], material_id):
                 continue
+            self.runs.withdraw_drafts(message['run_id'],include_completed=True)
             snapshot = message['snapshot']
+            if snapshot.get('reading_context', {}).get('material_id') == material_id:
+                snapshot.pop('reading_context')
             snapshot['sources'] = [s for s in snapshot['sources'] if not references(s, material_id)]
             if 'retrieval_sources' in snapshot:
                 snapshot['retrieval_sources'] = [s for s in snapshot['retrieval_sources'] if not references(s, material_id)]
@@ -190,6 +193,19 @@ class MaterialDeletionService:
                                or any(references(m['snapshot'], material_id) for m in self.repository.records('messages', space_id=s['id']))]
             for space in affected_spaces:
                 self._space(space, material_id, assessments)
+                # Dependent previews/history contain pinned sources. Erase them
+                # rather than leaving a reusable snapshot of deleted content.
+                for table in ('budget_comparisons', 'plan_adjustments', 'policy_recommendations'):
+                    rows = self.repository.records(table, space_id=space['id'])
+                    for row in rows:
+                        self._cancel(row.get('run_id'))
+                        for event in self.repository.records('outbox', lock=False):
+                            if event.get('payload', {}).get('adjustment_id') == row['id']:
+                                event.update(status='cancelled', lease_token=None, lease_until=None)
+                                self.repository.put_record('outbox', event)
+                    self._remove(table, [r['id'] for r in rows])
+            if getattr(self, 'notes', None) is not None:
+                self.notes.delete_material(material_id)
             collections = {(r.get('preparation') or {}).get('qdrant', {}).get('collection') for r in histories}
             collections.discard(None)
             for event in self.repository.records('outbox'):

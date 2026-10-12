@@ -103,7 +103,7 @@ def test_budget_and_overflow_return_actionable_conflicts():
     state, space_id, topics = seed(InMemoryMaterialRepository())
     state.update_profile(space_id, {"weekly_minutes": 15, "expected_version": 1})
     with pytest.raises(DomainConflict) as exc:
-        state.create_plan(space_id, {})
+        state.create_plan(space_id, {"schedule_mode": "session_window"})
     assert exc.value.code == "PLAN_CONSTRAINT_UNSATISFIABLE"
     assert exc.value.details["conflicts"]
     assert exc.value.details["adjustable_constraints"]
@@ -203,7 +203,7 @@ def test_http_datetime_event_idempotency_and_conflict_details(monkeypatch):
     assert client.post(events, json=body).status_code == 400
     assert client.post(events, json={"type": "resume"}, headers={"Idempotency-Key": "api-event"}).status_code == 409
     state.update_profile(space["id"], {"weekly_minutes": 15, "expected_version": 1})
-    constraint = client.post(url, json={}, headers={"Idempotency-Key": "api-constraint"})
+    constraint = client.post(url, json={"schedule_mode": "session_window"}, headers={"Idempotency-Key": "api-constraint"})
     assert constraint.status_code == 422
     assert constraint.json()["error"]["details"]["conflicts"]
 
@@ -215,7 +215,7 @@ def test_planning_uses_actual_minutes_and_deadline(monkeypatch):
     state, space_id, topics = seed(repo)
     state.set_scope(space_id, {"topic_ids": [topics[0]["id"]], "expected_version": 2})
     state.update_profile(space_id, {"weekly_minutes": 15, "expected_version": 1})
-    plan = state.create_plan(space_id, {})
+    plan = state.create_plan(space_id, {"schedule_mode": "session_window"})
     assert sum(t["estimated_minutes"] for t in plan["tasks"]) <= 15
     assert plan["tasks"][0]["context"]["scheduled_date"] == "2026-09-18"
     state.set_scope(space_id, {"topic_ids": [t["id"] for t in topics], "expected_version": 3})
@@ -230,10 +230,10 @@ def test_plan_becomes_stale_after_profile_change(backend):
     state, space_id, _ = seed(backend)
     plan = state.create_plan(space_id, {})
     state.update_profile(space_id, {"weekly_minutes": 110, "expected_version": 1})
-    assert LearningState(backend).get_plan(plan["id"])["status"] == "needs_replan"
-    with pytest.raises(DomainConflict) as exc:
-        state.start_session(plan["id"], plan["tasks"][0]["id"])
-    assert exc.value.code == "PLAN_NOT_ACTIVE"
+    restored = LearningState(backend).get_plan(plan["id"])
+    assert restored["status"] == "ready"
+    assert restored["adjustment_pending"]
+    assert state.start_session(plan["id"], plan["tasks"][0]["id"])["status"] == "active"
 
 
 def test_due_review_and_weak_topics_get_specific_tasks(monkeypatch):

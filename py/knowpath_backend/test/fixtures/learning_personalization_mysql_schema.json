@@ -1,0 +1,35 @@
+{
+  "study_lessons": {
+    "table": "\nCREATE TABLE study_lessons (\n\tid VARCHAR(36) NOT NULL, \n\tspace_id VARCHAR(36) NOT NULL, \n\tnode_id VARCHAR(128) NOT NULL, \n\tversion INTEGER NOT NULL, \n\trun_id VARCHAR(128) NOT NULL, \n\tstatus VARCHAR(128) NOT NULL, \n\tcontext JSON NOT NULL, \n\tPRIMARY KEY (id), \n\tCONSTRAINT uq_study_lesson_version UNIQUE (space_id, node_id, version), \n\tFOREIGN KEY(space_id) REFERENCES learning_spaces (id) ON DELETE CASCADE\n)\n\n",
+    "indexes": [
+      "CREATE INDEX ix_study_lessons_node_id ON study_lessons (node_id)",
+      "CREATE INDEX ix_study_lessons_run_id ON study_lessons (run_id)",
+      "CREATE INDEX ix_study_lessons_space_id ON study_lessons (space_id)",
+      "CREATE INDEX ix_study_lessons_status ON study_lessons (status)"
+    ]
+  },
+  "budget_comparisons": {
+    "table": "\nCREATE TABLE budget_comparisons (\n\tid VARCHAR(36) NOT NULL, \n\tspace_id VARCHAR(36) NOT NULL, \n\tplan_id VARCHAR(36), \n\tstatus VARCHAR(32) NOT NULL, \n\trun_id VARCHAR(36), \n\tcontext JSON NOT NULL, \n\tcreated_at DATETIME NOT NULL, \n\tPRIMARY KEY (id), \n\tFOREIGN KEY(space_id) REFERENCES learning_spaces (id) ON DELETE CASCADE\n)\n\n",
+    "indexes": [
+      "CREATE INDEX ix_budget_comparisons_created_at ON budget_comparisons (created_at)",
+      "CREATE INDEX ix_budget_comparisons_plan_id ON budget_comparisons (plan_id)",
+      "CREATE INDEX ix_budget_comparisons_space_id ON budget_comparisons (space_id)"
+    ]
+  },
+  "plan_adjustments": {
+    "table": "\nCREATE TABLE plan_adjustments (\n\tid VARCHAR(36) NOT NULL, \n\tspace_id VARCHAR(36) NOT NULL, \n\tplan_id VARCHAR(36), \n\tstatus VARCHAR(32) NOT NULL, \n\trun_id VARCHAR(36), \n\tcontext JSON NOT NULL, \n\tcreated_at DATETIME NOT NULL, \n\tPRIMARY KEY (id), \n\tFOREIGN KEY(space_id) REFERENCES learning_spaces (id) ON DELETE CASCADE\n)\n\n",
+    "indexes": [
+      "CREATE INDEX ix_plan_adjustments_created_at ON plan_adjustments (created_at)",
+      "CREATE INDEX ix_plan_adjustments_plan_id ON plan_adjustments (plan_id)",
+      "CREATE INDEX ix_plan_adjustments_space_id ON plan_adjustments (space_id)"
+    ]
+  },
+  "policy_recommendations": {
+    "table": "\nCREATE TABLE policy_recommendations (\n\tid VARCHAR(36) NOT NULL, \n\tspace_id VARCHAR(36) NOT NULL, \n\tplan_id VARCHAR(36), \n\tstatus VARCHAR(32) NOT NULL, \n\trun_id VARCHAR(36), \n\tcontext JSON NOT NULL, \n\tcreated_at DATETIME NOT NULL, \n\tPRIMARY KEY (id), \n\tFOREIGN KEY(space_id) REFERENCES learning_spaces (id) ON DELETE CASCADE\n)\n\n",
+    "indexes": [
+      "CREATE INDEX ix_policy_recommendations_created_at ON policy_recommendations (created_at)",
+      "CREATE INDEX ix_policy_recommendations_plan_id ON policy_recommendations (plan_id)",
+      "CREATE INDEX ix_policy_recommendations_space_id ON policy_recommendations (space_id)"
+    ]
+  }
+}

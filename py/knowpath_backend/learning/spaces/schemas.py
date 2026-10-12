@@ -16,6 +16,11 @@ class Contract(BaseModel):
 
 
 class Preferences(Contract):
+    automatic_adjustment: StrictBool | None = None
+    time_personalization: StrictBool | None = None
+    lesson_adaptation: StrictBool | None = None
+    lesson_style: Literal['plain', 'examples_first', 'concise', 'deep'] | None = None
+    lesson_instructions: str | None = Field(default=None, max_length=1000)
     example_first: StrictBool | None = None
     concise_explanations: StrictBool | None = None
 

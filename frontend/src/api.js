@@ -5,7 +5,8 @@ export class ApiError extends Error {
   constructor(message, status = 0, code = '', details = {}) { super(message); this.status = status; this.code = code; this.details = details; }
 }
 export function createApi(getToken) {
-  async function request(path, { method = 'GET', body, signal, timeout = 20000, headers = {}, raw = false, key } = {}) {
+  let capabilityRequest, capabilityToken;
+  async function request(path, { method = 'GET', body, signal, timeout = 20000, headers = {}, raw = false, key, serviceRoot = false } = {}) {
     const controller = new AbortController();
     const abort = () => controller.abort();
     if (signal?.aborted) controller.abort();
@@ -17,11 +18,15 @@ export function createApi(getToken) {
     if (body != null && !isForm) requestHeaders['Content-Type'] = 'application/json';
     if (method === 'POST' || key) requestHeaders['Idempotency-Key'] = key || crypto.randomUUID();
     try {
-      const response = await fetch(API_BASE + path, { method, headers: requestHeaders, body: body == null ? undefined : isForm ? body : JSON.stringify(body), signal: controller.signal, credentials: 'omit', cache: 'no-store', redirect: 'error' });
+      const response = await fetch((serviceRoot ? new URL(API_BASE).origin : API_BASE) + path, { method, headers: requestHeaders, body: body == null ? undefined : isForm ? body : JSON.stringify(body), signal: controller.signal, credentials: 'omit', cache: 'no-store', redirect: 'error' });
       if (!response.ok) {
         const payload = await response.json().catch(() => ({}));
         const error = payload.error || {};
-        const message = response.status === 401 ? '本地会话令牌无效，请打开连接设置重新输入。' : error.message || `请求失败（${response.status}），请重试。`;
+        let message = response.status === 401 ? '本地鉴权已失效，请重新连接以自动读取当前令牌。' : error.message || `请求失败（${response.status}），请重试。`;
+        if (response.status === 422 && Array.isArray(error.details?.errors)) {
+          const fields = error.details.errors.slice(0, 5).map(item => `${(item.loc || []).filter(part => part !== 'body').join('.') || '请求'}：${item.msg || '参数无效'}${item.type ? ` [${item.type}]` : ''}`);
+          if (fields.length) message += `（${fields.join('；')}）`;
+        }
         throw new ApiError(message, response.status, error.code, error.details);
       }
       if (raw) return response;
@@ -32,6 +37,30 @@ export function createApi(getToken) {
       if (controller.signal.aborted) throw new ApiError('请求超时，请检查本地服务后重试。', 0, 'TIMEOUT');
       throw new ApiError('无法连接本地服务，请确认后端已在 127.0.0.1:8000 启动。', 0, 'NETWORK');
     } finally { clearTimeout(timer); signal?.removeEventListener('abort', abort); }
+  }
+  async function messageCapabilities({ refresh = false } = {}) {
+    const currentToken = getToken();
+    if (refresh || capabilityToken !== currentToken) capabilityRequest = null;
+    capabilityToken = currentToken;
+    if (!capabilityRequest) {
+      const checking = request('/openapi.json', { serviceRoot: true }).then(spec => {
+        const schema = spec.paths?.['/api/v1/learning-spaces/{space_id}/messages']?.post?.requestBody?.content?.['application/json']?.schema;
+        const resolve = value => value?.$ref ? value.$ref.slice(2).split('/').reduce((part, key) => part?.[key], spec) : value;
+        const resolved = resolve(schema), properties = resolved?.properties || {};
+        const modes = resolve(properties.answer_mode)?.enum || [];
+        const compatible = Boolean(properties.reading_context && ['auto', 'material', 'general'].every(mode => modes.includes(mode)));
+        return { compatible, reading_context: Boolean(properties.reading_context), answer_mode: modes,
+          message: compatible ? '' : '当前后端尚未加载阅读问答与自动回答接口，请重启后端 API 和模型 worker，再点击重新连接。' };
+      });
+      capabilityRequest = checking;
+      checking.catch(() => { if (capabilityRequest === checking) capabilityRequest = null; });
+    }
+    return capabilityRequest;
+  }
+  async function sendAdaptiveMessage(spaceId, body, options = {}) {
+    const capabilities = await messageCapabilities({ refresh: true });
+    if (!capabilities.compatible) throw new ApiError(capabilities.message, 409, 'BACKEND_RESTART_REQUIRED');
+    return request(`/learning-spaces/${id(spaceId)}/messages`, { ...options, method: 'POST', body: { answer_mode: 'auto', ...body } });
   }
   const id = encodeURIComponent;
   const query = (path, params = {}) => {
@@ -66,55 +95,34 @@ export function createApi(getToken) {
     return results.flatMap(result => result.items || []);
   }
   async function graph(space) {
-    const allTopics = await topics(space);
-    const permitted = new Set(allTopics.map(t => t.id));
-    const roots = [...new Set([...(space.topic_ids || []), ...allTopics.filter(t => t.level === 1).map(t => t.id)])].filter(t => permitted.has(t));
-    if (!roots.length && allTopics.length) roots.push(allTopics[0].id);
-    const nodes = new Map(allTopics.map(t => [t.id, t]));
+    const nodes = new Map();
     const edges = new Map();
-    for (const root of roots) {
-      const data = await request(`/topics/${id(root)}/graph?depth=3&include_sources=true`);
-      for (const node of data.nodes || []) if (permitted.has(node.id)) {
-        const bound = nodes.get(node.id);
-        if (bound.graph_version !== node.graph_version || bound.material_version_id !== node.material_version_id) throw new ApiError('图谱版本与空间绑定的快照不同，请确认知识版本后重试。');
-        nodes.set(node.id, node);
+    const projections = await Promise.all((space.bindings || []).map(async binding => {
+      const data = await materialGraph({ id: binding.material_id, current_version_id: binding.material_version_id });
+      if (data.graph_version !== binding.graph_version || data.material_version_id !== binding.material_version_id) {
+        throw new ApiError('图谱版本与空间绑定的快照不同，请确认知识版本后重试。');
       }
-      for (const edge of data.edges || []) if (permitted.has(edge.from_id) && permitted.has(edge.to_id)) edges.set(edge.id, edge);
+      return data;
+    }));
+    for (const data of projections) {
+      for (const node of data.nodes || []) nodes.set(node.id, node);
+      for (const edge of data.edges || []) edges.set(edge.id, edge);
     }
     return { nodes: [...nodes.values()], edges: [...edges.values()] };
   }
   async function materialGraph(material, options = {}) {
     const versionId = material?.current_version_id || material?.version_id;
-    const result = await request(`/materials/${id(material.id)}/topics${versionId ? `?version_id=${id(versionId)}` : ''}`, options);
-    if (!Array.isArray(result.items)) throw new ApiError('资料知识主题返回格式不正确。');
-    const permitted = new Set(result.items.map(topic => topic.id));
-    const nodes = new Map(result.items.map(topic => [topic.id, topic]));
-    const edges = new Map();
-    const addEdge = edge => {
-      if (!edge?.from_id || !edge?.to_id || !permitted.has(edge.from_id) || !permitted.has(edge.to_id)) return;
-      const key = `${edge.type || 'related_to'}:${edge.from_id}:${edge.to_id}`;
-      edges.set(key, edge.id ? edge : { ...edge, id: key });
-    };
-    for (const topic of result.items) {
-      if (topic.parent_id) addEdge({ id: `contains:${topic.parent_id}:${topic.id}`, type: 'contains', from_id: topic.parent_id, to_id: topic.id, source_refs: topic.source_refs || [] });
-      for (const prerequisite of [...(topic.prerequisites || []), ...(topic.recommended_prerequisites || [])]) {
-        const source = typeof prerequisite === 'string' ? prerequisite : prerequisite?.id;
-        if (source) addEdge({ id: `prerequisite_of:${source}:${topic.id}`, type: 'prerequisite_of', from_id: source, to_id: topic.id, source_refs: topic.source_refs || [] });
-      }
-    }
-    const roots = result.items.filter(topic => !topic.parent_id).map(topic => topic.id);
-    for (const root of roots.length ? roots : result.items.slice(0, 1).map(topic => topic.id)) {
-      const data = await request(`/topics/${id(root)}/graph?depth=3&include_sources=true`, options);
-      for (const node of data.nodes || []) if (permitted.has(node.id)) nodes.set(node.id, node);
-      for (const edge of data.edges || []) addEdge(edge);
-    }
-    return { nodes: [...nodes.values()], edges: [...edges.values()], graph_version: result.graph_version, material_id: result.material_id, material_version_id: result.version_id };
+    const result = await request(query(`/materials/${id(material.id)}/graph`, { version_id: versionId, include_sources: true }), options);
+    if (!Array.isArray(result.nodes) || !Array.isArray(result.edges)) throw new ApiError('资料知识图谱返回格式不正确。');
+    return { nodes: result.nodes, edges: result.edges, sources: result.sources || [], graph_version: result.graph_version,
+      material_id: result.material_id, material_version_id: result.version_id };
   }
-  async function waitRun(runId, signal) {
+  async function waitRun(runId, signal, onProgress = () => {}) {
     const start = Date.now();
     while (Date.now() - start < 90000) {
       if (signal?.aborted) throw new DOMException('操作已停止', 'AbortError');
       const run = await request(`/runs/${id(runId)}`, { signal });
+      onProgress(run);
       if (['succeeded', 'completed'].includes(run.status)) return run;
       if (['failed', 'cancelled'].includes(run.status)) {
         throw new ApiError(run.error?.message || '后台任务未完成，请重试。', 200,
@@ -125,7 +133,7 @@ export function createApi(getToken) {
     }
     throw new ApiError('后台仍在处理。稍后刷新查看结果。', 0, 'RUN_PENDING', { runId });
   }
-  async function readMessage(job, { signal, onStatus = () => {} } = {}) {
+  async function readRun(job, { signal, onStatus = () => {}, onDelta = () => {}, onEvent = () => {}, answer = true } = {}) {
     // Keep the same run and cursor on reconnection: never resubmit the question.
     job.lastEventId ||= '0';
     for (let attempt = 0; attempt < 3; attempt++) {
@@ -136,7 +144,7 @@ export function createApi(getToken) {
       signal?.addEventListener('abort', abort, { once: true });
       const timeout = setTimeout(abort, 90000);
       try {
-        onStatus(attempt ? '正在重新连接回答…' : '正在检索资料与生成回答…');
+        onStatus(attempt ? '正在恢复生成连接…' : answer ? '正在检索资料与生成回答…' : '正在接收节点讲义…');
         const response = await request(`/runs/${id(job.run_id)}/events`, { raw: true, signal: controller.signal, headers: { Accept: 'text/event-stream', 'Last-Event-ID': job.lastEventId } });
         if (!response.headers.get('content-type')?.includes('text/event-stream') || !response.body) throw new ApiError('后端未返回正确的事件流。');
         reader = response.body.getReader();
@@ -148,9 +156,18 @@ export function createApi(getToken) {
           if (/^\d+$/.test(event.id) && BigInt(event.id) <= BigInt(job.lastEventId)) return;
           const data = JSON.parse(event.data.join('\n'));
           if (/^\d+$/.test(event.id)) job.lastEventId = event.id;
+          if (event.event === 'message.route') { job.answer_mode = data.answer_mode; job.supplement_explanation = data.supplement_explanation; }
+          if (event.event === 'message.delta' && typeof data.delta === 'string') {
+            const phase = data.provisional === true ? 'draft' : 'verified';
+            const reset = job.textPhase !== phase;
+            job.streamText = (reset ? '' : job.streamText || '') + data.delta; job.textPhase = phase;
+            onDelta(data.delta, { text: job.streamText, provisional: data.provisional === true, reset, answer_mode: job.answer_mode, supplement_explanation: job.supplement_explanation });
+          }
+          if (event.event === 'message.reset') { job.streamText = ''; job.textPhase = null; onDelta('', { text: '', provisional: true, reset: true }); }
           if (event.event === 'message.completed') job.result = data;
-          if (event.event === 'run.completed') completed = true;
-          if (event.event === 'run.failed') throw new ApiError(data.error?.message || '回答生成失败，请检查模型配置。', 400, 'RUN_FAILED');
+          if (event.event === 'run.completed') { completed = true; job.completion = data; }
+          onEvent(event.event, data);
+          if (event.event === 'run.failed') throw new ApiError(data.error?.message || '回答生成失败，请检查模型配置。', 400, data.error?.code || 'RUN_FAILED');
           if (event.event === 'run.cancelled') throw new ApiError('任务已取消。', 400, 'RUN_CANCELLED');
         };
         while (!completed) {
@@ -169,6 +186,7 @@ export function createApi(getToken) {
           }
           if (done) { dispatch(); break; }
         }
+        if (!answer && completed) return job.completion;
         if (job.result && typeof job.result.text === 'string') return job.result;
         if (completed) throw new ApiError('任务完成但未返回回答正文。', 400, 'MISSING_RESULT');
       } catch (error) {
@@ -179,7 +197,17 @@ export function createApi(getToken) {
     }
     throw new ApiError('后台仍在生成，点击“继续接收”查看结果。', 0, 'RUN_PENDING');
   }
-  return { request, list, topics, graph, materialGraph, waitRun, readMessage,
+  const readMessage = (job, options) => readRun(job, options);
+  const readLessonRun = (job, options) => readRun(job, { ...options, answer: false });
+  return { request, list, topics, graph, materialGraph, waitRun, readMessage, readLessonRun, messageCapabilities,
+    sessionActivity: (sessionId, body, options = {}) => request(`/sessions/${id(sessionId)}/activity`, { ...options, method: 'POST', body }),
+    assessmentActivity: (assessmentId, body, options = {}) => request(`/assessments/${id(assessmentId)}/activity`, { ...options, method: 'POST', body }),
+    applySchedule: (planId, body, options = {}) => request(`/plans/${id(planId)}/schedule`, { ...options, method: 'PATCH', body, key: options.key || crypto.randomUUID() }),
+    planAdjustments: (planId, options = {}) => request(`/plans/${id(planId)}/adjustments`, options),
+    refreshPlan: (planId, body, options = {}) => request(`/plans/${id(planId)}/refresh`, { ...options, method: 'POST', body }),
+    revertAdjustment: (adjustmentId, body, options = {}) => request(`/plan-adjustments/${id(adjustmentId)}/revert`, { ...options, method: 'POST', body }),
+    recommendPolicy: (spaceId, body = {}, options = {}) => request(`/learning-spaces/${id(spaceId)}/policy-recommendations`, { ...options, method: 'POST', body }),
+    applyPolicyRecommendation: (recommendationId, body, options = {}) => request(`/policy-recommendations/${id(recommendationId)}/apply`, { ...options, method: 'POST', body }),
     createAssessment: (spaceId, body, options = {}) => request(`/learning-spaces/${id(spaceId)}/assessments`, { ...options, method: 'POST', body }),
     assessment: (assessmentId, options = {}) => request(`/assessments/${id(assessmentId)}`, options),
     diagnostic: (assessmentId, options = {}) => request(`/assessments/${id(assessmentId)}/diagnostic`, options),
@@ -191,6 +219,7 @@ export function createApi(getToken) {
     replayPolicies: (spaceId, body = {}, options = {}) => request(`/learning-spaces/${id(spaceId)}/policy-replays`, { ...options, method: 'POST', body }),
     spaces: () => list('/learning-spaces'), materials: () => list('/materials'),
     space: (value, options = {}) => request(`/learning-spaces/${id(value)}`, options),
+    materialFile: (materialId, versionId, spaceId, options = {}) => request(query(`/materials/${id(materialId)}/versions/${id(versionId)}/file`, { space_id: spaceId }), { ...options, raw: true }),
     createSpace: body => request('/learning-spaces', { method: 'POST', body }),
     setSpaceStatus: (space, status, options = {}) => request(`/learning-spaces/${id(space.id)}`, { ...options, method: 'PATCH', body: { status, expected_version: space.space_version } }),
     deleteSpace: (space, options = {}) => request(`/learning-spaces/${id(space.id)}`, { ...options, method: 'DELETE', body: { confirm: true, expected_version: space.space_version } }),
@@ -201,9 +230,14 @@ export function createApi(getToken) {
     graphDiff: (value, revisionId, options = {}) => request(query(`/materials/${id(value)}/graph-diff`, { revision_id: revisionId }), options),
     publish: (materialId, revisionId, version, resolutions = [], options = {}) => request(`/materials/${id(materialId)}/graph-revisions/${id(revisionId)}/publish`, { ...options, method: 'POST', body: { expected_graph_version: version, resolutions } }),
     createPlan: (spaceId, body) => request(`/learning-spaces/${id(spaceId)}/plans`, { method: 'POST', body }),
+    orderPreview: (planId, body, options = {}) => request(`/plans/${id(planId)}/order-preview`, { ...options, method: 'POST', body }),
+    reorderPlan: (planId, body, options = {}) => request(`/plans/${id(planId)}/order`, { ...options, method: 'PATCH', body }),
     plan: value => request(`/plans/${id(value)}`),
+    workbench: (spaceId, options = {}) => request(`/learning-spaces/${id(spaceId)}/workbench`, options),
+    progress: (spaceId, params = {}, options = {}) => request(query(`/learning-spaces/${id(spaceId)}/progress`, params), options),
+    learningRecord: (planId, taskId, options = {}) => request(`/plans/${id(planId)}/tasks/${id(taskId)}/learning-record`, options),
     completeTask: (plan, task) => request(`/plans/${id(plan.id || plan.plan_id)}/tasks/${id(task.id)}`, { method: 'PATCH', body: { status: 'completed', expected_plan_version: plan.version } }),
-    sendMessage: (spaceId, message, sessionId, materialIds = []) => request(`/learning-spaces/${id(spaceId)}/messages`, { method: 'POST', body: { message, stream: true, ...(sessionId ? { session_id: sessionId } : {}), ...(materialIds.length ? { material_ids: materialIds } : {}) } }),
+    sendMessage: (spaceId, message, sessionId, materialIds = []) => sendAdaptiveMessage(spaceId, { message, stream: true, ...(sessionId ? { session_id: sessionId } : {}), ...(materialIds.length ? { material_ids: materialIds } : {}) }),
     updateMaterial: (materialId, body, options = {}) => request(`/materials/${id(materialId)}`, { ...options, method: 'PATCH', body }),
     deleteMaterial: (materialId, body, options = {}) => request(`/materials/${id(materialId)}`, { ...options, method: 'DELETE', body }),
     uploadVersion: (materialId, file, note, options = {}) => {
@@ -215,6 +249,12 @@ export function createApi(getToken) {
     reconcile: (materialId, body, options = {}) => request(`/materials/${id(materialId)}/reconcile`, { ...options, method: 'POST', body }),
     updateSpace: (spaceId, body, options = {}) => request(`/learning-spaces/${id(spaceId)}`, { ...options, method: 'PATCH', body }),
     profile: (spaceId, options = {}) => request(`/learning-spaces/${id(spaceId)}/profile`, options),
+    studyLessons: (spaceId, nodeId, options = {}) => request(`/learning-spaces/${id(spaceId)}/nodes/${id(nodeId)}/lessons`, options),
+    generateStudyLesson: (spaceId, nodeId, body, options = {}) => request(`/learning-spaces/${id(spaceId)}/nodes/${id(nodeId)}/lessons`, { ...options, method: 'POST', body }),
+    studyLesson: (lessonId, options = {}) => request(`/study-lessons/${id(lessonId)}`, options),
+    retryStudyLesson: (lessonId, options = {}) => request(`/study-lessons/${id(lessonId)}/retry`, { ...options, method: 'POST', body: {} }),
+    sendStudyMessage: sendAdaptiveMessage,
+    studyMessages: (spaceId, sessionId, params = {}, options = {}) => request(query(`/learning-spaces/${id(spaceId)}/conversations/${id(sessionId)}/messages`, params), options),
     updateProfile: (spaceId, body, options = {}) => request(`/learning-spaces/${id(spaceId)}/profile`, { ...options, method: 'PATCH', body }),
     learningState: (spaceId, params = {}, options = {}) => request(query(`/learning-spaces/${id(spaceId)}/state`, params), options),
     resetState: (spaceId, body, options = {}) => request(`/learning-spaces/${id(spaceId)}/state/reset`, { ...options, method: 'POST', body }),
@@ -234,6 +274,13 @@ export function createApi(getToken) {
     finishSession: (sessionId, options = {}) => request(`/sessions/${id(sessionId)}/finish`, { ...options, method: 'POST', body: {} }),
     exportSpace: (spaceId, options = {}) => request(`/learning-spaces/${id(spaceId)}/exports`, { ...options, method: 'POST', body: { format: 'json' } }),
     downloadExport: (exportId, options = {}) => request(`/exports/${id(exportId)}/download`, { ...options, raw: true }),
+    notebooks: (options = {}) => request('/notebooks', options),
+    notebook: (spaceId, options = {}) => request(`/learning-spaces/${id(spaceId)}/notebook`, options),
+    noteChapter: (chapterId, options = {}) => request(`/note-chapters/${id(chapterId)}`, options),
+    updateNoteChapter: (chapterId, body, options = {}) => request(`/note-chapters/${id(chapterId)}`, { ...options, method: 'PATCH', body }),
+    noteRevisions: (chapterId, options = {}) => request(`/note-chapters/${id(chapterId)}/revisions`, options),
+    noteRevision: (chapterId, revisionId, options = {}) => request(`/note-chapters/${id(chapterId)}/revisions/${id(revisionId)}`, options),
+    retryNoteGeneration: (generationId, options = {}) => request(`/note-generations/${id(generationId)}/retry`, { ...options, method: 'POST', body: {} }),
     health: (options = {}) => request('/health', options),
     cancelRun: runId => request(`/runs/${id(runId)}/cancel`, { method: 'POST', body: {} }),
     source: (ref, spaceId) => {
@@ -254,15 +301,13 @@ export function createApi(getToken) {
 }
 
 // State is updated by the caller only after a confirmed successful operation.
-export async function changeSpace({ api, mode, space, action, confirmed = false }) {
+export async function changeSpace({ api, space, action, confirmed = false }) {
   if (!space?.id || !Number.isInteger(space.space_version) || space.space_version < 1) {
     throw new Error('空间信息已失效，请刷新页面后重新操作。');
   }
   if (!['archive', 'restore', 'delete'].includes(action)) throw new Error('不支持的空间操作。');
   if (action === 'delete' && confirmed !== true) throw new Error('请先确认删除此空间及其学习记录。');
   const status = action === 'archive' ? 'archived' : 'active';
-  if (mode === 'demo') return action === 'delete' ? null : { ...space, status, space_version: space.space_version + 1 };
-  if (mode !== 'live') throw new Error('当前数据模式不可用，请刷新页面。');
   if (action !== 'delete') {
     const result = await api.setSpaceStatus(space, status);
     if (result?.id !== space.id || result.status !== status || !Number.isInteger(result.space_version) || result.space_version <= space.space_version) {

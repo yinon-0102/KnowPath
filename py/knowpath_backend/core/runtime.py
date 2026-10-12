@@ -7,7 +7,7 @@ import os
 from pathlib import Path
 from typing import Dict, Optional
 
-from dotenv import load_dotenv
+from knowpath_backend.core.env import load_project_env
 
 from knowpath_backend.agents.function_call_agent import MyFunctionCallAgent
 from knowpath_backend.core.llm import MyLLM
@@ -50,7 +50,7 @@ def load_config(persist: bool = False) -> Dict:
     用于保留跨项目配置；默认只读，不自动写入配置文件。
     persist=False(默认,给测试/非入口用):只读不写。
     """
-    load_dotenv()
+    load_project_env()
     data: Dict = {}
     if CONFIG_PATH.exists():
         try:

@@ -7,7 +7,10 @@ import time
 from knowpath_backend.observability import configure_logging, shutdown_logging, log_event
 
 
-from dotenv import load_dotenv
+from knowpath_backend.core.env import load_project_env
+
+# Backward-compatible hook for tests and external launchers that patch load_dotenv.
+load_dotenv = load_project_env
 
 from knowpath_backend.learning.persistence.db import create_db_engine
 from knowpath_backend.learning.workers.model_tasks import ModelTaskWorker
@@ -44,13 +47,23 @@ def main(argv=None):
         materials = SqlAlchemyMaterialRepository.from_env(engine)
         state = LearningState(materials)
         worker = ModelTaskWorker(state.assessment_service, state.message_service,
+                                 notes=state.notes_service,
+                                 lessons=state.lesson_service,
                                  lease_seconds=args.lease_seconds, max_attempts=args.max_attempts,
                                  max_execution_seconds=args.max_execution_seconds)
         ready = True
         log_event(logger, 'worker.started', poll_seconds=args.poll_seconds)
         while True:
             try:
-                handled = worker.run_once()
+                # Pure planning jobs share the process, not the model executor.
+                rule_handled = False
+                try:
+                    state.plan_adjustments.tick()
+                    rule_handled = state.plan_adjustments.run_once()
+                except Exception as exc:
+                    log_event(logger, 'worker.rules.failed', level=logging.ERROR, exc=exc)
+                handled = False if args.once and rule_handled else worker.run_once()
+                handled = handled or rule_handled
                 if failures:
                     log_event(logger, 'worker.poll.recovered', consecutive_failures=failures)
                 failures = 0
@@ -92,7 +105,6 @@ def main(argv=None):
         finally:
             log_event(logger, 'worker.stopped')
             shutdown_logging()
-
 
 if __name__ == "__main__":
     raise SystemExit(main())

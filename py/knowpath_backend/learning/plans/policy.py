@@ -7,6 +7,7 @@ import json
 from uuid import uuid4
 
 from knowpath_backend.learning.errors import DomainConflict
+from knowpath_backend.learning.plans.ordering import reorder_task_nodes
 
 
 @dataclass(frozen=True)
@@ -29,7 +30,7 @@ def topic_fingerprint(topic, state, config, policy):
     return sha256(json.dumps(inputs, sort_keys=True, default=str).encode()).hexdigest()
 
 
-def build_tasks(topics, states, config, space, old_tasks, timestamp, policy):
+def build_tasks(topics, states, config, space, old_tasks, timestamp, policy, *, active_node_ids=None, source_positions=None):
     moment = datetime.fromisoformat(timestamp)
     today = moment.date()
     old_by_topic = {t["topic_ids"][0]: t for t in old_tasks if not t.get("context", {}).get("historical")}
@@ -70,6 +71,7 @@ def build_tasks(topics, states, config, space, old_tasks, timestamp, policy):
         elapsed_deferral = bool(previous and previous["status"] == "deferred"
             and previous.get("defer_until") and datetime.fromisoformat(previous["defer_until"]) <= moment)
         future_deferral = bool(previous and previous["status"] == "deferred" and not elapsed_deferral)
+        same_cycle = False
         if previous and not invalidated:
             old_context = previous.get("context", {})
             same_cycle = old_context.get("cycle_fingerprint") == cycle
@@ -88,21 +90,34 @@ def build_tasks(topics, states, config, space, old_tasks, timestamp, policy):
                 task = deepcopy(previous)
                 task["id"] = str(uuid4())
                 task["context"]["origin_task_id"] = previous["id"]
+                task["context"].setdefault("node_id", previous["id"])
+                task["context"].setdefault("sequence", old_context.get("position", 0) + 1)
                 tasks.append(task)
                 continue
         if previous and (previous["status"] in {"completed", "skipped"} or invalidated):
             archived.add(previous["id"])
+        not_required = kind is None and config.get('schedule_mode') == 'budget_rolling'
         if kind is None:
-            continue
+            if not not_required:
+                continue
+            kind, estimate, reason = 'learn', policy.learn_minutes, '当前已掌握且尚未到复习期，保留路线但无需安排'
         context = {"input_fingerprint": fingerprint, "cycle_fingerprint": cycle, "policy_version": policy.version,
                    "prerequisites": deepcopy(topic.get("prerequisites", []))}
+        if not_required:
+            context['not_required'] = True
         if previous:
             context["origin_task_id"] = previous["id"]
         if elapsed_deferral:
             context["previous_defer_until"] = previous["defer_until"]
+        if previous and not invalidated and same_cycle and previous["kind"] == kind:
+            if not previous.get("context", {}).get("historical"):
+                context.update({key: deepcopy(value) for key, value in previous.get("context", {}).items()
+                                if key in {"node_id", "sequence", "title", "topics", "source_refs"}})
+                context.setdefault("node_id", previous["id"])
+                context.setdefault("sequence", previous.get("context", {}).get("position", 0) + 1)
         tasks.append({"id": str(uuid4()), "topic_ids": [topic["id"]], "kind": kind,
                       "status": "deferred" if future_deferral else "pending", "estimated_minutes": estimate,
-                      "reason": reason, "note": previous.get("note") if elapsed_deferral or future_deferral else None,
+                      "reason": reason, "note": previous.get("note") if previous and (same_cycle or elapsed_deferral or future_deferral) else None,
                       "defer_until": previous["defer_until"] if future_deferral else None, "context": context})
     # Historical tasks remain traceable even when their topics leave the scope.
     for previous in old_tasks:
@@ -111,7 +126,15 @@ def build_tasks(topics, states, config, space, old_tasks, timestamp, policy):
             task = deepcopy(previous)
             task["id"] = str(uuid4())
             task["context"].update(origin_task_id=previous["id"], historical=True)
+            task["context"].setdefault("node_id", previous["id"])
+            task["context"].setdefault("sequence", previous.get("context", {}).get("position", 0) + 1)
             tasks.append(task)
+    fixed_ids = set()
+    if config.get("order_mode") == "custom" and config.get("custom_node_order"):
+        tasks, fixed_ids = reorder_task_nodes(tasks, topics, states, config,
+                                             active_node_ids=active_node_ids, source_positions=source_positions)
+        config["custom_node_order"] = [t.get("context", {}).get("node_id", t["id"])
+                                       for t in tasks if not t.get("context", {}).get("historical")]
     active = [t for t in tasks if t["status"] not in {"completed", "skipped", "deferred"} and not t["context"].get("historical")]
     by_topic = {t["topic_ids"][0]: t for t in tasks if not t["context"].get("historical")}
     # A deferred unmet prerequisite has no executable slot in this plan. Reject
@@ -136,25 +159,69 @@ def build_tasks(topics, states, config, space, old_tasks, timestamp, policy):
         if blocked:
             conflict("任务依赖的前置知识已延期，无法在当前计划中安排",
                      ["deferred_prerequisite", blocked], ["完成前置学习后重新规划", "缩小依赖该前置的范围"])
-    total = sum(t["estimated_minutes"] for t in active)
+    return schedule_tasks(tasks, config, space, today, fixed_task_ids=fixed_ids)
+
+
+def schedule_tasks(tasks, config, space, today, *, fixed_task_ids=None):
+    """Allocate bounded daily slots; reorder reserves frozen executed slots."""
+    if config.get('schedule_mode') == 'budget_rolling':
+        from .rolling import allocate_ordered_tasks
+        for position, task in enumerate(tasks):
+            context = task.setdefault('context', {})
+            context['position'] = position
+            context.setdefault('node_id', task['id'])
+            context.setdefault('sequence', position + 1)
+            task['node_id'], task['sequence'] = context['node_id'], context['sequence']
+        tasks[:] = allocate_ordered_tasks(tasks, config, space, today, protected_ids=fixed_task_ids or ())['tasks']
+        return tasks
+    fixed = set(fixed_task_ids or [])
+    active = [t for t in tasks if t["status"] not in {"completed", "skipped", "deferred"}
+              and not t.get("context", {}).get("historical")]
+    frozen = [t for t in tasks if t["id"] in fixed and not t.get("context", {}).get("historical")
+              and t["status"] != "deferred" and t.get("context", {}).get("session_index") is not None
+              and (t["status"] not in {"completed", "skipped"}
+                   or t.get("context", {}).get("scheduled_date", today.isoformat()) >= today.isoformat())]
+    counted = {t["id"]: t for t in active + frozen}
+    total = sum(t["estimated_minutes"] for t in counted.values())
     weekly = space.get("weekly_minutes")
     if weekly is not None and total > weekly:
         conflict("实际任务时长超出本周预算", ["weekly_minutes"], ["增加 weekly_minutes", "缩小学习范围"])
-    slot, used = 0, 0
+    reserved = {}
+    for task in frozen:
+        index = task["context"]["session_index"]
+        reserved[index] = reserved.get(index, 0) + task["estimated_minutes"]
+    capacity = config["minutes_per_session"]
+    if any(index >= config["session_count"] or used > capacity for index, used in reserved.items()):
+        conflict("固定任务占用超出会话容量", ["session_count", "minutes_per_session"], ["保持原顺序", "缩小学习范围"])
+    slot, used = 0, dict(reserved)
     deadline = date.fromisoformat(space["target_date"]) if space.get("target_date") else None
+    active_ids = {t["id"] for t in active}
+    frozen_ids = {t["id"] for t in frozen}
     for position, task in enumerate(tasks):
-        task["context"]["position"] = position
-        if task not in active:
+        context = task.setdefault("context", {})
+        context["position"] = position
+        context.setdefault("node_id", task["id"])
+        context.setdefault("sequence", position + 1)
+        task["node_id"], task["sequence"] = context["node_id"], context["sequence"]
+        if task["id"] in frozen_ids:
+            index = context["session_index"]
+            if slot > index:
+                conflict("重排无法保留已执行或活动会话的日程", ["fixed_schedule", "session_count"], ["保持原顺序", "调整待学任务顺序"])
+            slot = max(slot, index)
+            continue
+        if task["id"] not in active_ids:
+            if task["status"] == "deferred" and task["id"] not in fixed:
+                context.pop("session_index", None)
+                context.pop("scheduled_date", None)
             continue
         minutes = task["estimated_minutes"]
-        if used + minutes > config["minutes_per_session"]:
-            slot, used = slot + 1, 0
-        if slot >= config["session_count"] or minutes > config["minutes_per_session"]:
-            conflict("任务无法装入所请求的会话容量", ["session_count", "minutes_per_session"],
-                     ["增加会话数或时长", "缩小学习范围"])
+        while slot < config["session_count"] and used.get(slot, 0) + minutes > capacity:
+            slot += 1
+        if slot >= config["session_count"] or minutes > capacity:
+            conflict("任务无法装入所请求的会话容量", ["session_count", "minutes_per_session"], ["增加会话数或时长", "缩小学习范围"])
         scheduled = today + timedelta(days=slot)
         if deadline and scheduled > deadline:
             conflict("每天一次的学习安排超过目标日期", ["target_date"], ["延后 target_date", "增加 minutes_per_session", "缩小学习范围"])
-        task["context"].update(session_index=slot, scheduled_date=scheduled.isoformat())
-        used += minutes
+        context.update(session_index=slot, scheduled_date=scheduled.isoformat())
+        used[slot] = used.get(slot, 0) + minutes
     return tasks

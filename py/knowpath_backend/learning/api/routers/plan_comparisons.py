@@ -20,7 +20,9 @@ async def compare_plans(state: LearningStateDep, space_id: str, payload: Compare
     if not idempotency_key or not idempotency_key.strip():
         return _error_response(400, "IDEMPOTENCY_KEY_REQUIRED", "预算比较必须提供 Idempotency-Key")
     try:
-        result = PlanComparisonService(state.plan_sessions).compare(space_id, payload.model_dump(), idempotency_key)
+        result = (state.plan_adjustments.compare(space_id, payload.model_dump(), idempotency_key)
+                  if state.plan_sessions._current_plan_id(space_id)
+                  else PlanComparisonService(state.plan_sessions).compare(space_id, payload.model_dump(), idempotency_key))
         return JSONResponse(status_code=200, content=result)
     except (DomainNotFound, DomainConflict) as exc:
         return _domain_error(exc)

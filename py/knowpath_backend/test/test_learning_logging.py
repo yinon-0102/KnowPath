@@ -381,7 +381,10 @@ def test_worker_once_keeps_stdout_machine_readable(monkeypatch, capsys):
     monkeypatch.setenv('KNOWPATH_LOG_FORMAT', 'json')
     monkeypatch.setattr(cli, 'create_db_engine', lambda: SimpleNamespace(dispose=lambda: None))
     monkeypatch.setattr(cli, 'SqlAlchemyMaterialRepository', SimpleNamespace(from_env=lambda _: SimpleNamespace(close=lambda: None)))
-    monkeypatch.setattr(cli, 'LearningState', lambda _: SimpleNamespace(assessment_service=None, message_service=SimpleNamespace(retriever=None)))
+    monkeypatch.setattr(cli, 'LearningState', lambda _: SimpleNamespace(
+        assessment_service=None, message_service=SimpleNamespace(retriever=None),
+        notes_service=None, lesson_service=None,
+        plan_adjustments=SimpleNamespace(tick=lambda: None, run_once=lambda: False)))
     monkeypatch.setattr(cli, 'ModelTaskWorker', lambda *a, **kw: SimpleNamespace(run_once=lambda: False))
     assert cli.main(['--once']) == 0
     capture = capsys.readouterr()

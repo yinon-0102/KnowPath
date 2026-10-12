@@ -5,6 +5,19 @@ from knowpath_backend.learning.config import LearningSettings
 from knowpath_backend.learning.providers.models import chat_model, ModelError
 
 
+def test_semantic_router_json_mode_meets_dashscope_request_contract(monkeypatch):
+    from knowpath_backend.learning.conversations.adaptive import classify_with_provider
+    monkeypatch.setenv("DASHSCOPE_API_KEY", "test-secret")
+    def handle(request):
+        body = json.loads(request.content)
+        assert body["response_format"] == {"type": "json_object"}
+        assert any("json" in row["content"].lower() for row in body["messages"])
+        return httpx.Response(200, json={"choices": [{"message": {"content": '{"document_related":false,"educational":false,"topic_ids":[],"scope_uncertain":false,"reason":"greeting"}'}, "finish_reason": "stop"}]})
+    with httpx.Client(transport=httpx.MockTransport(handle)) as client:
+        value = classify_with_provider(LearningSettings(), client, {"message": "hello", "sources": []})
+    assert value["document_related"] is False
+
+
 def test_chat_adapter_structured_tools_and_stream_use_same_port(monkeypatch):
     monkeypatch.setenv("DASHSCOPE_API_KEY", "test-secret")
     def handle(request):
@@ -77,6 +90,6 @@ def test_unsupported_embedding_does_not_crash_api_startup(monkeypatch):
     monkeypatch.setenv("LEARNING_RETRIEVAL_BACKEND", "qdrant")
     app = create_app(settings=LearningSettings(embedding_provider="unsupported"))
     with TestClient(app) as client:
-        response = client.post("/api/v1/learning-spaces/space/messages", json={"message":"explain"}, headers={"Idempotency-Key":"unsupported-embedding"})
+        response = client.post("/api/v1/learning-spaces/space/messages", json={"message":"explain", "answer_mode": "material"}, headers={"Idempotency-Key":"unsupported-embedding"})
         assert response.status_code == 422
         assert response.json()["error"]["code"] == "UNSUPPORTED_MODEL"

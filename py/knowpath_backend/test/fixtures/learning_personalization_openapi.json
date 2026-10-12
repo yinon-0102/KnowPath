@@ -1,0 +1,1347 @@
+{
+  "paths": {
+    "/api/v1/assessments/{assessment_id}/activity": {
+      "post": {
+        "summary": "Answer Activity",
+        "operationId": "answer_activity_api_v1_assessments__assessment_id__activity_post",
+        "parameters": [
+          {
+            "name": "assessment_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Assessment Id"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Idempotency-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AnswerActivity"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/learning-spaces/{space_id}/conversations/{session_id}/messages": {
+      "get": {
+        "summary": "Conversation Messages",
+        "operationId": "conversation_messages_api_v1_learning_spaces__space_id__conversations__session_id__messages_get",
+        "parameters": [
+          {
+            "name": "space_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Space Id"
+            }
+          },
+          {
+            "name": "session_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Session Id"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "default": 20,
+              "title": "Limit"
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/learning-spaces/{space_id}/nodes/{node_id}/lessons": {
+      "get": {
+        "summary": "Versions",
+        "operationId": "versions_api_v1_learning_spaces__space_id__nodes__node_id__lessons_get",
+        "parameters": [
+          {
+            "name": "space_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Space Id"
+            }
+          },
+          {
+            "name": "node_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Node Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "summary": "Create",
+        "operationId": "create_api_v1_learning_spaces__space_id__nodes__node_id__lessons_post",
+        "parameters": [
+          {
+            "name": "space_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Space Id"
+            }
+          },
+          {
+            "name": "node_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Node Id"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Idempotency-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateLesson"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/learning-spaces/{space_id}/policy-recommendations": {
+      "post": {
+        "summary": "Recommendations",
+        "operationId": "recommendations_api_v1_learning_spaces__space_id__policy_recommendations_post",
+        "parameters": [
+          {
+            "name": "space_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Space Id"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Idempotency-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Request"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/plan-adjustments/{identifier}/revert": {
+      "post": {
+        "summary": "Revert",
+        "operationId": "revert_api_v1_plan_adjustments__identifier__revert_post",
+        "parameters": [
+          {
+            "name": "identifier",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Identifier"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Idempotency-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Revert"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/plans/{plan_id}/adjustments": {
+      "get": {
+        "summary": "Adjustments",
+        "operationId": "adjustments_api_v1_plans__plan_id__adjustments_get",
+        "parameters": [
+          {
+            "name": "plan_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Plan Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/plans/{plan_id}/order": {
+      "patch": {
+        "summary": "Update Plan Order",
+        "operationId": "update_plan_order_api_v1_plans__plan_id__order_patch",
+        "parameters": [
+          {
+            "name": "plan_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Plan Id"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Idempotency-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OrderPlan"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/plans/{plan_id}/order-preview": {
+      "post": {
+        "summary": "Preview Plan Order",
+        "operationId": "preview_plan_order_api_v1_plans__plan_id__order_preview_post",
+        "parameters": [
+          {
+            "name": "plan_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Plan Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OrderPlan"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/plans/{plan_id}/refresh": {
+      "post": {
+        "summary": "Refresh",
+        "operationId": "refresh_api_v1_plans__plan_id__refresh_post",
+        "parameters": [
+          {
+            "name": "plan_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Plan Id"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Idempotency-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Refresh"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/plans/{plan_id}/schedule": {
+      "patch": {
+        "summary": "Schedule",
+        "operationId": "schedule_api_v1_plans__plan_id__schedule_patch",
+        "parameters": [
+          {
+            "name": "plan_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Plan Id"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Idempotency-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Schedule"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/policy-recommendations/{identifier}/apply": {
+      "post": {
+        "summary": "Apply Recommendation",
+        "operationId": "apply_recommendation_api_v1_policy_recommendations__identifier__apply_post",
+        "parameters": [
+          {
+            "name": "identifier",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Identifier"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Idempotency-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ApplyRecommendation"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/sessions/{session_id}/activity": {
+      "post": {
+        "summary": "Activity",
+        "operationId": "activity_api_v1_sessions__session_id__activity_post",
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Session Id"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Idempotency-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Activity"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/study-lessons/{lesson_id}": {
+      "get": {
+        "summary": "Lesson",
+        "operationId": "lesson_api_v1_study_lessons__lesson_id__get",
+        "parameters": [
+          {
+            "name": "lesson_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Lesson Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/study-lessons/{lesson_id}/retry": {
+      "post": {
+        "summary": "Retry",
+        "operationId": "retry_api_v1_study_lessons__lesson_id__retry_post",
+        "parameters": [
+          {
+            "name": "lesson_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Lesson Id"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Idempotency-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RetryRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "schemas": {
+    "Activity": {
+      "properties": {
+        "event": {
+          "type": "string",
+          "enum": [
+            "heartbeat",
+            "pause",
+            "resume",
+            "hidden",
+            "visible",
+            "disconnect",
+            "reconnect",
+            "waiting",
+            "ready"
+          ],
+          "title": "Event",
+          "default": "heartbeat"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "title": "Activity"
+    },
+    "AnswerActivity": {
+      "properties": {
+        "question_id": {
+          "type": "string",
+          "minLength": 1,
+          "title": "Question Id"
+        },
+        "event": {
+          "type": "string",
+          "enum": [
+            "shown",
+            "heartbeat",
+            "pause",
+            "resume",
+            "hidden",
+            "visible",
+            "disconnect",
+            "reconnect",
+            "waiting",
+            "ready"
+          ],
+          "title": "Event",
+          "default": "heartbeat"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "question_id"
+      ],
+      "title": "AnswerActivity"
+    },
+    "ApplyRecommendation": {
+      "properties": {
+        "expected_plan_version": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 1.0
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Expected Plan Version"
+        },
+        "preview": {
+          "type": "boolean",
+          "title": "Preview",
+          "default": true
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "title": "ApplyRecommendation"
+    },
+    "CreateLesson": {
+      "properties": {
+        "plan_id": {
+          "type": "string",
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Plan Id"
+        },
+        "task_id": {
+          "type": "string",
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Task Id"
+        },
+        "style": {
+          "anyOf": [
+            {
+              "type": "string",
+              "enum": [
+                "plain",
+                "examples_first",
+                "concise",
+                "deep"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Style"
+        },
+        "instructions": {
+          "anyOf": [
+            {
+              "type": "string",
+              "maxLength": 1000
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Instructions"
+        },
+        "learning_session_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Learning Session Id"
+        },
+        "regenerate": {
+          "type": "boolean",
+          "title": "Regenerate",
+          "default": false
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "plan_id",
+        "task_id"
+      ],
+      "title": "CreateLesson"
+    },
+    "OrderPlan": {
+      "properties": {
+        "expected_plan_version": {
+          "type": "integer",
+          "minimum": 1.0,
+          "title": "Expected Plan Version"
+        },
+        "order_mode": {
+          "type": "string",
+          "enum": [
+            "source",
+            "adaptive",
+            "custom"
+          ],
+          "title": "Order Mode"
+        },
+        "material_order": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Material Order"
+        },
+        "ordered_node_ids": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Ordered Node Ids"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "expected_plan_version",
+        "order_mode"
+      ],
+      "title": "OrderPlan"
+    },
+    "ReadingContext": {
+      "properties": {
+        "material_id": {
+          "type": "string",
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Material Id"
+        },
+        "material_version_id": {
+          "type": "string",
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Material Version Id"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "material_id",
+        "material_version_id"
+      ],
+      "title": "ReadingContext"
+    },
+    "Refresh": {
+      "properties": {
+        "expected_plan_version": {
+          "type": "integer",
+          "minimum": 1.0,
+          "title": "Expected Plan Version"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "expected_plan_version"
+      ],
+      "title": "Refresh"
+    },
+    "Request": {
+      "properties": {},
+      "additionalProperties": false,
+      "type": "object",
+      "title": "Request"
+    },
+    "Revert": {
+      "properties": {
+        "expected_plan_version": {
+          "type": "integer",
+          "minimum": 1.0,
+          "title": "Expected Plan Version"
+        },
+        "apply": {
+          "type": "boolean",
+          "title": "Apply",
+          "default": false
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "expected_plan_version"
+      ],
+      "title": "Revert"
+    },
+    "Schedule": {
+      "properties": {
+        "comparison_id": {
+          "type": "string",
+          "minLength": 1,
+          "title": "Comparison Id"
+        },
+        "scenario_id": {
+          "type": "string",
+          "minLength": 1,
+          "title": "Scenario Id"
+        },
+        "expected_plan_version": {
+          "type": "integer",
+          "minimum": 1.0,
+          "title": "Expected Plan Version"
+        },
+        "expected_snapshot_hash": {
+          "type": "string",
+          "minLength": 1,
+          "title": "Expected Snapshot Hash"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "comparison_id",
+        "scenario_id",
+        "expected_plan_version",
+        "expected_snapshot_hash"
+      ],
+      "title": "Schedule"
+    }
+  },
+  "added_properties": {
+    "CreatePlan": {
+      "calendar_timezone": {
+        "type": "string",
+        "maxLength": 64,
+        "minLength": 1,
+        "title": "Calendar Timezone",
+        "default": "Asia/Shanghai"
+      },
+      "daily_minutes": {
+        "type": "integer",
+        "maximum": 480.0,
+        "minimum": 1.0,
+        "title": "Daily Minutes",
+        "default": 30
+      },
+      "horizon_days": {
+        "type": "integer",
+        "maximum": 30.0,
+        "minimum": 1.0,
+        "title": "Horizon Days",
+        "default": 7
+      },
+      "material_order": {
+        "anyOf": [
+          {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "title": "Material Order"
+      },
+      "order_mode": {
+        "anyOf": [
+          {
+            "type": "string",
+            "enum": [
+              "source",
+              "adaptive"
+            ]
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "title": "Order Mode"
+      },
+      "schedule_mode": {
+        "anyOf": [
+          {
+            "type": "string",
+            "enum": [
+              "session_window",
+              "budget_rolling"
+            ]
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "title": "Schedule Mode"
+      }
+    },
+    "Preferences": {
+      "automatic_adjustment": {
+        "anyOf": [
+          {
+            "type": "boolean"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "title": "Automatic Adjustment"
+      },
+      "lesson_adaptation": {
+        "anyOf": [
+          {
+            "type": "boolean"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "title": "Lesson Adaptation"
+      },
+      "lesson_instructions": {
+        "anyOf": [
+          {
+            "type": "string",
+            "maxLength": 1000
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "title": "Lesson Instructions"
+      },
+      "lesson_style": {
+        "anyOf": [
+          {
+            "type": "string",
+            "enum": [
+              "plain",
+              "examples_first",
+              "concise",
+              "deep"
+            ]
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "title": "Lesson Style"
+      },
+      "time_personalization": {
+        "anyOf": [
+          {
+            "type": "boolean"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "title": "Time Personalization"
+      }
+    },
+    "SendMessage": {
+      "answer_mode": {
+        "type": "string",
+        "enum": [
+          "auto",
+          "material",
+          "general"
+        ],
+        "title": "Answer Mode",
+        "default": "auto"
+      },
+      "lesson_id": {
+        "anyOf": [
+          {
+            "type": "string",
+            "maxLength": 128,
+            "minLength": 1
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "title": "Lesson Id"
+      },
+      "reading_context": {
+        "anyOf": [
+          {
+            "$ref": "#/components/schemas/ReadingContext"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      }
+    }
+  }
+}

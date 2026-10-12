@@ -79,8 +79,8 @@ def main(argv=None):
     args = parser.parse_args(argv)
     if args.prune_sql and not args.apply:
         parser.error('--prune-sql 必须与 --apply 同时使用')
-    from dotenv import load_dotenv
-    load_dotenv(Path(__file__).resolve().parents[3] / '.env')
+    from knowpath_backend.core.env import load_project_env
+    load_project_env()
     engine = repository = None
     try:
         engine = create_db_engine()

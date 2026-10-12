@@ -13,7 +13,8 @@ from knowpath_backend.test.test_learning_messages import FixedAnswer
 
 @pytest.fixture
 def documents():
-    state = LearningState(InMemoryMaterialRepository())
+    from knowpath_backend.learning.rag.retrieval import KeywordRetriever
+    state = LearningState(InMemoryMaterialRepository(), source_retriever=KeywordRetriever())
     uploads = [state.material_service.create(filename=f'{name}.md',
         content=f'# {name}\n\nFunctions group reusable behavior. Secret from {name}.'.encode(),
         idempotency_key=name) for name in ('Alpha', 'Beta', 'Foreign')]
@@ -83,6 +84,6 @@ def test_empty_effective_scope_does_not_expand_to_other_document(documents):
     topic = next(t for t in state.space_service.bound_topics(space) if t['source_refs'][0]['material_id'] == uploads[1].material.id)
     state.set_scope(space['id'], {'topic_ids': [topic['id']], 'expected_version': 1})
     with pytest.raises(DomainConflict) as error:
-        state.send_message(space['id'], {'message': 'q', 'material_ids': [uploads[0].material.id]})
+        state.send_message(space['id'], {'message': 'q', 'material_ids': [uploads[0].material.id], 'answer_mode': 'material'})
     assert error.value.code == 'NO_LEARNING_SOURCES'
     assert not generator.calls

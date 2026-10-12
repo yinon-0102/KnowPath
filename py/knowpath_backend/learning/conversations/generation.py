@@ -23,9 +23,15 @@ mastery scores or hidden assessment answers. Respond in the user's language."""
 
 
 class DashScopeAnswerGenerator:
+    stream_fields = frozenset({"text", "supplement_text"})
+    section_streaming = True
     def __init__(self, settings=None, *, client=None):
         self.settings = settings or LearningSettings.from_env()
         self.client = client
+
+    def classify(self, snapshot):
+        from .adaptive import classify_with_provider
+        return classify_with_provider(self.settings, self.client, snapshot)
 
     def generate(self, snapshot):
         from knowpath_backend.learning.providers.models import chat_model, ModelError
@@ -34,13 +40,13 @@ class DashScopeAnswerGenerator:
             raise MessageGenerationError("CONTEXT_BUDGET_EXCEEDED")
         try:
             return chat_model(self.settings, client=self.client).generate_json([
-                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "system", "content": answer_prompt(snapshot)},
                 {"role": "user", "content": json.dumps(prompt_data(snapshot), ensure_ascii=False)}])
         except ModelError as exc:
             code = "MESSAGE_VALIDATION_FAILED" if exc.code == "MODEL_INVALID_RESPONSE" else exc.code
             raise MessageGenerationError(code) from None
 
-    def stream(self, snapshot, on_text=None):
+    def stream(self, snapshot, on_text=None, *, text_field="text", on_section=None):
         """Stream answer text while retaining the complete JSON for validation."""
         from knowpath_backend.learning.providers.models import chat_model, ModelError
         from knowpath_backend.learning.conversations.context import prompt_data, prompt_tokens
@@ -48,16 +54,27 @@ class DashScopeAnswerGenerator:
             raise MessageGenerationError("CONTEXT_BUDGET_EXCEEDED")
         raw_json = ""
         emitted = 0
+        section_emitted = {"grounded_text": 0, "supplement_text": 0}
+        grounded_complete = False
         try:
             model = chat_model(self.settings, client=self.client)
             messages = [
-                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "system", "content": answer_prompt(snapshot)},
                 {"role": "user", "content": json.dumps(prompt_data(snapshot), ensure_ascii=False)},
             ]
             for fragment in model.stream(messages, response_format={"type": "json_object"}):
                 raw_json += fragment
+                if on_section is not None:
+                    for field in ("grounded_text", "supplement_text"):
+                        part = partial_json_text(raw_json, field=field)
+                        if part is not None and len(part) > section_emitted[field]:
+                            on_section(field, part[section_emitted[field]:])
+                            section_emitted[field] = len(part)
+                        if field == "grounded_text" and not grounded_complete and json_field_complete(raw_json, field):
+                            on_section("grounded_complete", "")
+                            grounded_complete = True
                 if on_text is not None:
-                    text = partial_json_text(raw_json)
+                    text = partial_json_text(raw_json, field=text_field)
                     if text is not None and len(text) > emitted:
                         on_text(text[emitted:])
                         emitted = len(text)
@@ -97,9 +114,9 @@ def validate_answer(raw, sources):
     return text.strip(), citations
 
 
-def partial_json_text(raw):
+def partial_json_text(raw, *, field="text"):
     """Return the decoded text value from a complete or partial JSON object."""
-    marker = '"text"'
+    marker = json.dumps(field)
     key = raw.find(marker)
     if key < 0:
         return None
@@ -134,3 +151,23 @@ def partial_json_text(raw):
             value.append(char)
         i += 1
     return ''.join(value)
+
+
+def answer_prompt(snapshot):
+    if "requested_answer_mode" in snapshot:
+        from .adaptive import ADAPTIVE_PROMPT
+        return ADAPTIVE_PROMPT
+    return SYSTEM_PROMPT
+
+
+def json_field_complete(raw, field):
+    marker = json.dumps(field)
+    key = raw.find(marker)
+    if key < 0:return False
+    start = raw.find('"', key + len(marker))
+    if start < 0:return False
+    try:
+        value, _ = json.JSONDecoder().raw_decode(raw[start:])
+        return isinstance(value, str)
+    except ValueError:
+        return False

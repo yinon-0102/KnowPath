@@ -76,6 +76,7 @@ def test_deletion_during_provider_call_blocks_late_publication(workspace, kind, 
     first, _, space = seed(state)
     response, event = enqueue(state, space['id'], kind)
     class DeleteDuringGeneration:
+        classify = FixedAnswer.classify
         def generate(self, *args):
             if owner == 'space':
                 delete_space(workspace(), space['id'])
@@ -162,10 +163,11 @@ def test_model_worker_cli_closes_retriever_and_engine(monkeypatch, fails):
     calls = []
     engine = SimpleNamespace(dispose=lambda: calls.append('engine'))
     retriever = SimpleNamespace(close=lambda: calls.append('retriever'))
-    state = SimpleNamespace(assessment_service=object(), message_service=SimpleNamespace(retriever=retriever))
+    state = SimpleNamespace(assessment_service=object(), message_service=SimpleNamespace(retriever=retriever), notes_service=object(), lesson_service=object())
     class Consumer:
         def __init__(self, *args, **kwargs):
-            pass
+            assert kwargs['notes'] is state.notes_service
+            assert kwargs['lessons'] is state.lesson_service
         def run_once(self):
             if fails:
                 raise RuntimeError('storage failure')

@@ -76,6 +76,7 @@ const workbench = createWorkbenchController({ api, changed: id => {
 const learning = createLearningController({ api, storage: session,
   context: () => ({ spaceId: currentSpace()?.id || '', space: currentSpace(), assessmentContext: state.assessmentContext, active: (route().name === 'learning' || route().name === 'space' && (state.spaceTab === 'assessment' || route().query?.view === 'budget')) && !state.loading && !state.error }),
   changed: () => { if (isLearningRoute(route())) render(); },
+  committed: async spaceId => { workbench.invalidate(spaceId); await workbench.load(spaceId); },
 });
 const workspace = createWorkspaceController({ api, storage: session,
   context: () => ({ route: route().name === 'manage' ? route().id : '' }),
@@ -433,12 +434,12 @@ function planPage({ embedded = false } = {}) {
   const completed = tasks.filter(t => t.status === 'completed').length;
   const planNote = plan && requested && tasks.length < requested
     ? notice(`本次设置为最多 ${requested} 次，当前学习范围按知识状态生成了 ${tasks.length} 个任务。任务按主题去重，完成后重新安排即可进入下一轮。`, 'warning')
-    : plan ? `<div class="plan-summary"><span><b>${tasks.length}</b> 个任务</span><span>每次约 <b>${Number(plan.config?.minutes_per_session || 0)}</b> 分钟</span><span>${plan.config?.include_review ? '包含温习安排' : '未安排温习'}</span></div>` : '';
+    : plan ? `<div class="plan-summary"><span><b>${tasks.length}</b> 个任务</span><span>${plan.config?.schedule_mode === 'budget_rolling' ? `每日预算 <b>${Number(plan.config?.daily_minutes || 0)}</b> 分钟 · ${Number(plan.config?.horizon_days || 7)} 天窗口` : `每次约 <b>${Number(plan.config?.minutes_per_session || 0)}</b> 分钟`}</span><span>${plan.config?.include_review ? '包含温习安排' : '未安排温习'}</span></div>` : '';
   const heading = embedded ? '' : pageHeading('学习安排', '按自己的节奏，积累看得见的进步。', button('安排学习', 'new-plan', 'button button-primary', 'plus'));
   if (!space) return heading + empty('学习，从一个小目标开始', '先创建学习空间，再为它安排学习任务。', button('新建空间', 'new-space', 'button button-primary', 'plus'), 'calendar');
   if (route().query?.view === 'budget') return `<nav class="workbench-subnav">${link('返回学习计划', spacePath(space.id, 'plan'))}</nav>${renderLearning({ space, state: learning.snapshot(), section: 'comparison', embedded: true, hideNav: true })}`;
   const controls = embedded
-    ? `<div class="space-panel-toolbar"><span class="subtle">${completed} / ${tasks.length} 项已完成</span><div class="workspace-links">${link('预算比较', spacePath(space.id, 'plan', { view: 'budget' }))}${plan ? button('调整顺序', 'order-open', 'button button-secondary') : ''}${button(plan ? '重新规划' : '生成学习任务', 'new-plan', 'button button-primary', 'plus')}</div></div>`
+    ? `<div class="space-panel-toolbar"><span class="subtle">${completed} / ${tasks.length} 项已完成</span><div class="workspace-links">${link('预算比较', spacePath(space.id, 'plan', { view: 'budget' }))}${plan ? button('调整记录', 'plan-adjustments', 'button button-secondary') + button('调整顺序', 'order-open', 'button button-secondary') : ''}${button(plan ? '重新规划' : '生成学习任务', 'new-plan', 'button button-primary', 'plus')}</div></div>`
     : `<div class="toolbar">${spaceSelect()}<span class="subtle">${completed} / ${tasks.length} 项已完成</span></div>`;
   const entry = workbench.snapshot(space.id);
   const standaloneRoute = embedded ? '' : `<section class="panel workbench-plan-progress">${renderProgress(progressForSpace(space), { currentPlan: plan, compact: true, activeSession: workbench.snapshot(space.id).data?.active_session })}</section>`;
@@ -668,6 +669,11 @@ async function readStudyCitation(ref) {
 }
 function updateProgressPosition() {
   const panel = $('[data-study-progress]'), dock = $('[data-study-progress-dock]');
+  if (route().name === 'space' && route().section === 'notes') {
+    progressDock.dispose();
+    if (dock) { dock.classList.remove('visible'); dock.inert = true; dock.setAttribute('aria-hidden', 'true'); }
+    return;
+  }
   const top = ($('#header')?.getBoundingClientRect?.().bottom || 72) + 8;
   progressDock.mount(panel, dock, top);
 }
@@ -911,7 +917,15 @@ async function loadRoute() {
   if (state.loading || (state.error && !(route().name === 'manage' && route().id === 'health'))) return;
   const current = route(), space = currentSpace(), requestHash = location.hash;
   if (!(current.name === 'space' && ['study', 'overview'].includes(current.section))) study.dispose();
-  if (current.name === 'notes' || current.name === 'space' && current.section === 'notes') { await notes.load(current); return; }
+  if (current.name === 'notes' || current.name === 'space' && current.section === 'notes') {
+    await notes.load(current);
+    if (location.hash === requestHash && current.query?.chapter && notes.snapshot().chapter) {
+      const chapter = $('.notes-chapter');
+      chapter?.setAttribute('tabindex', '-1'); chapter?.focus({ preventScroll: true });
+      chapter?.scrollIntoView({ block: 'start', behavior: 'instant' });
+    }
+    return;
+  }
   notes.dispose();
   const routeValid = () => location.hash === requestHash && currentSpace()?.id === space?.id;
   if ((current.name === 'space' || current.name === 'overview') && space) {
@@ -1041,7 +1055,7 @@ async function uploadFiles(files) {
   for (const file of selected) {
     try {
       const pdfHash = /\.pdf$/i.test(file.name) ? await validatePdf(file) : '';
-      const uploaded = await api.upload(file); state.live.materials.unshift(uploaded.material);
+      const uploaded = await api.upload(file); state.live.materials = [uploaded.material, ...state.live.materials.filter(item => item.id !== uploaded.material.id)];
       if (pdfHash) {
         const saved = await pdfLibrary.save({ key: pdfKey('live', uploaded.material.id, uploaded.version.id), file, hash: pdfHash, verified: true });
         if (!saved) toast('资料已上传；PDF 本次可打开，但浏览器未能永久保存，下次需重新选择。', true);
@@ -1090,6 +1104,16 @@ function planSettings(form) {
 }
 function updatePlanPreview(form) {
   if (!form) return;
+  const rolling = form.elements.schedule_mode?.value === 'budget_rolling';
+  for (const [selector, enabled] of [['[data-plan-rolling]', rolling], ['[data-plan-fixed]', !rolling]]) {
+    const fieldset = form.querySelector(selector); if (fieldset) { fieldset.hidden = !enabled; fieldset.disabled = !enabled; }
+  }
+  if (rolling) {
+    const daily = Number(form.elements.daily_minutes.value), days = Number(form.elements.horizon_days.value);
+    const valid = Number.isInteger(daily) && daily >= 1 && daily <= 480 && Number.isInteger(days) && days >= 1 && days <= 30;
+    $('#plan-preview', form).textContent = valid ? `近期 ${days} 天，每天最多 ${daily} 分钟；保留所有节点，允许跨次学习。` : '请填写有效的每日预算和窗口。';
+    $('button[type="submit"]', form).disabled = !valid; return;
+  }
   const space = byId(form.dataset.space);
   const { sessions, minutes } = planSettings(form);
   const preview = $('#plan-preview', form);
@@ -1150,10 +1174,36 @@ async function orderCommand(name) {
     }
   } finally { if (version === modalVersion) renderOrderDialog(); }
 }
+let adjustmentDialog = null;
+const adjustmentLabels = { queued: '后续安排正在更新', applied: '已调整', unchanged: '无需调整', blocked: '需要处理', failed: '更新失败', cancelled: '已取消', reverted: '已撤回' };
+function adjustmentChanges(changes) {
+  return changes.length ? `<ul class="workspace-timeline">${changes.map(change => {
+    const describe = task => `${taskLabels[task.kind] || task.kind} · ${task.estimated_minutes} 分钟 · ${task.context?.scheduled_date || '待排'}`;
+    return `<li><strong>${esc(change.after?.title || change.after?.context?.title || change.before?.title || '学习节点')}</strong><p>${esc(describe(change.before))} → ${esc(describe(change.after))}</p></li>`;
+  }).join('')}</ul>` : '<p class="subtle">没有可恢复的安排变化。</p>';
+}
+async function adjustmentModal() {
+  const space = currentSpace(), plan = state.plans.get(space?.id); if (!plan) return;
+  const ticket = modalVersion;
+  const result = await api.planAdjustments(plan.id || plan.plan_id);
+  if (ticket !== modalVersion || currentSpace()?.id !== space.id) return;
+  adjustmentDialog = { spaceId: space.id, planId: plan.id || plan.plan_id, version: plan.version, preview: null };
+  openModal('后续安排调整', `<p class="subtle">自动微调保留当前顺序和节点身份；已开始的安排受到保护。</p>${(result.items || []).slice().reverse().map(row => `<section class="panel"><h3>${esc(adjustmentLabels[row.status] || row.status)} · ${esc(dateText(row.created_at))}</h3>${row.error ? `<p role="alert">${esc(row.error.message || row.error.code)}</p>` : ''}${adjustmentChanges(row.changes || [])}${row.status === 'applied' ? button('预览撤回', 'plan-adjustment-preview', 'button button-secondary', '', `data-id="${esc(row.id)}"`) : ''}</section>`).join('') || '<p>暂时没有调整记录。</p>'}${button('重新检查安排', 'plan-refresh', 'button button-secondary')}`);
+}
+async function revertAdjustment(id, apply) {
+  const view = adjustmentDialog; if (!view || !modal.open) return;
+  if (apply && view.preview?.id !== id) throw new Error('请先预览本次撤回。');
+  const ticket = modalVersion;
+  const result = await api.revertAdjustment(id, { expected_plan_version: view.version, apply }, { key: crypto.randomUUID() });
+  if (ticket !== modalVersion || adjustmentDialog !== view) return;
+  if (apply) { closeModal(); workbench.invalidate(view.spaceId); await workbench.load(view.spaceId); toast('仍可恢复的安排已撤回。'); return; }
+  adjustmentDialog = { ...view, version: result.expected_plan_version, preview: { id } };
+  openModal('确认撤回安排', `<p>仅恢复当前仍未开始且符合约束的安排；学习证据及历史记录保留。</p>${adjustmentChanges(result.changes || [])}${result.can_apply && result.changes?.length ? button('确认撤回', 'plan-adjustment-apply', 'button button-primary', '', `data-id="${esc(id)}"`) : ''}${button('关闭', 'close-modal', 'button button-secondary')}`);
+}
 function planModal() {
   const space = currentSpace(); if (!space) return newSpaceModal();
   if (!space.topic_ids?.length) { return scopeModal({ returnToPlan: true }); }
-  openModal('生成学习任务', `<p class="modal-intro">为「${esc(space.name)}」的 ${Number(space.topic_ids.length)} 个学习主题生成一组可执行任务。</p><form id="plan-form" data-space="${esc(space.id)}">${newPlanOrdering(space)}<div class="form-field"><label for="session-count">最多安排几次学习？</label><select id="session-count" name="session_count"><option value="3">3 次</option><option value="4">4 次</option><option value="5">5 次</option><option value="custom">自定义</option></select></div><div class="form-field plan-custom-field" data-plan-custom="session_count" hidden><label for="session-count-custom">自定义学习次数</label><input id="session-count-custom" name="session_count_custom" type="number" min="3" max="5" step="1" placeholder="请输入 3—5 次"><small>可设置 3—5 次学习。</small></div><div class="form-field"><label for="session-minutes">每次最多学习多久？</label><select id="session-minutes" name="minutes_per_session"><option value="15">15 分钟，轻松起步</option><option value="25" selected>25 分钟，保持专注</option><option value="45">45 分钟，深入理解</option><option value="custom">自定义</option></select></div><div class="form-field plan-custom-field" data-plan-custom="minutes_per_session" hidden><label for="session-minutes-custom">自定义单次时长（分钟）</label><input id="session-minutes-custom" name="minutes_per_session_custom" type="number" min="10" max="120" step="1" placeholder="请输入 10—120 分钟"><small>可设置 10—120 分钟。</small></div><label class="check-label"><input type="checkbox" name="include_review" checked>有到期内容时安排复习</label><div id="plan-preview" class="plan-preview" aria-live="polite"></div><div class="form-error" data-form-error hidden role="alert"></div><div class="form-actions">${button('取消', 'close-modal', 'button button-secondary')}<button type="submit" class="button button-primary">生成学习任务</button></div></form>`);
+  openModal('生成学习任务', `<p class="modal-intro">为「${esc(space.name)}」的 ${Number(space.topic_ids.length)} 个学习主题生成一组可执行任务。</p><form id="plan-form" data-space="${esc(space.id)}">${newPlanOrdering(space)}<div class="form-field"><label for="schedule-mode">安排方式</label><select id="schedule-mode" name="schedule_mode"><option value="budget_rolling"${(state.plans.get(space.id) ? state.plans.get(space.id).config?.schedule_mode || 'session_window' : 'budget_rolling') !== 'session_window' ? ' selected' : ''}>滚动每日预算</option><option value="session_window"${(state.plans.get(space.id) ? state.plans.get(space.id).config?.schedule_mode || 'session_window' : 'budget_rolling') === 'session_window' ? ' selected' : ''}>固定学习次数</option></select></div><fieldset data-plan-rolling><legend>近期预算</legend><div class="form-field"><label for="daily-minutes">每天可用分钟</label><input id="daily-minutes" name="daily_minutes" type="number" min="1" max="480" value="${Number(state.plans.get(space.id)?.config?.daily_minutes || 30)}" required></div><div class="form-field"><label for="horizon-days">窗口（天）</label><input id="horizon-days" name="horizon_days" type="number" min="1" max="30" value="${Number(state.plans.get(space.id)?.config?.horizon_days || 7)}" required></div><div class="form-field"><label for="plan-timezone">时区</label><input id="plan-timezone" name="calendar_timezone" value="${esc(state.plans.get(space.id)?.config?.calendar_timezone || 'Asia/Shanghai')}" required></div><p class="subtle">学习和作答共同占用预算；保留完整路线，可跨次学习同一节点。</p></fieldset><fieldset data-plan-fixed><legend>固定会话</legend><div class="form-field"><label for="session-count">最多安排几次学习？</label><select id="session-count" name="session_count"><option value="3">3 次</option><option value="4">4 次</option><option value="5">5 次</option><option value="custom">自定义</option></select></div><div class="form-field plan-custom-field" data-plan-custom="session_count" hidden><label for="session-count-custom">自定义学习次数</label><input id="session-count-custom" name="session_count_custom" type="number" min="3" max="5" step="1" placeholder="请输入 3—5 次"><small>可设置 3—5 次学习。</small></div><div class="form-field"><label for="session-minutes">每次最多学习多久？</label><select id="session-minutes" name="minutes_per_session"><option value="15">15 分钟，轻松起步</option><option value="25" selected>25 分钟，保持专注</option><option value="45">45 分钟，深入理解</option><option value="custom">自定义</option></select></div><div class="form-field plan-custom-field" data-plan-custom="minutes_per_session" hidden><label for="session-minutes-custom">自定义单次时长（分钟）</label><input id="session-minutes-custom" name="minutes_per_session_custom" type="number" min="10" max="120" step="1" placeholder="请输入 10—120 分钟"><small>可设置 10—120 分钟。</small></div></fieldset><label class="check-label"><input type="checkbox" name="include_review" checked>有到期内容时安排复习</label><div id="plan-preview" class="plan-preview" aria-live="polite"></div><div class="form-error" data-form-error hidden role="alert"></div><div class="form-actions">${button('取消', 'close-modal', 'button button-secondary')}<button type="submit" class="button button-primary">生成学习任务</button></div></form>`);
   updatePlanPreview($('#plan-form'));
 }
 async function createPlan(form) {
@@ -1161,9 +1211,17 @@ async function createPlan(form) {
   if (!space) throw new Error('学习空间已变化，请返回空间后重试。');
   state.planError = '';
   const { sessions, minutes } = planSettings(form);
-  if (!sessions.valid) throw new Error(sessions.message);
-  if (!minutes.valid) throw new Error(minutes.message);
-  const payload = { session_count: sessions.value, minutes_per_session: minutes.value, include_review: values.has('include_review'), rebuild_mode: 'initial', order_mode: values.get('order_mode') || 'source', material_order: [...form.querySelectorAll('[data-new-plan-material]')].map(row => row.dataset.newPlanMaterial) };
+  const mode = String(values.get('schedule_mode') || 'budget_rolling');
+  const payload = { schedule_mode: mode, include_review: values.has('include_review'), rebuild_mode: 'initial', order_mode: values.get('order_mode') || 'source', material_order: [...form.querySelectorAll('[data-new-plan-material]')].map(row => row.dataset.newPlanMaterial) };
+  if (mode === 'session_window') {
+    if (!sessions.valid) throw new Error(sessions.message);
+    if (!minutes.valid) throw new Error(minutes.message);
+    Object.assign(payload, { session_count: sessions.value, minutes_per_session: minutes.value });
+  } else {
+    const daily = Number(values.get('daily_minutes')), horizon = Number(values.get('horizon_days'));
+    if (!Number.isInteger(daily) || daily < 1 || daily > 480 || !Number.isInteger(horizon) || horizon < 1 || horizon > 30) throw new Error('每日预算为 1—480 分钟，窗口为 1—30 天。');
+    Object.assign(payload, { daily_minutes: daily, horizon_days: horizon, calendar_timezone: String(values.get('calendar_timezone') || 'Asia/Shanghai') });
+  }
   if (values.get('order_mode') === 'inherit') delete payload.order_mode;
   const status = $('#plan-preview', form);
   if (status) { status.className = 'plan-preview pending'; status.innerHTML = '<strong>正在生成学习任务…</strong><span>正在读取知识状态，请稍候，不要重复点击。</span>'; }
@@ -1175,7 +1233,7 @@ async function createPlan(form) {
   if (result.run_id && !['ready', 'succeeded', 'completed'].includes(result.status)) await api.waitRun(result.run_id);
   const plans = storageRead(session, 'knowpath-plan-ids', {}); plans[space.id] = result.plan_id; storageWrite(session, 'knowpath-plan-ids', plans);
   const plan = await api.plan(result.plan_id); state.plans.set(space.id, { ...plan, space_id: space.id });
-  state.timerDuration = payload.minutes_per_session; resetTimer(); closeModal();
+  state.timerDuration = payload.minutes_per_session || payload.daily_minutes; resetTimer(); closeModal();
   workbench.invalidate(space.id); await workbench.load(space.id);
   openSpaceTab('tasks', space.id); toast('学习任务已就绪，选择一个任务开始学习。');
 }
@@ -1532,6 +1590,13 @@ document.addEventListener('click', async event => {
     'notes-source': () => { const view = notes.snapshot(); state.selected = view.chapter.space_id; const block = (view.editing ? view.draft : view.chapter.blocks)?.[Number(element.dataset.blockIndex)]; return openSourcePage(block?.source_refs?.[Number(element.dataset.sourceIndex)]); },
     'learning-knowledge': () => learning.loadKnowledge(), 'learning-resume': () => learning.resume(),
     'learning-finalize': async () => { await learning.finalize(); workbench.invalidate(currentSpace()?.id); await workbench.load(currentSpace().id); }, 'learning-evolution': () => learning.loadEvolution(),
+    'learning-schedule-preview': () => learning.previewSchedule(element.dataset.scenario || id),
+    'learning-schedule-apply': async () => { await learning.applySchedule(); const spaceId = currentSpace()?.id; workbench.invalidate(spaceId); await workbench.load(spaceId); },
+    'learning-recommend': () => learning.recommend(), 'learning-recommend-preview': () => learning.previewRecommendation(),
+    'learning-adjustment-resume': () => learning.resumeAdjustment(),
+    'learning-recommend-apply': async () => { await learning.applyRecommendation(); const spaceId = currentSpace()?.id; workbench.invalidate(spaceId); await workbench.load(spaceId); },
+    'plan-adjustments': adjustmentModal, 'plan-adjustment-preview': () => revertAdjustment(id, false), 'plan-adjustment-apply': () => revertAdjustment(id, true),
+    'plan-refresh': async () => { const plan = state.plans.get(currentSpace()?.id); await api.refreshPlan(plan.id || plan.plan_id, { expected_plan_version: plan.version }, { key: crypto.randomUUID() }); await adjustmentModal(); },
     'learning-replay': () => learning.replay(), 'learning-cancel': () => learning.cancelGeneration(),
     'close-modal': closeModal, 'close-record': closeModal, search: searchModal, help: helpModal,
     'progress-node': () => { closeModal(); location.hash = studyPath(currentSpace().id, element.dataset.task, element.dataset.plan); },

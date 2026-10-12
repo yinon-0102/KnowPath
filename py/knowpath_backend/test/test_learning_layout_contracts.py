@@ -51,13 +51,62 @@ def test_full_openapi_matches_pre_refactor_contract():
     # its request schema separately from the original pre-refactor snapshot.
     reviews = json.loads((FIXTURES / 'learning_question_reviews_openapi.json').read_text(encoding='utf-8'))
     algorithms = json.loads((FIXTURES / 'learning_algorithms_openapi.json').read_text(encoding='utf-8'))
-    assert set(actual['paths']) - set(expected['paths']) == {'/api/v1/learning-spaces/{space_id}/citations/resolve'} | set(reviews['paths']) | set(algorithms['paths'])
+    notes = json.loads((FIXTURES / 'learning_notes_openapi.json').read_text(encoding='utf-8'))
+    # Reviewed additive contracts from lesson/reading, ordering and the approved
+    # personalization plan. Keep the pre-refactor snapshot unchanged.
+    personalization = json.loads((FIXTURES / 'learning_personalization_openapi.json').read_text(encoding='utf-8'))
+    assert set(personalization['paths']) == {
+        '/api/v1/assessments/{assessment_id}/activity',
+        '/api/v1/learning-spaces/{space_id}/conversations/{session_id}/messages',
+        '/api/v1/learning-spaces/{space_id}/nodes/{node_id}/lessons',
+        '/api/v1/learning-spaces/{space_id}/policy-recommendations',
+        '/api/v1/plan-adjustments/{identifier}/revert',
+        '/api/v1/plans/{plan_id}/adjustments', '/api/v1/plans/{plan_id}/order',
+        '/api/v1/plans/{plan_id}/order-preview', '/api/v1/plans/{plan_id}/refresh',
+        '/api/v1/plans/{plan_id}/schedule', '/api/v1/policy-recommendations/{identifier}/apply',
+        '/api/v1/sessions/{session_id}/activity', '/api/v1/study-lessons/{lesson_id}',
+        '/api/v1/study-lessons/{lesson_id}/retry',
+    }
+    assert set(personalization['schemas']) == {
+        'Activity', 'AnswerActivity', 'ApplyRecommendation', 'CreateLesson', 'OrderPlan',
+        'ReadingContext', 'Refresh', 'Request', 'Revert', 'Schedule',
+    }
+    assert {name: set(props) for name, props in personalization['added_properties'].items()} == {
+        'CreatePlan': {'calendar_timezone', 'daily_minutes', 'horizon_days', 'material_order', 'order_mode', 'schedule_mode'},
+        'Preferences': {'automatic_adjustment', 'lesson_adaptation', 'lesson_instructions', 'lesson_style', 'time_personalization'},
+        'SendMessage': {'answer_mode', 'lesson_id', 'reading_context'},
+    }
+    workbench_paths = {'/api/v1/learning-spaces/{space_id}/workbench',
+                       '/api/v1/learning-spaces/{space_id}/progress',
+                       '/api/v1/plans/{plan_id}/tasks/{task_id}/learning-record'}
+    assert set(actual['paths']) - set(expected['paths']) == {
+        '/api/v1/learning-spaces/{space_id}/citations/resolve',
+        '/api/v1/materials/{material_id}/graph',
+        '/api/v1/materials/{material_id}/versions/{version_id}/file',
+    } | set(reviews['paths']) | set(algorithms['paths']) | set(notes['paths']) | set(personalization['paths']) | workbench_paths
+    assert {path: actual['paths'].pop(path) for path in personalization['paths']} == personalization['paths']
+    for path in workbench_paths:
+        assert set(actual['paths'].pop(path)) == {'get'}
+    assert {path: actual['paths'].pop(path) for path in notes['paths']} == notes['paths']
     assert {path: actual['paths'].pop(path) for path in algorithms['paths']} == algorithms['paths']
     assert {path: actual['paths'].pop(path) for path in reviews['paths']} == reviews['paths']
+    graph_projection = actual['paths'].pop('/api/v1/materials/{material_id}/graph')
+    assert set(graph_projection) == {'get'}
+    assert {param['name'] for param in graph_projection['get']['parameters']} == {'material_id', 'version_id', 'include_inactive', 'include_sources'}
+    material_file = actual['paths'].pop('/api/v1/materials/{material_id}/versions/{version_id}/file')
+    assert set(material_file) == {'get'}
+    assert {param['name'] for param in material_file['get']['parameters']} == {'material_id', 'version_id', 'space_id'}
     actual['paths'].pop('/api/v1/learning-spaces/{space_id}/citations/resolve')
-    assert set(actual['components']['schemas']) - set(expected['components']['schemas']) == {'Citation','SourceSpan'} | set(reviews['schemas']) | set(algorithms['schemas'])
+    assert set(actual['components']['schemas']) - set(expected['components']['schemas']) == {'Citation','SourceSpan'} | set(reviews['schemas']) | set(algorithms['schemas']) | set(notes['schemas']) | set(personalization['schemas'])
+    assert {name: actual['components']['schemas'].pop(name) for name in personalization['schemas']} == personalization['schemas']
+    for name, properties in personalization['added_properties'].items():
+        assert {field: actual['components']['schemas'][name]['properties'].pop(field) for field in properties} == properties
+    assert {name: actual['components']['schemas'].pop(name) for name in notes['schemas']} == notes['schemas']
     assert {name: actual['components']['schemas'].pop(name) for name in algorithms['schemas']} == algorithms['schemas']
     assert actual['components']['schemas']['CreateAssessment']['properties'].pop('adaptive') == algorithms['adaptive_property']
+    for field, title in [('plan_id', 'Plan Id'), ('task_id', 'Task Id'), ('learning_session_id', 'Learning Session Id')]:
+        assert actual['components']['schemas']['CreateAssessment']['properties'].pop(field) == {
+            'anyOf': [{'type': 'string', 'minLength': 1}, {'type': 'null'}], 'title': title}
     assert {name: actual['components']['schemas'].pop(name) for name in reviews['schemas']} == reviews['schemas']
     for name in ('Citation','SourceSpan'):
         actual['components']['schemas'].pop(name)
@@ -71,9 +120,10 @@ def test_full_openapi_matches_pre_refactor_contract():
                 yield from api_routes(included.routes)
 
     routes = list(api_routes(app.routes))
-    assert len(routes) == 57
+    added_operations = sum(len(operations) for operations in personalization['paths'].values())
+    assert len(routes) == 69 + added_operations
     assert all(isinstance(route, ContractRoute) for route in routes)
-    assert len({(route.path, method) for route in routes for method in route.methods}) == 57
+    assert len({(route.path, method) for route in routes for method in route.methods}) == 69 + added_operations
 
 
 def test_mysql_schema_matches_pre_refactor_contract():
@@ -83,8 +133,14 @@ def test_mysql_schema_matches_pre_refactor_contract():
     # 仅替换本次显式迁移的表快照，其他旧表仍逐字匹配历史契约。
     expected['material_raw_files'] = json.loads((FIXTURES / 'learning_raw_object_schema.json').read_text(encoding='utf-8'))
     from knowpath_backend.learning.persistence.rag_models import TABLES
-    assert set(actual) - set(expected) == set(TABLES)
-    assert {name:value for name,value in actual.items() if name not in TABLES} == expected
+    notes = json.loads((FIXTURES / 'learning_notes_mysql_schema.json').read_text(encoding='utf-8'))
+    assert {name: actual[name] for name in notes} == notes
+    personalization = json.loads((FIXTURES / 'learning_personalization_mysql_schema.json').read_text(encoding='utf-8'))
+    assert set(personalization) == {'study_lessons', 'budget_comparisons', 'plan_adjustments', 'policy_recommendations'}
+    assert {name: actual[name] for name in personalization} == personalization
+    additions = set(TABLES) | set(notes) | set(personalization)
+    assert set(actual) - set(expected) == additions
+    assert {name:value for name,value in actual.items() if name not in additions} == expected
 
 
 def test_multiple_apps_keep_auth_materials_and_runs_isolated():

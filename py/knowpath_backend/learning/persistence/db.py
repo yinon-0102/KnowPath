@@ -189,6 +189,29 @@ class StateResetRow(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
+class PersonalizationRecord(Base):
+    __abstract__ = True
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    space_id: Mapped[str] = mapped_column(ForeignKey('learning_spaces.id', ondelete='CASCADE'), nullable=False, index=True)
+    plan_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    run_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    context: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+
+
+class BudgetComparisonRow(PersonalizationRecord):
+    __tablename__ = 'budget_comparisons'
+
+
+class PlanAdjustmentRow(PersonalizationRecord):
+    __tablename__ = 'plan_adjustments'
+
+
+class PolicyRecommendationRow(PersonalizationRecord):
+    __tablename__ = 'policy_recommendations'
+
+
 class StudyPlanRow(Base):
     __tablename__ = "study_plans"
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
@@ -343,6 +366,54 @@ class OutboxEventRow(Base):
     available_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class NotebookRow(Base):
+    __tablename__ = "learning_notebooks"
+    __table_args__ = (UniqueConstraint("space_id", name="uq_learning_notebooks"),)
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    space_id: Mapped[str] = mapped_column(ForeignKey("learning_spaces.id", ondelete="CASCADE"), nullable=False, index=True)
+    context: Mapped[dict] = mapped_column(JSON, nullable=False)
+
+
+class NoteChapterRow(Base):
+    __tablename__ = "note_chapters"
+    __table_args__ = (UniqueConstraint("space_id", "node_id", name="uq_note_chapters"),)
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    space_id: Mapped[str] = mapped_column(ForeignKey("learning_spaces.id", ondelete="CASCADE"), nullable=False, index=True)
+    node_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    context: Mapped[dict] = mapped_column(JSON, nullable=False)
+
+
+class NoteRevisionRow(Base):
+    __tablename__ = "note_revisions"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    chapter_id: Mapped[str] = mapped_column(ForeignKey("note_chapters.id", ondelete="CASCADE"), nullable=False, index=True)
+    context: Mapped[dict] = mapped_column(JSON, nullable=False)
+
+
+class NoteGenerationRow(Base):
+    __tablename__ = "note_generations"
+    __table_args__ = (UniqueConstraint("assessment_id", name="uq_note_generations"),)
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    space_id: Mapped[str] = mapped_column(ForeignKey("learning_spaces.id", ondelete="CASCADE"), nullable=False, index=True)
+    chapter_id: Mapped[str] = mapped_column(ForeignKey("note_chapters.id", ondelete="CASCADE"), nullable=False, index=True)
+    assessment_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    run_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    status: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    context: Mapped[dict] = mapped_column(JSON, nullable=False)
+
+
+class StudyLessonRow(Base):
+    __tablename__ = "study_lessons"
+    __table_args__ = (UniqueConstraint("space_id", "node_id", "version", name="uq_study_lesson_version"),)
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    space_id: Mapped[str] = mapped_column(ForeignKey("learning_spaces.id", ondelete="CASCADE"), nullable=False, index=True)
+    node_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    run_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    status: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    context: Mapped[dict] = mapped_column(JSON, nullable=False)
 
 
 class IdempotencyRow(Base):

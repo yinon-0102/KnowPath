@@ -11,7 +11,11 @@ from knowpath_backend.test.test_learning_state_persistence import FixedAnswer, F
 
 
 @pytest.fixture(params=["memory", "sql"])
-def help_workspace(request, tmp_path):
+def help_workspace(request, tmp_path, monkeypatch):
+    # Frozen local-source assistance fixtures do not prepare vector indexes.
+    # Explicitly isolate both paths from an operator's configured .env backend.
+    monkeypatch.setenv('LEARNING_RETRIEVAL_BACKEND', 'keyword')
+    monkeypatch.setenv('LEARNING_RAG_PLUGIN', 'legacy')
     engine = None
     memory = InMemoryMaterialRepository()
     if request.param == "sql":
@@ -173,6 +177,15 @@ def test_assistance_is_persisted_before_publication_and_rolls_back_with_it(help_
     factory, space_id, _, _, _ = help_workspace
     state = factory()
     assessment = create(state, space_id)
+    # The verified RAG path has no earlier incremental delivery: assistance,
+    # final text and completion are one atomic publication to roll back.
+    source = state.message_service._sources(state.get_space(space_id))[0]
+    class Pipeline:
+        def answer(self, *args, **kwargs):
+            return {'sources': [source], 'trace': {}, 'status': 'answered',
+                    'text': 'Verified source explanation.', 'citations': [
+                        {k: v for k, v in source.items() if k not in {'text', 'topic_id', 'topic_name'}}]}
+    state.message_service.rag_pipeline = Pipeline()
     original = state.run_service.append_event
     observed = []
     def fail(run_id, event, data):
@@ -211,20 +224,33 @@ def test_assessment_created_at_publication_boundary_retries_without_regeneration
     factory, space_id, _, _, _ = help_workspace
     state, created, calls = factory(), [], []
     prepare = state.message_service.source_access.prepare_delivery
-    def prepare_with_race(sources, identifier):
-        plan = prepare(sources, identifier)
+    def prepare_with_race(sources, identifier, **kwargs):
+        plan = prepare(sources, identifier, **kwargs)
         calls.append(plan)
         if not created:
             created.append(create(factory(), space_id))
         return plan
     monkeypatch.setattr(state.message_service.source_access, "prepare_delivery", prepare_with_race)
+    from knowpath_backend.learning.materials.source_access import AssistanceDeliveryChanged
+    locked = state.message_service.source_access.lock_delivery
+    retries = []
+    def lock_with_observation(plan, identifier):
+        try:
+            return locked(plan, identifier)
+        except AssistanceDeliveryChanged:
+            retries.append(plan)
+            raise
+    monkeypatch.setattr(state.message_service.source_access, "lock_delivery", lock_with_observation)
     provider_calls = []
     def generate(snapshot):
         provider_calls.append(snapshot)
         return FixedAnswer().generate(snapshot)
     state.message_service.generator.generate = generate
     response = explain(state, space_id)
-    assert len(calls) == 2 and len(provider_calls) == 1
+    assert len(provider_calls) == 1
+    assert len(retries) == 1 and retries[0] is calls[0]
+    assert created[0]['id'] not in calls[0]['assessment_ids']
+    assert created[0]['id'] in calls[1]['assessment_ids']
     assert state.get_run(response["run_id"])["status"] == "succeeded"
     assert all(q.get("assisted") for q in stored(factory(), created[0])["questions"])
 
@@ -422,14 +448,17 @@ def test_legacy_history_recovers_original_sources_for_replay_and_future_context(
 
 
 def test_erased_material_cannot_be_reexposed_using_retained_provenance(help_workspace):
-    from knowpath_backend.learning.errors import DomainConflict
     factory, space_id, material, _, _ = help_workspace
     state = factory()
     message = explain(state, space_id)
     state.delete_material(material.material.id, {"confirm": True, "cascade": True,
         "expected_version": state.material_repository.get_material(material.material.id).version})
-    with pytest.raises(DomainConflict):
-        state.events_for(message["run_id"])
+    events = state.events_for(message["run_id"])
+    assert not any((event.get('data') or {}).get('delta') or
+                   (event.get('data') or {}).get('text') for event in events
+                   if event['event'] in {'message.delta', 'message.completed'})
+    assert not any((event.get('data') or {}).get('citations') for event in events
+                   if event['event'] == 'message.completed')
 
 
 @pytest.mark.parametrize("with_space", [True, False])
@@ -459,3 +488,52 @@ def test_source_read_sees_assessment_created_after_candidate_scan(help_workspace
         with pytest.raises(DomainConflict) as failure:
             consult()
         assert failure.value.code == "SPACE_CONTEXT_REQUIRED"
+
+
+
+def test_first_delta_publication_failure_rolls_back_undelivered_assistance(help_workspace, monkeypatch):
+    factory, space_id, _, _, _ = help_workspace
+    state = factory()
+    assessment = create(state, space_id)
+    original = state.run_service.append_event
+    observed = []
+    def fail(run_id, event, data):
+        if event == 'message.delta':
+            observed.append(all(q.get('assisted') for q in stored(state, assessment)['questions']))
+            raise RuntimeError('injected first delta rollback')
+        return original(run_id, event, data)
+    monkeypatch.setattr(state.run_service, 'append_event', fail)
+    response = explain(state, space_id)
+    assert observed == [True]
+    run = state.run_service.get(response['run_id'])
+    assert run['status'] == 'failed'
+    assert not any(e['event'] == 'message.delta' for e in run['events'])
+    audit = stored(factory(), assessment)
+    assert not any(q.get('assisted') for q in audit['questions'])
+    assert not audit['snapshot'].get('assistance_events')
+
+
+def test_completed_event_failure_retains_assistance_for_already_delivered_delta(help_workspace, monkeypatch):
+    factory, space_id, _, _, _ = help_workspace
+    state = factory()
+    assessment = create(state, space_id)
+    original = state.run_service.append_event
+    observed = []
+    def fail(run_id, event, data):
+        if event == 'message.completed':
+            events = state.run_service.events_for(run_id)
+            observed.append(any(e['event'] == 'message.delta' and e['data'].get('delta') for e in events))
+            raise RuntimeError('injected final completion rollback')
+        return original(run_id, event, data)
+    monkeypatch.setattr(state.run_service, 'append_event', fail)
+    with pytest.raises(RuntimeError, match='final completion rollback'):
+        explain(state, space_id)
+    assert observed == [True]
+    audit = stored(factory(), assessment)
+    assert all(q.get('assisted') for q in audit['questions'])
+    assert audit['snapshot']['assistance_events']
+    message = state.message_service.repository.records('messages', space_id=space_id)[0]
+    events = state.run_service.events_for(message['run_id'])
+    assert any(e['event'] == 'message.delta' and e['data'].get('delta') for e in events)
+    assert not any(e['event'] == 'message.completed' for e in events)
+    assert message['response'] is None

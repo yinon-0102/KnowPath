@@ -27,12 +27,17 @@ class CreateAssessment(StrictRequest):
     question_count: int = Field(default=5, ge=5, le=10)
     question_types: list[Literal["single_choice", "short_answer"]] = Field(default_factory=lambda: ["single_choice"], min_length=1, max_length=2)
     difficulty_mix: DifficultyMix | None = None
+    plan_id: str | None = Field(default=None, min_length=1)
+    task_id: str | None = Field(default=None, min_length=1)
+    learning_session_id: str | None = Field(default=None, min_length=1)
 
     @model_validator(mode="after")
     def unique(self):
         for items in (self.topic_ids or [], self.question_types):
             if len(items) != len(set(items)):
                 raise ValueError("题型和主题不可重复")
+        if self.task_id is not None and self.plan_id is None and self.learning_session_id is None:
+            raise ValueError("关联任务必须提供 plan_id 或 learning_session_id")
         return self
 
 

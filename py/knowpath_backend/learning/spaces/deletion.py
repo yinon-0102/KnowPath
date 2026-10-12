@@ -11,10 +11,11 @@ from knowpath_backend.learning.spaces.service import SpaceService
 
 
 class SpaceDeletionService:
-    def __init__(self, repository, spaces, runs):
+    def __init__(self, repository, spaces, runs, *, notes=None):
         self.repository, self.spaces, self.runs = repository, spaces, runs
         self.uow = getattr(repository, "unit_of_work", None)
         self.commands = SpaceService(repository, spaces.materials)
+        self.notes = notes
 
     def delete(self, space_id, payload):
         payload = DeleteSpace.model_validate(payload).model_dump()
@@ -42,8 +43,24 @@ class SpaceDeletionService:
             sessions = self.repository.records("sessions", space_id=space_id)
             messages = self.repository.records("messages", space_id=space_id)
             ids = {space_id} | {r["id"] for r in assessments + plans + sessions + messages}
+            personal = [r for table in ('budget_comparisons', 'plan_adjustments', 'policy_recommendations')
+                        for r in self.repository.records(table, space_id=space_id)]
+            ids.update(r['id'] for r in personal)
             run_ids = {r[k] for r in assessments + plans for k in ("run_id", "finalize_run_id") if r.get(k)}
             run_ids.update(m["run_id"] for m in messages)
+            run_ids.update(r['run_id'] for r in personal if r.get('run_id'))
+            if self.notes is not None:
+                lesson_jobs = self.repository.records('study_lessons',space_id=space_id)
+                ids.update(row['id'] for row in lesson_jobs)
+                run_ids.update(row['run_id'] for row in lesson_jobs)
+                note_jobs = self.repository.records("note_generations", space_id=space_id)
+                run_ids.update(row["run_id"] for row in note_jobs if row.get("run_id"))
+                ids.update(row["id"] for row in note_jobs)
+                for table in ("notebooks", "note_chapters"):
+                    ids.update(row["id"] for row in self.repository.records(table, space_id=space_id))
+                for chapter in self.repository.records("note_chapters", space_id=space_id):
+                    ids.update(row["id"] for row in self.repository.records("note_revisions", chapter_id=chapter["id"]))
+                self.notes.delete_space(space_id)
             for assessment in assessments:
                 run_ids.update(r["run_id"] for r in assessment.get("grade_reviews", []))
             self._remove_owned_outbox(space_id, ids, run_ids)
@@ -76,7 +93,10 @@ class SpaceDeletionService:
 
     @staticmethod
     def _filters(space_id, assessments, plans, sessions):
-        return [("corrections", "space_id", {space_id}),
+        return [('budget_comparisons', 'space_id', {space_id}),
+                ('plan_adjustments', 'space_id', {space_id}),
+                ('policy_recommendations', 'space_id', {space_id}),
+                ("corrections", "space_id", {space_id}),
                 ("messages", "space_id", {space_id}),
                 ("conversations", "space_id", {space_id}),
                 ("session_events", "session_id", {r["id"] for r in sessions}),

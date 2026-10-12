@@ -49,6 +49,7 @@ def test_transient_failure_retries_same_run_after_restart(workspace, kind):
     _, _, space = seed(state)
     response, event = enqueue(state, space['id'], kind)
     class Unavailable:
+        classify = FixedAnswer.classify
         def generate(self, *args):
             raise (QuestionGenerationError('MODEL_UNAVAILABLE') if kind == 'assessment' else MessageGenerationError('MODEL_UNAVAILABLE'))
     state.assessment_service.generator = state.message_service.generator = Unavailable()
@@ -74,6 +75,7 @@ def test_retry_limit_and_error_classification(workspace, kind):
     _, _, space = seed(state)
     response, event = enqueue(state, space['id'], kind)
     class RateLimited:
+        classify = FixedAnswer.classify
         def generate(self, *args):
             raise (QuestionGenerationError('RATE_LIMITED') if kind == 'assessment' else MessageGenerationError('RATE_LIMITED'))
     state.assessment_service.generator = state.message_service.generator = RateLimited()
@@ -91,6 +93,7 @@ def test_unsupported_model_is_terminal_not_reclassified(workspace, kind):
     _, _, space = seed(state)
     response, event = enqueue(state, space['id'], kind)
     class Unsupported:
+        classify = FixedAnswer.classify
         def generate(self, *args):
             raise (QuestionGenerationError('UNSUPPORTED_MODEL') if kind == 'assessment' else MessageGenerationError('UNSUPPORTED_MODEL'))
     state.assessment_service.generator = state.message_service.generator = Unsupported()
@@ -115,6 +118,7 @@ def test_lease_takeover_discards_the_previous_workers_late_result(workspace, kin
     restored.message_service.generator = FixedAnswer()
     second_worker = worker(restored, timestamp + timedelta(seconds=3), lease_seconds=2)
     class LateResult:
+        classify = FixedAnswer.classify
         def generate(self, *args):
             assert second_worker.run_once(event['id'])
             return (FixedQuestions() if kind == 'assessment' else FixedAnswer()).generate(*args)
@@ -177,6 +181,7 @@ def test_unknown_provider_error_is_sanitized_and_retryable(workspace, kind):
     _, _, space = seed(state)
     response, event = enqueue(state, space['id'], kind)
     class Broken:
+        classify = FixedAnswer.classify
         def generate(self, *args):
             raise RuntimeError('secret-api-key-do-not-expose')
     state.assessment_service.generator = state.message_service.generator = Broken()
@@ -204,7 +209,11 @@ def test_publication_storage_failure_rolls_back_and_reclaims(workspace, kind, mo
     with pytest.raises(RuntimeError, match='storage unavailable'):
         worker(state, timestamp, lease_seconds=2).run_once(event['id'])
     assert state.get_run(response['run_id'])['status'] == 'running'
-    assert not [e for e in state.get_run(response['run_id'])['events'] if e['event'] in {'run.completed', 'message.completed', 'message.delta'}]
+    events = state.get_run(response['run_id'])['events']
+    # Streaming drafts may precede publication; only validated output and final
+    # success must roll back with storage failure.
+    assert not [e for e in events if e['event'] in {'run.completed', 'message.completed'}
+                or (e['event'] == 'message.delta' and not e['data'].get('provisional'))]
     monkeypatch.setattr(repo, 'put_record', original)
     restored = workspace()
     restored.assessment_service.generator, restored.message_service.generator = FixedQuestions(), FixedAnswer()
@@ -223,6 +232,7 @@ def test_embedding_unavailable_retries_without_answer_model(workspace):
     class MustNotCall:
         def generate(self, *args):
             pytest.fail('answer model requires successful retrieval')
+        classify = FixedAnswer.classify
     timestamp = datetime.now(timezone.utc)
     consumer = worker(state, timestamp)
     state.message_service.retriever = NoEmbeddings()
@@ -259,6 +269,7 @@ def test_cancellation_during_model_call_discards_response(workspace, kind):
     _, _, space = seed(state)
     response, event = enqueue(state, space['id'], kind)
     class CancelWhileGenerating:
+        classify = FixedAnswer.classify
         def generate(self, *args):
             state.run_service.request_cancel(response['run_id'])
             return (FixedQuestions() if kind == 'assessment' else FixedAnswer()).generate(*args)

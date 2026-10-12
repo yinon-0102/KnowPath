@@ -42,7 +42,7 @@ def test_migrations_load_backend_dotenv_without_overriding_environment(
     engine = sa.create_engine(expected)
     try:
         with engine.connect() as connection:
-            assert connection.scalar(sa.text("SELECT version_num FROM alembic_version")) == "0015_material_object_storage"
+            assert connection.scalar(sa.text("SELECT version_num FROM alembic_version")) == "0018_learning_personalization"
     finally:
         engine.dispose()
     assert not (tmp_path / "fallback.db").exists()
@@ -86,10 +86,23 @@ def test_empty_database_upgrade_matches_current_schema(migration_database):
     config, engine = migration_database
     command.upgrade(config, "head")
     with engine.connect() as connection:
-        assert connection.scalar(sa.text("SELECT version_num FROM alembic_version")) == "0015_material_object_storage"
+        assert connection.scalar(sa.text("SELECT version_num FROM alembic_version")) == "0018_learning_personalization"
         context = MigrationContext.configure(connection, opts={"compare_type": True})
         assert compare_metadata(context, Base.metadata) == []
     assert "run_events" in sa.inspect(engine).get_table_names()
+
+def test_lesson_incremental_migration_preserves_prior_records(migration_database):
+    config,engine=migration_database
+    command.upgrade(config,'0016_learning_notes')
+    _seed_run(engine)
+    assert 'study_lessons' not in sa.inspect(engine).get_table_names()
+    command.upgrade(config,'head')
+    _assert_original_run(engine)
+    assert 'study_lessons' in sa.inspect(engine).get_table_names()
+    command.downgrade(config,'0016_learning_notes')
+    _assert_original_run(engine)
+    assert 'study_lessons' not in sa.inspect(engine).get_table_names()
+    assert 'note_chapters' in sa.inspect(engine).get_table_names()
 
 
 def test_incremental_upgrade_and_downgrade_preserve_existing_runs(migration_database):

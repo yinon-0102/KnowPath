@@ -81,9 +81,9 @@ class SqlAlchemyRunRepository:
             change(run)
             self._write_fields(row, run)
             for event in run["events"][:count]:
-                if event["data"] is None:
-                    stored = session.get(RunEventRow, (run_id, int(event["id"])))
-                    stored.data = None
+                stored = session.get(RunEventRow, (run_id, int(event["id"])))
+                if stored.data != event['data']:
+                    stored.data = copy.deepcopy(event['data'])
             session.add_all(self._event_row(run_id, e) for e in run["events"][count:])
             return copy.deepcopy(run)
 

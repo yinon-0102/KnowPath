@@ -28,6 +28,16 @@ def material_topics(state: LearningStateDep, material_id: str, version_id: str |
         return _domain_error(exc)
 
 
+@router.get("/api/v1/materials/{material_id}/graph")
+def material_graph(state: LearningStateDep, material_id: str, version_id: str | None = None,
+                   include_inactive: bool = False, include_sources: bool = True) -> JSONResponse:
+    try:
+        return JSONResponse(content=state.graph_queries.material_graph(
+            material_id, version_id, include_inactive=include_inactive, include_sources=include_sources))
+    except DomainNotFound as exc:
+        return _domain_error(exc)
+
+
 @router.get("/api/v1/topics/{topic_id}/graph")
 def topic_graph(state: LearningStateDep, topic_id: str, depth: int = Query(1, ge=1, le=3), include_sources: bool = True) -> JSONResponse:
     try:

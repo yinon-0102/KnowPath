@@ -203,7 +203,9 @@ def test_raw_migration_matches_metadata_and_preserves_old_tables(tmp_path, monke
         from sqlalchemy import MetaData
         historical = MetaData()
         for table in Base.metadata.sorted_tables:
-            if not table.name.startswith("rag_"):
+            if not table.name.startswith("rag_") and table.name not in {
+                    'learning_notebooks', 'note_chapters', 'note_revisions', 'note_generations',
+                    'study_lessons', 'budget_comparisons', 'plan_adjustments', 'policy_recommendations'}:
                 table.to_metadata(historical)
         # 历史 0013 契约只含 SQL 正文，0015 的对象引用由专用迁移测试验证。
         raw = historical.tables['material_raw_files']

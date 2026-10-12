@@ -31,7 +31,7 @@ TASK_FIELDS = ("id", "topic_ids", "kind", "status", "estimated_minutes", "reason
 SESSION_FIELDS = ("id", "space_id", "plan_id", "task_id", "status", "started_at", "finished_at")
 EVENT_FIELDS = ("id", "event_id", "type", "topic_id", "question_id", "received_at")
 CONFIG_FIELDS = ("session_count", "minutes_per_session", "include_review", "rebuild_mode",
-                 "base_plan_id", "expected_plan_version")
+                 "base_plan_id", "expected_plan_version", 'schedule_mode', 'daily_minutes', 'horizon_days', 'calendar_timezone')
 BINDING_FIELDS = ("material_id", "material_version_id", "graph_version")
 
 
@@ -141,7 +141,7 @@ class ExportService:
             public = _pick(entry, ("source", "updated_at"))
             if field == "preferences":
                 value = entry.get("value")
-                public["value"] = _pick(value, ("example_first", "concise_explanations")) if isinstance(value, dict) else None
+                public["value"] = _pick(value, ("example_first", "concise_explanations", "lesson_style", "lesson_instructions", 'automatic_adjustment', 'time_personalization', 'lesson_adaptation')) if isinstance(value, dict) else None
             else:
                 public.update(_pick(entry, ("value",)))
             result[field] = public
