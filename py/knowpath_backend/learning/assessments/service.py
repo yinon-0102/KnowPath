@@ -16,6 +16,7 @@ from knowpath_backend.learning.errors import DomainConflict, DomainNotFound
 from knowpath_backend.learning.assessments.mastery import aggregate, MasteryPolicy
 from knowpath_backend.learning.assessments.review_policy import enrich_observation_times, project_review_state
 from knowpath_backend.learning.assessments.grading import grade_answer, effective_question
+from knowpath_backend.learning.assessments.feedback import answer_feedback, record_feedback_exposure, deliver_feedback_exposure, readable_explanation
 from knowpath_backend.learning.assessments import adaptive
 from knowpath_backend.learning.assessments.grade_reviews import review_grade
 from knowpath_backend.learning.assessments.question_reviews import report_question, resolve_question_review, question_reviews
@@ -274,6 +275,10 @@ class AssessmentService(AssessmentActivity):
             answers = self._latest(assessment["id"])
             result["answers"] = [{"question_id": qid, "answer_revision": a["answer_revision"], "answer": a["answer"]}
                                  for qid, a in answers.items()]
+            disclosed = set(snapshot.get("feedback_question_ids", []))
+            result["question_feedback"] = [answer_feedback(assessment, q, answers[q["id"]])
+                                           for q in adaptive.reached_questions(assessment)
+                                           if q["id"] in answers and q["id"] in disclosed]
         if snapshot.get("adaptive"):
             trace = adaptive.diagnostic_view(assessment)
             result.update(adaptive=True, current_question_id=(trace["current_question"] or {}).get("id"),
@@ -284,6 +289,7 @@ class AssessmentService(AssessmentActivity):
         return result
 
     def get(self, assessment_id):
+        deliver_feedback_exposure(self, assessment_id)
         assessment = self.repository.get_record("assessments", assessment_id)
         if assessment["status"] == "generating":
             run = self.runs.get(assessment["run_id"])
@@ -359,14 +365,20 @@ class AssessmentService(AssessmentActivity):
                     raise DomainConflict("QUESTION_NOT_IN_ASSESSMENT", "题目不属于当前测验")
                 self.finish_question_activity(assessment, question['id'])
                 old = latest.get(item["question_id"])
+                if item["question_id"] in assessment["snapshot"].get("feedback_question_ids", []):
+                    raise DomainConflict("ANSWER_ALREADY_REVIEWED", "本题已展示答案解析，请开始新一轮练习")
                 current_revision = old["answer_revision"] if old else 0
                 if current_revision != item["expected_answer_revision"]:
                     raise DomainConflict("VERSION_CONFLICT", "答案版本已变化")
                 if question["type"] == "single_choice" and item["answer"] not in {o["id"] for o in question["options"]}:
                     raise DomainConflict("INVALID_ANSWER", "单选答案必须是有效选项 ID")
+                consulted = {(r['material_id'], r['material_version_id'], r['chunk_id'])
+                             for r in assessment['snapshot'].get('consulted_sources', [])}
+                exposed = any((r['material_id'], r['material_version_id'], r['chunk_id']) in consulted
+                              for r in question['source_refs'])
                 record = {"id": uid(), "assessment_id": assessment_id, "question_id": item["question_id"],
                           "answer": item["answer"], "answer_revision": current_revision + 1,
-                          "assisted": bool(question.get("assisted", False) or (old and old["assisted"])),
+                          "assisted": bool(exposed or question.get("assisted", False) or (old and old["assisted"])),
                           "elapsed_seconds": item["elapsed_seconds"], "created_at": timestamp}
                 self.repository.put_record("attempts", record)
                 latest[item["question_id"]] = record
@@ -379,12 +391,23 @@ class AssessmentService(AssessmentActivity):
                 if self._refresh_runtime_exposures(assessment):
                     adaptive.select_next(assessment, trigger=question if observed["independent"] and observed["score"] == 0 else None,
                                          attempt=record)
+            submitted = [questions[item["question_id"]] for item in payload["answers"]]
+            feedback = []
+            if payload["include_feedback"]:
+                feedback = [answer_feedback(assessment, q, latest[q["id"]]) for q in submitted]
+                disclosed = assessment["snapshot"].setdefault("feedback_question_ids", [])
+                disclosed.extend(q["id"] for q in submitted if q["id"] not in disclosed)
+                record_feedback_exposure(assessment, submitted, latest)
             self.repository.put_record("assessments", assessment)
             if payload["finalize"]:
                 return self._finalize(assessment, False)
             return {"attempt_id": batch_id, "status": "recorded", "accepted_count": len(payload["answers"]),
+                    "question_feedback": feedback,
                     "next_question_id": diagnostic["current_question_id"] if diagnostic is not None else next((qid for qid in questions if qid not in latest), None)}
-        return self._execute("assessment.attempt", assessment_id, payload, key, change)
+        result = self._execute("assessment.attempt", assessment_id, payload, key, change)
+        if payload['include_feedback']:
+            deliver_feedback_exposure(self, assessment_id)
+        return result
 
     def finalize(self, assessment_id, payload):
         payload = FinalizeAssessment.model_validate(payload).model_dump()
@@ -432,6 +455,7 @@ class AssessmentService(AssessmentActivity):
             self.repository.put_record("evidence", record)
             evidence.append(record)
             question_results.append({"question_id": question["id"], "verdict": verdict, "score": score,
+                "explanation": readable_explanation(question) if verdict != "unverified" else feedback,
                 "feedback": feedback, "rubric_version": question["rubric_version"], "source_refs": question["source_refs"],
                 "evidence_id": record["id"], "assisted": assisted})
         version = space["state_version"] + 1

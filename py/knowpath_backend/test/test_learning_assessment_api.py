@@ -19,6 +19,32 @@ def create(client, space_id, key="assessment"):
     return client.post(f"/api/v1/learning-spaces/{space_id}/assessments", json={"question_count": 5, "difficulty_mix": {"easy": 1.0, "medium": 0.0, "hard": 0.0}}, headers={"Idempotency-Key": key})
 
 
+def test_each_answer_has_feedback_and_refresh_recovers_it(assessment_api):
+    client, space_id = assessment_api
+    aid = create(client, space_id).json()["assessment_id"]
+    assessment = client.get(f"/api/v1/assessments/{aid}").json()
+    question = assessment["questions"][0]
+    body = {"include_feedback": True, "answers": [{"question_id": question["id"], "answer": "B", "expected_answer_revision": 0}]}
+    path = f"/api/v1/assessments/{aid}/attempts"
+    response = client.post(path, json=body, headers={"Idempotency-Key": "first-answer"})
+    feedback = response.json()["question_feedback"][0]
+    assert feedback["verdict"] == "incorrect"
+    assert feedback["correct_answer"] == "A"
+    assert feedback["explanation"] == "Select the definition"
+    assert feedback["source_refs"]
+    assert client.post(path, json=body, headers={"Idempotency-Key": "first-answer"}).json() == response.json()
+    recovered = client.get(f"/api/v1/assessments/{aid}").json()
+    assert recovered["question_feedback"] == [feedback]
+    assert len(recovered["question_feedback"]) == 1
+    assert all("answer_key" not in q and "rubric" not in q for q in recovered["questions"])
+    assert client.get(f"/api/v1/learning-spaces/{space_id}/evidence").json()["items"] == []
+    amended = {"include_feedback": True, "answers": [{"question_id": question["id"], "answer": "A", "expected_answer_revision": 1}]}
+    assert client.post(path, json=amended, headers={"Idempotency-Key": "amend-disclosed"}).status_code == 409
+    next_question = assessment["questions"][1]
+    second = client.post(path, json={"include_feedback": True, "answers": [{"question_id": next_question["id"], "answer": "A", "expected_answer_revision": 0}]}, headers={"Idempotency-Key": "second-answer"})
+    assert second.json()["question_feedback"][0]["assisted"] is True
+
+
 @pytest.mark.parametrize("payload", [{"question_count": 1}, {"question_count": True}, {"unknown": 1}, {"question_types": ["essay"]}, {"difficulty_mix": {"easy": 0.1, "medium": 0.1, "hard": 0.1}}])
 def test_create_rejects_invalid_request(assessment_api, payload):
     client, space_id = assessment_api

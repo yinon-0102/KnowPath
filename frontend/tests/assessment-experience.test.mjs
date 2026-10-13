@@ -7,6 +7,21 @@ const context = () => ({ spaceId: 's1', active: true });
 const question = { id: 'q1', type: 'single_choice', prompt: '**Prompt**\n\n- item\n\n```js\nconst a = 1;\n```', options: [{ id:'A', text: '**Option**\n\n| a | b |\n| --- | --- |\n| x | y |' }], answer_key: 'SECRET_KEY', rubric: 'SECRET_RUBRIC' };
 const diagnostic = id => ({ assessment_id:'a1', status:'in_progress', current_question:id ? {...question,id}:null, progress:{answered:id==='q1'?0:1,target:5} });
 const baseApi = () => ({createAssessment:async()=>({assessment_id:'a1',run_id:'r1'}),waitRun:async()=>{},assessment:async()=>({id:'a1',space_id:'s1',adaptive:true,status:'ready'}),diagnostic:async()=>diagnostic('q1')});
+
+test('accepted answer pauses on durable feedback until explicit next', async () => {
+ const storage=memory(),api=baseApi(); let answered=false,posts=0;
+ const feedback={question_id:'q1',verdict:'incorrect',answer:'A',correct_answer:'B',explanation:'**Reason**: source definition',source_refs:[{page:2}]};
+ api.recordAttempt=async(_id,body)=>{posts++;assert.equal(body.include_feedback,true);answered=true;return {question_feedback:[feedback]};};
+ api.assessment=async()=>({id:'a1',space_id:'s1',adaptive:true,status:'in_progress',question_feedback:answered?[feedback]:[]});
+ api.diagnostic=async()=>diagnostic(answered?'q2':'q1');
+ const controller=createLearningController({api,context,storage});await controller.start();await controller.answer('A');
+ assert.equal(controller.snapshot().answerFeedback.question_id,'q1');
+ const html=renderLearning({space:{id:'s1'},state:controller.snapshot()});
+ assert.match(html,/回答错误/);assert.match(html,/<strong>Reason<\/strong>/);assert.match(html,/learning-next/);assert.doesNotMatch(html,/id="learning-answer-form"/);
+ const restored=createLearningController({api,context,storage});await restored.resume();assert.equal(restored.snapshot().answerFeedback.question_id,'q1');
+ await restored.next();assert.equal(restored.snapshot().answerFeedback,null);assert.equal(restored.snapshot().diagnostic.current_question.id,'q2');assert.equal(posts,1);
+ await restored.resume();assert.equal(restored.snapshot().answerFeedback,null);
+});
 test('completed assessment links to encoded chapter without crashing', () => {
  const html=renderLearning({space:{id:'space/1'},state:{assessmentId:'a1',diagnostic:{...diagnostic(null),status:'completed'},result:{question_results:[],notes:{chapter_id:'ch/1 &'}}}});
  assert.match(html, /href="#\/space\/space%2F1\/notes\?chapter=ch%2F1\+%26"/);

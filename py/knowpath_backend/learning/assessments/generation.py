@@ -258,6 +258,14 @@ Short topic/source ids are protocol fields only; never mention them in question
 prompts, options or answer strings. Include any code needed to answer in the prompt.
 Rubrics should accept semantically equivalent correct answers unless exact syntax
 is explicitly the skill being assessed.
+The rubric is also the explanation shown after submission. Explain why the answer
+is correct using the supplied source and, where useful, why distractors are wrong;
+do not merely say "choose A" or repeat the answer. Cite article/section names in prose.
+For single-choice questions exactly one option must satisfy the prompt. A true
+but incomplete statement is not a wrong option unless the prompt explicitly asks
+for the complete set of requirements. Avoid multiple defensible answers.
+In rubric explanations refer to option text or human-readable option numbers;
+never show protocol option identifiers such as o1 or o4 to the learner.
 Do not emit source_refs, id, family_id, topic_revision_id or rubric_version.
 Output only valid JSON, without markdown fences or commentary.
 """

@@ -122,7 +122,8 @@ class SourceAccessService:
             raise AssistanceDeliveryChanged()
         return active, spaces.get(space_id)
 
-    def record_delivery(self, assessments, plan, *, kind, delivery_id, space_id, message_id=None):
+    def record_delivery(self, assessments, plan, *, kind, delivery_id, space_id, message_id=None,
+                        preserve_submitted=False):
         """Commit assistance with response events; a failed delivery leaves none."""
         timestamp = now()
         for assessment in assessments:
@@ -161,7 +162,13 @@ class SourceAccessService:
             if message_id is not None or kind == "message":
                 event["message_id"] = message_id or delivery_id
             events.append(event)
+            submitted = self.assessments._latest(assessment['id']) if preserve_submitted else {}
+            previous_flags = {q['id']: q.get('assisted', False) for q in assessment['questions']
+                              if q['id'] in submitted}
             apply_source_assistance(assessment["questions"], snapshot)
+            for question in assessment['questions']:
+                if question['id'] in previous_flags:
+                    question['assisted'] = previous_flags[question['id']]
             self.repository.put_record("assessments", assessment)
 
     def consult_citation(self, citation, space_id, *, rag_repository=None):

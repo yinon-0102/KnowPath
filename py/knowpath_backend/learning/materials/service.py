@@ -324,6 +324,10 @@ class MaterialParser:
             raise MaterialParseError("failed to parse PDF") from exc
         if not any(text.strip() for text in pages):
             raise MaterialParseError("PDF has no extractable text", code="SCANNED_PDF_UNSUPPORTED")
+        from .pdf_structure import structured_pdf_chunks
+        structured = structured_pdf_chunks(pages, self._parse_text)
+        if structured is not None:
+            return structured
         chunks: list[SourceChunk] = []
         for page_number, text in enumerate(pages, start=1):
             if not text.strip():
@@ -425,6 +429,8 @@ class MaterialService:
 
         chunks = [] if defer_parse else self.parser.parse(content, filename=filename)
         duplicate = self.repository.find_by_content_hash(content_hash, filename=filename)
+        from .pdf_structure import reusable_duplicate
+        duplicate = reusable_duplicate(self.repository, duplicate)
         if duplicate is not None:
             material, version = duplicate
             self.repository.record_idempotency(
@@ -508,6 +514,8 @@ class MaterialService:
 
         chunks = [] if defer_parse else self.parser.parse(content, filename=filename)
         duplicate = self.repository.find_by_content_hash(content_hash, filename=filename, material_id=material_id)
+        from .pdf_structure import reusable_duplicate
+        duplicate = reusable_duplicate(self.repository, duplicate)
         if duplicate is not None and duplicate[0].id == material_id:
             self.repository.record_idempotency(
                 key=idempotency_key,

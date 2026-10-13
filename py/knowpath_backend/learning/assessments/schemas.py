@@ -49,6 +49,7 @@ class Answer(StrictRequest):
 
 
 class RecordAttempt(StrictRequest):
+    include_feedback: bool = False
     answers: list[Answer] = Field(min_length=1, max_length=10)
     finalize: bool = False
 

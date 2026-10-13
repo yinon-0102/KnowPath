@@ -114,6 +114,7 @@ export function createLearningController({ api, context, changed = () => {}, com
         view.assessmentMode = persisted.assessmentMode || '';
         view.generationError = persisted.generationError || null;
         view.pendingAnswer = persisted.pendingAnswer || null;
+        view.answerFeedback = persisted.answerFeedback || null;
         view.pendingFinalize = persisted.pendingFinalize || null;
         view.assessmentStage = persisted.assessmentStage || '';
         view.generationStartedAt = persisted.generationStartedAt || null;
@@ -188,6 +189,12 @@ export function createLearningController({ api, context, changed = () => {}, com
       if (assessment.space_id !== task.spaceId) { view.diagnostic = null; view.result = null; view.assessmentStatus = ''; view.generationError = null; throw new Error('测验所属空间发生变化，请刷新。'); }
     }
     generationState(task, assessmentId, assessment.status);
+    const descriptor = saved(task.spaceId);
+    const acknowledged = new Set(descriptor.feedbackAcknowledgedIds || []);
+    const feedback = (assessment.question_feedback || []).find(item => !acknowledged.has(item.question_id));
+    if (feedback) descriptor.answerFeedback = { ...feedback, question: (assessment.questions || []).find(q => q.id === feedback.question_id) || descriptor.answerFeedback?.question };
+    view.answerFeedback = descriptor.answerFeedback || null;
+    save(task.spaceId, descriptor);
     const diagnostic = assessment.adaptive === true
       ? await api.diagnostic(assessmentId, { signal: task.signal })
       : standardDiagnostic(assessment);
@@ -197,13 +204,12 @@ export function createLearningController({ api, context, changed = () => {}, com
     const priorQuestionId = view.diagnostic?.current_question?.id;
     if (currentQuestionId && currentQuestionId !== priorQuestionId) view.questionStartedAt = Date.now();
     view.diagnostic = diagnostic; generationState(task, assessmentId, diagnostic.status);
-    if (api.assessmentActivity && currentQuestionId) {
+    if (api.assessmentActivity && currentQuestionId && !view.answerFeedback) {
       try { await activity.attach(`assessment:${assessmentId}:${currentQuestionId}`, { question_id: currentQuestionId }, 'shown'); }
       catch (error) { if (live(task.ticket)) view.activityError = error.message; }
     }
     else activity.dispose({ notify: false });
     if (diagnostic.current_question) generationProgress(task, { stage: 'ready' });
-    const descriptor = saved(task.spaceId);
     if (descriptor.pendingAnswer && diagnostic.current_question?.id !== descriptor.pendingAnswer.questionId) {
       delete descriptor.pendingAnswer; save(task.spaceId, descriptor);
     }
@@ -247,7 +253,7 @@ export function createLearningController({ api, context, changed = () => {}, com
         : { adaptive: true, kind: 'diagnostic', question_count: 5, question_types: ['single_choice'] };
       save(task.spaceId, descriptor);
       view.assessmentId = ''; view.assessmentStatus = ''; view.assessmentMode = ''; view.generationError = null;
-      view.diagnostic = null; view.result = null; view.pendingAnswer = null; view.pendingFinalize = null;
+      view.diagnostic = null; view.result = null; view.pendingAnswer = null; view.pendingFinalize = null; view.answerFeedback = null;
       view.assessmentStage = ''; view.generationStartedAt = null;
       let response;
       try {
@@ -274,6 +280,7 @@ export function createLearningController({ api, context, changed = () => {}, com
   async function answer(value) {
     return run('正在记录回答并选择下一题…', async task => {
       const question = view.diagnostic?.current_question;
+      if (view.answerFeedback) throw new Error('请先阅读本题解析，再进入下一题。');
       if (saved(task.spaceId).pendingAnswer?.acknowledged) { await refresh(task, view.assessmentId); return; }
       if (!question) throw new Error('没有待提交的当前问题，请刷新诊断。');
       if (question.type === 'single_choice' && !(question.options || []).some(option => option.id === value)) throw new Error('请选择一个有效选项。');
@@ -283,17 +290,33 @@ export function createLearningController({ api, context, changed = () => {}, com
       descriptor.pendingAnswer ||= { questionId: question.id, answer: value, key: uid() };
       save(task.spaceId, descriptor); view.pendingAnswer = descriptor.pendingAnswer;
       if (api.assessmentActivity) { try { await activity.event('waiting'); } catch (error) { view.activityError = error.message; } }
+      let response;
       try {
-        await api.recordAttempt(view.assessmentId, { answers: [{ question_id: question.id, expected_answer_revision: 0, answer: value }] }, { signal: task.signal, key: descriptor.pendingAnswer.key });
+        response = await api.recordAttempt(view.assessmentId, { include_feedback: true, answers: [{ question_id: question.id, expected_answer_revision: 0, answer: value }] }, { signal: task.signal, key: descriptor.pendingAnswer.key });
       } catch (error) {
         if (live(task.ticket) && api.assessmentActivity) await activity.event('ready').catch(() => {});
         throw error;
       }
-      descriptor.pendingAnswer.acknowledged = true; save(task.spaceId, descriptor);
+      descriptor.pendingAnswer.acknowledged = true;
+      const feedback = response?.question_feedback?.find(item => item.question_id === question.id);
+      if (feedback) descriptor.answerFeedback = { ...feedback, question };
+      save(task.spaceId, descriptor);
       if (!live(task.ticket)) return;
+      view.answerFeedback = descriptor.answerFeedback || null;
       view.pendingAnswer = descriptor.pendingAnswer;
       try { await refresh(task, descriptor.assessmentId); }
       catch (error) { throw new Error(`答案已记录，但更新题目失败。请继续 / 刷新诊断，无需重新提交。${failureMessage(error)}`); }
+    });
+  }
+  async function next() {
+    return run('正在进入下一题…', async task => {
+      const descriptor = saved(task.spaceId);
+      if (descriptor.answerFeedback) {
+        descriptor.feedbackAcknowledgedIds = [...new Set([...(descriptor.feedbackAcknowledgedIds || []), descriptor.answerFeedback.question_id])];
+        delete descriptor.answerFeedback; save(task.spaceId, descriptor);
+      }
+      view.answerFeedback = null;
+      await refresh(task, view.assessmentId);
     });
   }
   async function finalize() {
@@ -330,7 +353,7 @@ export function createLearningController({ api, context, changed = () => {}, com
     if (!pendingKeys.has(signature)) pendingKeys.set(signature, uid());
     return { signature, key: pendingKeys.get(signature) };
   }
-  return { sync, snapshot: () => sync(), start, create: start, answer, finalize, loadKnowledge,
+  return { sync, snapshot: () => sync(), start, create: start, answer, next, finalize, loadKnowledge,
     resumeAdjustment: () => run('正在恢复自动调整规则任务…', async task => {
       const runId = view.adjustmentRunId || view.adjustment?.run_id;
       if (!runId) throw new Error('当前没有待恢复的调整任务。');
@@ -454,7 +477,12 @@ function diagnosticSection(space, state, disabled) {
   let content = state.needsActivityCheck ? '<p class="notice" role="status">已有 15 分钟没有页面操作，请核对是否仍在阅读或思考。操作页面后提示会消失，作答不会自动暂停。</p>' : '';
   if (diagnostic) {
     content += `<p class="learning-progress" role="status">已回答 ${number(diagnostic.progress?.answered)} / 目标 ${number(diagnostic.progress?.target)} 题${standard ? ' · 按题目顺序作答' : ` · 策略 ${esc(diagnostic.policy_version)}`}</p>`;
-    if (state.pendingAnswer?.acknowledged) {
+    if (state.answerFeedback) {
+      const feedback = state.answerFeedback, answered = feedback.question;
+      const answerText = value => answered?.options?.find(option => option.id === value)?.text || value || '未提供';
+      const verdict = ({correct:'回答正确',incorrect:'回答错误',unverified:'待核验'})[feedback.verdict] || '待核验';
+      content += `<section class="learning-answer-feedback" role="region" aria-label="本题反馈"><h3 tabindex="-1" data-answer-feedback-heading>${esc(verdict)}</h3>${answered?.prompt ? `<div class="note-markdown">${renderNoteMarkdown(answered.prompt)}</div>` : ''}<p><strong>你的答案：</strong>${esc(answerText(feedback.answer))}</p>${feedback.correct_answer ? `<p><strong>${feedback.verdict === 'unverified' ? '参考答案' : '正确答案'}：</strong>${esc(answerText(feedback.correct_answer))}</p>` : ''}<h4>本题解析</h4><div class="note-markdown">${renderNoteMarkdown(feedback.explanation || feedback.feedback)}</div>${feedback.verdict === 'unverified' ? `<p class="subtle">${esc(feedback.feedback || '本题尚未得到可靠判分，不计入已确认掌握。')}</p>` : ''}<p class="subtle">原文依据：${[...new Set(list(feedback.source_refs).map(ref => ref.page ? `第 ${ref.page} 页` : ref.line_start ? `第 ${ref.line_start} 行` : '封存资料'))].map(esc).join('、')}</p>${action(question ? '下一题' : '查看本轮汇总', 'next', disabled, true)}</section>`;
+    } else if (state.pendingAnswer?.acknowledged) {
       content += '<p class="notice" role="status">答案已记录，正在等待更新题目。点击“继续 / 刷新诊断”恢复进度。</p>';
     } else if (question) {
       const topic = list(knowledge?.topics).find(item => item.id === question.topic_id || list(question.topic_ids).includes(item.id));
@@ -466,7 +494,7 @@ function diagnosticSection(space, state, disabled) {
     if (done && state.adjustment) content += `<section class="notice"><h3>本次计划调整 · ${esc(({ queued: '排队中', pending: '等待中', running: '规则处理中', applied: '已应用', blocked: '受阻', reverted: '已撤回' })[state.adjustment.status] || state.adjustment.status)}</h3>${state.adjustment.reason ? `<p>${esc(state.adjustment.reason)}</p>` : ''}${state.adjustment.diff ? `<details><summary>查看调整差异</summary><pre>${esc(JSON.stringify(state.adjustment.diff, null, 2))}</pre></details>` : ''}<button class="button button-secondary" data-action="plan-adjustments">查看计划与调整差异</button>${state.adjustmentError ? `<p role="alert">${esc(state.adjustmentError)}</p><button class="button button-secondary" data-action="learning-adjustment-resume">恢复原调整任务</button>` : ''}</section>`;
     if (diagnostic.completion_reason === 'exposure_history_limit') content += '<div class="notice warning">历史记录超出在线检查上限，无法确认候选题的独立性，本轮停止出题。只汇总已有记录，不据此判定已经掌握。</div>';
     if (Number(diagnostic.runtime_excluded_family_count) > 0) content += `<p class="subtle">为避免使用其他测验已展示的题目，已跳过 ${number(diagnostic.runtime_excluded_family_count)} 类题族。</p>`;
-    if (!question && !terminal(diagnostic.status) && !state.pendingFinalize?.acknowledged) content += action('汇总诊断', 'finalize', disabled, true);
+    if (!question && !state.answerFeedback && !terminal(diagnostic.status) && !state.pendingFinalize?.acknowledged) content += action('汇总诊断', 'finalize', disabled, true);
     if (state.pendingFinalize?.acknowledged) content += '<p class="notice" role="status">汇总请求已接收，点击“继续 / 刷新诊断”恢复同一轮结果。</p>';
     if (list(diagnostic.decisions).length) content += `<details class="learning-details"><summary>查看逐题选择依据（${diagnostic.decisions.length} 步）</summary><ol>${diagnostic.decisions.map(d => `<li>第 ${number(d.step)} 步：${reason(d.reason)}<small>依据 ${number(list(d.evidence_ids).length)} 条历史证据 · ${number(list(d.attempt_ids).length)} 次当前作答</small></li>`).join('')}</ol></details>`;
     if (list(diagnostic.hypotheses).length) content += `<div class="learning-hypotheses"><h3>前置知识排查</h3>${diagnostic.hypotheses.map(h => `<p><span class="badge">${esc(({ pending: '待验证', supported: '存在缺口观察', not_supported: '本次未支持缺口', inconclusive: '证据不足' })[h.status] || h.status)}</span> ${reason(h.reason)}</p>`).join('')}<p class="subtle">前置关系与一次作答不能证明错误的因果关系。</p></div>`;

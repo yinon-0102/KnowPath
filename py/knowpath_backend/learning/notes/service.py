@@ -208,6 +208,15 @@ class NotesService:
     def _present(self, chapter, generations):
         from .presentation import readable_markdown, question_summaries
         by_assessment = {g['assessment_id']: g.get('snapshot', {}) for g in generations}
+        for assessment_id, snapshot in by_assessment.items():
+            result_ids = {r['question_id'] for r in snapshot.get('assessment_result', {}).get('question_results', [])}
+            if result_ids - {q['id'] for q in snapshot.get('questions', [])}:
+                try:
+                    assessment = self.repository.get_record('assessments', assessment_id, lock=False)
+                except DomainNotFound:
+                    continue
+                if assessment['status'] == 'completed':
+                    snapshot['questions'] = [copy.deepcopy(q) for q in assessment['questions'] if q['id'] in result_ids]
         for block in chapter.get('blocks', []):
             block['source_refs'] = self._source_labels(block.get('source_refs', []))
             if block.get('kind') != 'assessment': continue
@@ -332,7 +341,7 @@ class NotesService:
             evidence = [e for e in evidence if e['source_refs'] and all((r['material_id'], r['material_version_id'], r['chunk_id']) in allowed for r in e['source_refs'])]
             session = next((s for s in self.plans._space_sessions(c['space_id']) if s['id'] == assessment.get('learning_session_id')), None)
             run = self.runs.create('note_generate')
-            g = {'id': uid(), 'space_id': c['space_id'], 'chapter_id': c['id'], 'assessment_id': assessment['id'], 'run_id': run['id'], 'status': 'generating', 'fingerprint': fingerprint(assessment['result']), 'snapshot': {'assessment_result': copy.deepcopy(assessment['result']), 'questions': [q for q in assessment['questions'] if q['id'] in {e['question_id'] for e in evidence}], 'evidence': evidence, 'sources': sources, 'learning_time': copy.deepcopy(session), 'topic_ids': c['topic_ids']}, 'created_at': now(), 'error': None}
+            g = {'id': uid(), 'space_id': c['space_id'], 'chapter_id': c['id'], 'assessment_id': assessment['id'], 'run_id': run['id'], 'status': 'generating', 'fingerprint': fingerprint(assessment['result']), 'snapshot': {'assessment_result': copy.deepcopy(assessment['result']), 'questions': [q for q in assessment['questions'] if q['id'] in {r['question_id'] for r in assessment['result']['question_results']}], 'evidence': evidence, 'sources': sources, 'learning_time': copy.deepcopy(session), 'topic_ids': c['topic_ids']}, 'created_at': now(), 'error': None}
             g['event_id'] = enqueue(self.repository, 'note', g)
             self._put('note_generations', g)
             c.update(generation_status='待生成', generation_id=g['id'], run_id=run['id'])
@@ -363,7 +372,7 @@ class NotesService:
             g['fingerprint'] = fingerprint(assessment['result'])
             g['snapshot']['assessment_result'] = copy.deepcopy(assessment['result'])
             g['snapshot']['evidence'] = evidence
-            g['snapshot']['questions'] = [q for q in assessment['questions'] if q['id'] in {e['question_id'] for e in evidence}]
+            g['snapshot']['questions'] = [q for q in assessment['questions'] if q['id'] in {r['question_id'] for r in assessment['result']['question_results']}]
             run = self.runs.create('note_generate')
             g.update(status='generating', run_id=run['id'], error=None)
             g['event_id'] = enqueue(self.repository, 'note', g)
@@ -384,7 +393,16 @@ class NotesService:
         try:
             if self.generator is None: raise RuntimeError('MODEL_UNAVAILABLE')
             if hasattr(self.generator, 'generate_json'):
-                raw = self.generator.generate_json([{'role': 'system', 'content': '仅整理已验证资料，禁止推断掌握状态。返回JSON {"items":[{"evidence_id":"输入中的证据ID","markdown":"核心知识总结"}],"corrections":[{"evidence_id":"输入中incorrect证据ID","markdown":"理解纠偏说明"}]}。每项必须对应输入证据，不加入未学习知识。'}, {'role': 'user', 'content': json.dumps(snapshot, ensure_ascii=False)}])
+                # Historical assisted answers remain visible in the record, but
+                # must never supply evidence IDs to the summarization model.
+                eligible_ids = {e['id'] for e in snapshot['evidence']}
+                eligible_questions = {e['question_id'] for e in snapshot['evidence']}
+                model_input = dict(snapshot,
+                    allowed_evidence_ids=sorted(eligible_ids),
+                    questions=[q for q in snapshot['questions'] if q['id'] in eligible_questions],
+                    assessment_result={'question_results': [r for r in snapshot['assessment_result'].get('question_results', [])
+                                                            if r.get('evidence_id') in eligible_ids]})
+                raw = self.generator.generate_json([{'role': 'system', 'content': '仅整理已验证资料，禁止推断掌握状态。返回JSON {"items":[{"evidence_id":"allowed_evidence_ids中的ID","markdown":"核心知识总结"}],"corrections":[{"evidence_id":"evidence中result为incorrect的ID","markdown":"理解纠偏说明"}]}。每项evidence_id必须来自allowed_evidence_ids，禁止使用question_id、topic_id或其他ID；没有可用证据时返回空数组。不加入未学习知识。'}, {'role': 'user', 'content': json.dumps(model_input, ensure_ascii=False)}])
             else: raw = self.generator.generate(snapshot)
             if not isinstance(raw, dict) or not isinstance(raw.get('items'), list) or not isinstance(raw.get('corrections', []), list): raise ValueError('MODEL_INVALID_RESPONSE')
             valid = {e['id']: e for e in snapshot['evidence']}

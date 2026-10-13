@@ -251,7 +251,7 @@ test('adaptive controller starts, polls, answers only current question and final
   assert.equal(calls[0].adaptive, true);
   assert.equal(calls[1], 'r1');
   await controller.answer('A');
-  assert.deepEqual(calls[2], { answers: [{ question_id: 'q1', expected_answer_revision: 0, answer: 'A' }] });
+  assert.deepEqual(calls[2], { include_feedback: true, answers: [{ question_id: 'q1', expected_answer_revision: 0, answer: 'A' }] });
   assert.equal(controller.snapshot().diagnostic.current_question.id, 'q2');
   await controller.answer('B');
   await controller.finalize();

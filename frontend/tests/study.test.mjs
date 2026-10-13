@@ -9,6 +9,11 @@ const plan = { id: 'p', space_id: 's', status: 'ready', version: 1, tasks: [
   { id: 'b', node_id: 'nb', title: '函数', status: 'pending', topic_ids: ['tb'], context: { topics: [{ id: 'tb', name: '函数', source_refs: [ref] }] } },
 ] };
 const memory = () => { const values = new Map(); return { getItem: key => values.get(key) || null, setItem: (key, value) => values.set(key, value), removeItem: key => values.delete(key) }; };
+
+test('PDF learning boundaries use frozen topic names and all referenced pages', () => {
+ const html=study.renderStudy({space,plan,task:plan.tasks[0],topics:[{name:'第一章 总则 · 第一—六条'}],refs:[{...ref,page:1},{...ref,page:2}],lessons:[]});
+ assert.match(html,/本节点学习范围/);assert.match(html,/第一章 总则 · 第一—六条/);assert.match(html,/第 1—2 页/);
+});
 const api = overrides => ({ learningRecord: async (_, task) => ({ space_id: 's', task: plan.tasks.find(t => t.id === task), topics: plan.tasks.find(t => t.id === task).context.topics, sessions: [] }),
   studyLessons: async () => ({ items: [] }), source: async () => ({ text: '真实原文', page: 3 }), materialFile: async () => new Response('%PDF-1.7', { headers: { 'Content-Type': 'application/pdf' } }), ...overrides });
 
