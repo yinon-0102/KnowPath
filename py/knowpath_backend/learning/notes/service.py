@@ -92,29 +92,50 @@ class NotesService:
     def list_notebooks(self):
         return {'items': [self.notebook(s['id']) for s in self.spaces.repository.list()]}
 
-    def _valid(self, evidence):
+    def _valid(self, evidence, *, contexts=None):
         if not (evidence and evidence.get('eligible') and evidence.get('score') is not None and not evidence.get('assisted') and not evidence.get('revoked_by_review_id') and not evidence.get('quarantined') and evidence.get('source_refs')): return False
         from knowpath_backend.learning.assessments.service import revision
-        space = self.spaces.repository.get(evidence['space_id'])
-        revisions = {t['id']: revision(t) for t in self.spaces.bound_topics(space)}
-        return evidence.get('epoch', 0) == self.assessments._epochs(space['id']).get(evidence['topic_id'], 0) and evidence.get('topic_revision_id') == revisions.get(evidence['topic_id'])
+        # Callers may share this snapshot within one synchronization only.
+        if contexts is None: contexts = {}
+        space_id = evidence['space_id']
+        if space_id not in contexts:
+            space = self.spaces.repository.get(space_id)
+            revisions = {t['id']: revision(t) for t in self.spaces.bound_topics(space)}
+            contexts[space_id] = (revisions, self.assessments._epochs(space_id))
+        revisions, epochs = contexts[space_id]
+        return evidence.get('epoch', 0) == epochs.get(evidence['topic_id'], 0) and evidence.get('topic_revision_id') == revisions.get(evidence['topic_id'])
 
     def synchronize(self, space_id):
         with self.repository.transaction():
             self.spaces.repository.get(space_id)
             states = self.plans._planning_states(space_id)
-            nodes = self.plans._canonical_nodes(self.plans._space_plans(space_id), self.plans._space_sessions(space_id))
+            plans = self.plans._space_plans(space_id)
+            sessions = self.plans._space_sessions(space_id)
+            nodes = self.plans._canonical_nodes(plans, sessions)
             tasks = {t['node_id']: t for rows in nodes.values() for t in rows}
             evidence = {e['id']: e for e in self.repository.records('evidence', space_id=space_id)}
-            for c in self.repository.records('note_chapters', space_id=space_id):
+            chapters = self.repository.records('note_chapters', space_id=space_id)
+            finished_nodes = {s.get('context', {}).get('node_id', s.get('task_id')) for s in sessions if s.get('status') == 'finished'}
+            latest_generations = {}
+            for generation in self.repository.records('note_generations', space_id=space_id):
+                previous = latest_generations.get(generation['chapter_id'])
+                if previous is None or (generation['created_at'], generation['id']) > (previous['created_at'], previous['id']):
+                    latest_generations[generation['chapter_id']] = generation
+            contexts, validity, runs = {}, {}, {}
+            def valid(item):
+                if not item: return False
+                if item['id'] not in validity:
+                    validity[item['id']] = self._valid(item, contexts=contexts)
+                return validity[item['id']]
+            for c in chapters:
                 prior = copy.deepcopy(c)
                 task = tasks.get(c['node_id'], {})
-                if c['generation_status'] == '未总结' and any(s.get('status') == 'finished' and s.get('context', {}).get('node_id', s.get('task_id')) == c['node_id'] for s in self.plans._space_sessions(space_id)):
+                if c['generation_status'] == '未总结' and c['node_id'] in finished_nodes:
                     c['generation_status'] = '待总结'
-                generations = self.repository.records('note_generations', chapter_id=c['id'])
-                if generations:
-                    latest = max(generations, key=lambda g: (g['created_at'], g['id']))
-                    run = self.runs.get(latest['run_id'])
+                latest = latest_generations.get(c['id'])
+                if latest:
+                    if latest['run_id'] not in runs: runs[latest['run_id']] = self.runs.get(latest['run_id'])
+                    run = runs[latest['run_id']]
                     c['generation_status'] = '已生成' if latest['status'] == 'completed' else '失败' if latest['status'] in {'failed', 'cancelled'} or run['status'] in {'failed', 'cancelled', 'cancelling'} else '生成中' if run['status'] == 'running' else '待生成'
                     c['error'] = latest.get('error') or run.get('error')
                 c['status'] = 'COMPLETED' if task.get('status') == 'completed' and c['topic_ids'] and all(states.get(t, {}).get('status') == 'mastered' and states.get(t, {}).get('score_validity') != 'stale' for t in c['topic_ids']) else 'IN_PROGRESS'
@@ -122,13 +143,13 @@ class NotesService:
                     candidates = [e for e in evidence.values() if e.get('assessment_id') == correction.get('assessment_id', correction['id'].split(':')[0]) and e.get('question_id') == correction['question_id'] and not e.get('revoked_by_review_id')]
                     current = max(candidates, key=lambda e: (e.get('created_at', ''), e['id']), default=None)
                     if current: correction['evidence_id'] = current['id']
-                    correction['confirmed'] = self._valid(current) and current.get('result') == 'incorrect'
-                    qualifying = [e for e in evidence.values() if self._valid(e) and e.get('assessment_kind') == 'retest' and e.get('result') == 'correct' and e.get('assessment_id') != correction.get('assessment_id') and e.get('topic_id') == (current or {}).get('topic_id') and e.get('created_at', '') > (current or {}).get('created_at', '')]
+                    correction['confirmed'] = valid(current) and current.get('result') == 'incorrect'
+                    qualifying = [e for e in evidence.values() if valid(e) and e.get('assessment_kind') == 'retest' and e.get('result') == 'correct' and e.get('assessment_id') != correction.get('assessment_id') and e.get('topic_id') == (current or {}).get('topic_id') and e.get('created_at', '') > (current or {}).get('created_at', '')]
                     correction['independent_retest_passed'] = bool(qualifying and states.get((current or {}).get('topic_id'), {}).get('status') == 'mastered')
                     correction['retest_evidence_ids'] = [e['id'] for e in qualifying] if correction['independent_retest_passed'] else []
                 for block in c['blocks']:
                     if block['kind'] != 'personal':
-                        block['evidence_validity'] = 'current' if all(self._valid(evidence.get(eid)) for eid in block.get('evidence_ids', [])) else 'stale'
+                        block['evidence_validity'] = 'current' if all(valid(evidence.get(eid)) for eid in block.get('evidence_ids', [])) else 'stale'
                 c['correction_count'] = sum(x['confirmed'] for x in c['corrections'])
                 if c != prior: self._save(c, 'validity')
 
