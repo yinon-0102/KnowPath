@@ -307,9 +307,13 @@ def test_review_changes_only_named_snapshot_and_missing_source_blocks_confirmati
     answer(state, other, "answer-second")
     state.finalize_assessment(other["id"], {})
     unchanged = state.assessment_result(other["id"])
+    frozen = state.assessment_service.repository.get_record('assessments', other['id'])['result']
     pending = report(state, assessment["id"], qid)
     state.assessment_service.resolve_question_review(assessment["id"], pending["review_id"], decision(state, assessment["id"], qid), "resolve")
-    assert factory().assessment_result(other["id"]) == unchanged
+    after = factory().assessment_result(other["id"])
+    assert {k: v for k, v in after.items() if k != 'current_state'} == {k: v for k, v in unchanged.items() if k != 'current_state'}
+    assert after['current_state']['state_version'] > unchanged['current_state']['state_version']
+    assert factory().assessment_service.repository.get_record('assessments', other['id'])['result'] == frozen
     own = state.assessment_service.repository.get_record("assessments", other["id"])
     own["snapshot"]["topics"][0]["source_text"] = ""
     state.assessment_service.repository.put_record("assessments", own)

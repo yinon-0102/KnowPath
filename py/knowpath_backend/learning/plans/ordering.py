@@ -1,6 +1,7 @@
 """Pure source-aware topological ordering, independent of mastery identity."""
 from datetime import datetime
 from knowpath_backend.learning.errors import DomainConflict
+from knowpath_backend.learning.spaces.scope import prerequisite_conflicts
 
 ORDER_POLICY_VERSION = 'order-v1'
 
@@ -78,13 +79,13 @@ def canonical_id(topic):
     return topic.get('canonical_topic_id') or topic['id']
 
 
-def order_topics(topics, states, mode, materials, timestamp, *, custom_order=None, custom_alias_order=None, source_positions=None):
+def order_topics(topics, states, mode, materials, timestamp, *, custom_order=None, custom_alias_order=None, source_positions=None, all_topics=None):
     by_id = {topic['id']: topic for topic in topics}
-    for topic in topics:
-        missing = [parent for parent in topic.get('prerequisites', []) if parent not in by_id]
-        if missing:
-            raise DomainConflict('PLAN_CONSTRAINT_UNSATISFIABLE', '所选范围缺少必要前置知识',
-                                 {'conflicts': ['missing_prerequisite', *missing], 'adjustable_constraints': ['将前置知识加入范围', '移除依赖主题']})
+    universe = {topic['id']: topic for topic in (all_topics or topics)}
+    conflicts = prerequisite_conflicts(topics, all_topics or topics, states)
+    if conflicts:
+        raise DomainConflict('PLAN_CONSTRAINT_UNSATISFIABLE', '所选范围缺少必要前置知识',
+                             {'conflicts': ['missing_prerequisite', *[c['prerequisite_topic_id'] for c in conflicts]], 'adjustable_constraints': ['将前置知识加入范围', '移除依赖主题']})
     ranks = {'needs_review': 0, 'unstable': 1, 'learning': 2, 'mastered': 3, 'unseen': 4}
     custom = {identifier: index for index, identifier in enumerate(custom_order or [])}
     aliases = {identifier: index for index, identifier in enumerate(custom_alias_order or [])}
@@ -104,7 +105,9 @@ def order_topics(topics, states, mode, materials, timestamp, *, custom_order=Non
     remaining = dict(by_id)
     result = []
     while remaining:
-        ready = [t for t in remaining.values() if all(p not in remaining for p in t.get('prerequisites', []))]
+        pending = {canonical_id(t) for t in remaining.values()}
+        ready = [t for t in remaining.values() if all(canonical_id(universe.get(p, {'id': p})) not in pending
+                                                      for p in t.get('prerequisites', []))]
         if not ready:
             raise DomainConflict('PLAN_CONSTRAINT_UNSATISFIABLE', '知识点前置关系存在环',
                                  {'conflicts': ['prerequisite_cycle'], 'adjustable_constraints': ['审核并修正前置关系']})

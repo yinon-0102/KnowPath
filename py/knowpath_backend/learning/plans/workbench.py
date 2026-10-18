@@ -11,6 +11,7 @@ from hashlib import sha256
 from sqlalchemy import select
 
 from knowpath_backend.learning.errors import DomainConflict, DomainNotFound
+from knowpath_backend.learning.knowledge.learning_units import SEMANTIC_FIELDS
 from knowpath_backend.learning.persistence.db import StudyPlanRow, StudyTaskRow, SessionRow, SessionEventRow
 
 
@@ -30,6 +31,33 @@ def sources(refs):
 
 
 class WorkbenchReads:
+    @staticmethod
+    def _task_progress(plan):
+        tasks = [task for task in plan["tasks"] if not task.get("historical") and not task.get("context", {}).get("historical")]
+        following = next((task for task in tasks if task["status"] in {"pending", "in_progress"}), None)
+        counts = {status: sum(task["status"] == status for task in tasks) for status in ("completed", "skipped", "deferred")}
+        counts.update(total=len(tasks), remaining=sum(task["status"] in {"pending", "in_progress"} for task in tasks))
+        action = {"kind": "task", "plan_id": plan["id"], "task_id": following["id"]} if following else {"kind": "summary", "plan_id": plan["id"]}
+        return {"task_progress": counts, "next_action": action}
+
+    def _round_summary(self, plan):
+        progress = self._task_progress(plan)
+        tasks = [task for task in plan["tasks"] if not task.get("historical") and not task.get("context", {}).get("historical")]
+        ids = {task["id"] for task in tasks}
+        topic_ids = {topic for task in tasks for topic in task["topic_ids"]}
+        assessments = [row for row in self.repository.records("assessments", space_id=plan["space_id"], lock=False)
+                       if row.get("plan_id") == plan["id"] and row.get("task_id") in ids and row["status"] == "completed"]
+        unverified = sum(item.get("verdict") == "unverified" for row in assessments
+                         for item in (row.get("result") or {}).get("question_results", []))
+        states = [row for row in self.assessments.state(plan["space_id"])["items"] if row["topic_id"] in topic_ids]
+        counts = progress["task_progress"]
+        return {"plan_id": plan["id"], "plan_version": plan["version"], "tasks": counts,
+                "processed": counts["remaining"] == 0,
+                "all_completed": bool(counts["total"]) and counts["completed"] == counts["total"],
+                "assessments": {"completed": len(assessments), "unverified": unverified},
+                "mastery": {"mastered": sum(row["status"] == "mastered" for row in states), "total": len(topic_ids)},
+                "review": {"due": sum(bool(row.get("review_schedule", {}).get("due")) for row in states)}}
+
     def _space_plans(self, space_id):
         if not self.sql:
             result = [self._plan_payload(plan, plan.get("tasks", []))
@@ -169,7 +197,11 @@ class WorkbenchReads:
             active = {key: copy.deepcopy(active[key]) for key in (
                 "id", "session_id", "space_id", "plan_id", "task_id", "status", "started_at", "paused", "context")}
             active["context"] = self._record_context(active["context"])
-        return {"space_id": space_id, "current_plan": current, "active_session": active}
+        result = {"space_id": space_id, "current_plan": current, "active_session": active,
+                  "recoverable_assessments": self.assessments.recoverable(space_id)}
+        if current is not None:
+            result.update(round_summary=self._round_summary(current), **self._task_progress(current))
+        return result
 
     def _canonical_nodes(self, plans, sessions):
         """A node occurs in its first round and points to its latest plan copy."""
@@ -238,6 +270,7 @@ class WorkbenchReads:
             except (ValueError, TypeError, UnicodeError, binascii.Error):
                 raise DomainConflict("INVALID_CURSOR", "分页游标无效或不属于当前查询") from None
         plans = sorted(self._space_plans(space_id), key=self._plan_key, reverse=True)
+        current = next((plan for plan in plans if plan["status"] != "superseded"), None)
         nodes = self._canonical_nodes(plans, self._space_sessions(space_id))
         all_nodes = [node for rows in nodes.values() for node in rows]
         remaining = [plan for plan in plans if after is None or self._plan_key(plan) < after]
@@ -251,6 +284,8 @@ class WorkbenchReads:
         if rounds and after is None and page[0]["status"] != "superseded":
             rounds[0]["status"] = self.get_plan(page[0]["id"])["status"]
         return {"space_id": space_id, "rounds": rounds,
+                "current_plan_id": current["id"] if current else None,
+                "current_plan_version": current["version"] if current else None,
                 "completed_count": sum(node["status"] == "completed" for node in all_nodes),
                 "total_count": len(all_nodes), "next_cursor": next_cursor}
 
@@ -262,7 +297,7 @@ class WorkbenchReads:
         if "source_refs" in result:
             result["source_refs"] = sources(result["source_refs"])
         if "topics" in result:
-            result["topics"] = [{"id": topic["id"], "name": topic.get("name", topic["id"]),
+            result["topics"] = [{**{key: copy.deepcopy(topic[key]) for key in SEMANTIC_FIELDS if key in topic}, "id": topic["id"], "name": topic.get("name", topic["id"]),
                                  **({"source_refs": sources(topic["source_refs"])} if "source_refs" in topic else {})}
                                 for topic in result["topics"]]
         return result
@@ -296,7 +331,7 @@ class WorkbenchReads:
             elif "source_refs" not in saved:
                 saved["source_refs"] = copy.deepcopy(current.get(topic_id, {}).get("source_refs", []))
                 fallback = True
-            result.append({"id": topic_id, "name": saved.get("name", topic_id),
+            result.append({**{key: copy.deepcopy(saved[key]) for key in SEMANTIC_FIELDS if key in saved}, "id": topic_id, "name": saved.get("name", topic_id),
                            "source_refs": sources(saved.get("source_refs", [])), "source": origin,
                            "fallback": fallback})
         return result
@@ -320,7 +355,7 @@ class WorkbenchReads:
             if ((row.get("plan_id"), row.get("task_id")) not in copies
                     and row.get("learning_session_id") not in session_ids):
                 continue
-            assessments.append({"assessment_id": row["id"], "kind": row["kind"], "status": row["status"],
+            assessments.append({**self.assessments.recovery_projection(row), "assessment_id": row["id"],
                 "created_at": row["created_at"], "learning_session_id": row.get("learning_session_id"),
                 "result": self.assessments.result(row["id"]) if row["status"] == "completed" else None})
         current_plan = max((row for row in plans if row["status"] != "superseded"),

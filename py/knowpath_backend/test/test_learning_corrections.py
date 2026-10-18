@@ -138,7 +138,7 @@ def test_rejection_remains_in_audit_but_not_new_space_topics(correction_workspac
         state.delete_space(new['id'], {'confirm': True, 'expected_version': 1})
 
 
-def test_worker_fails_if_another_revision_wins_publication(correction_workspace):
+def test_worker_is_fenced_if_another_revision_wins_publication(correction_workspace):
     ctx = correction_workspace
     factory, upload, label, space, payload = ctx
     created = create(ctx)
@@ -151,9 +151,11 @@ def test_worker_fails_if_another_revision_wins_publication(correction_workspace)
     state.graph_service.publish(upload.material.id, staged['candidate_revision_id'], {'expected_graph_version': 1}, label+'-winner')
     assert not job.execute(claimed)
     run = factory().get_run(confirmed['run_id'])
-    assert run['status'] == 'failed'
-    assert run['error']['code'] == 'VERSION_CONFLICT'
-    assert state.graph_service.repository.get_record('graph_revisions', created['candidate_revision_id'])['status'] == 'draft'
+    assert run['status'] == 'cancelled'
+    revision = state.graph_service.repository.get_record('graph_revisions', created['candidate_revision_id'])
+    assert revision['status'] == 'superseded'
+    assert not revision.get('preparation')
+    assert state.graph_service.repository.get_record('outbox', claimed['id'])['lease_token'] is None
 
 
 def test_delete_space_fences_pending_correction(correction_workspace):

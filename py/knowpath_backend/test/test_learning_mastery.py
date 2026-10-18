@@ -6,6 +6,24 @@ from knowpath_backend.learning.assessments.mastery import aggregate, MasteryPoli
 START = datetime(2026, 9, 1, tzinfo=timezone.utc)
 
 
+def test_sufficiency_exposes_configured_thresholds_and_real_retest_eligibility():
+    from knowpath_backend.learning.assessments.review_policy import project_review_state
+    policy = MasteryPolicy(minimum_families=4, minimum_assessments=3, minimum_spacing_hours=48)
+    evidence = [row(1, is_application=False)]
+    state = estimate(evidence, policy=policy)
+    before = project_review_state(state, evidence, revision_id='r1', epoch=0,
+        as_of=START + timedelta(hours=47), mastery_policy=policy)
+    sufficiency = before['evidence_sufficiency']
+    assert sufficiency['requirements'] == {'minimum_families': 4, 'minimum_assessments': 3, 'minimum_spacing_hours': 48, 'application_required': True}
+    assert sufficiency['earliest_retest_at'] == (START + timedelta(hours=48)).isoformat()
+    assert sufficiency['can_retest_now'] is False
+    assert set(sufficiency['missing']) == {'insufficient_independent_families', 'insufficient_distinct_assessments', 'insufficient_observation_spacing', 'no_application_observation'}
+    after = project_review_state(state, evidence, revision_id='r1', epoch=0,
+        as_of=START + timedelta(hours=48), mastery_policy=policy)
+    assert after['evidence_sufficiency']['can_retest_now'] is True
+    assert after['evidence_sufficiency']['spacing_hours'] == 0  # Waiting alone creates no observation.
+
+
 def row(i, *, family=None, score=1.0, hours=0, assessment="a", **extra):
     return {"id": str(i), "family_id": family or str(i), "score": score, "created_at": (START + timedelta(hours=hours)).isoformat(), "assessment_id": assessment, "topic_revision_id": "r1", "eligible": True, "assisted": False, "error_tags": [], "is_application": True, **extra}
 

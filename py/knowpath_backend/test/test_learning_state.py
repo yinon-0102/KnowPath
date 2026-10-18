@@ -1,10 +1,16 @@
 from knowpath_backend.test.test_learning_state_persistence import FixedQuestions
-from knowpath_backend.learning.materials.service import InMemoryMaterialRepository, MaterialService
+from knowpath_backend.learning.materials.service import InMemoryMaterialRepository, MaterialService, MaterialParser
 from knowpath_backend.learning.state import LearningState
 
 
 def _state_with_material() -> tuple[LearningState, str]:
     state = LearningState(question_generator=FixedQuestions())
+    # These API contracts explicitly use the historical topic_functions alias.
+    class LegacyParser(MaterialParser):
+        VERSION = 'knowpath_parser_v1'
+        def parse(self, content, filename):
+            return self._parse_text(content.decode())
+    state.material_service.parser = LegacyParser()
     material = state.material_service.create(
         filename="python.md",
         content=b"# Functions\n\nFunctions group reusable behavior.\n\n## Parameters\n\nParameters receive values.",

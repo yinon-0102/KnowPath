@@ -18,6 +18,14 @@ from ..errors import _domain_error, validate_chat
 router = APIRouter(route_class=ContractRoute)
 
 
+@router.get('/api/v1/learning-spaces/{space_id}/assessments')
+def recoverable_assessments(state: LearningStateDep, space_id: str, plan_id: str | None = None, task_id: str | None = None) -> JSONResponse:
+    try:
+        return JSONResponse(status_code=200, content={'items': state.assessment_service.recoverable(space_id, plan_id=plan_id, task_id=task_id)})
+    except (DomainNotFound, DomainConflict) as exc:
+        return _domain_error(exc)
+
+
 @router.post("/api/v1/learning-spaces/{space_id}/assessments", status_code=202)
 def create_assessment(settings: SettingsDep, state: LearningStateDep, space_id: str, payload: CreateAssessment, background_tasks: BackgroundTasks, idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None) -> JSONResponse:
     try:

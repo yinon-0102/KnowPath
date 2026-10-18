@@ -15,7 +15,7 @@ router = APIRouter(route_class=ContractRoute)
 
 
 @router.post("/api/v1/learning-spaces/{space_id}/plan-comparisons")
-async def compare_plans(state: LearningStateDep, space_id: str, payload: ComparePlans,
+def compare_plans(state: LearningStateDep, space_id: str, payload: ComparePlans,
                         idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None) -> JSONResponse:
     if not idempotency_key or not idempotency_key.strip():
         return _error_response(400, "IDEMPOTENCY_KEY_REQUIRED", "预算比较必须提供 Idempotency-Key")

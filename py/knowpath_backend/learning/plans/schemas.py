@@ -38,15 +38,27 @@ class CreatePlan(StrictPlanRequest):
             raise ValueError("initial 不应提供 base_plan_id 或 expected_plan_version")
         return self
 
+class UndoTaskCompletion(StrictPlanRequest):
+    expected_plan_version: int = Field(ge=1)
+    completion_event_id: str = Field(min_length=1, max_length=256)
+    reason: str = Field(min_length=1, max_length=2000)
+
+
 class UpdateTask(StrictPlanRequest):
     expected_plan_version: int = Field(ge=1)
     status: Literal["completed", "skipped", "deferred"]
     note: str | None = Field(default=None, max_length=2000)
     reason: str | None = Field(default=None, max_length=2000)
     defer_until: datetime | None = None
+    source: Literal["manual", "assessment"] = "manual"
+    assessment_id: str | None = Field(default=None, min_length=1)
 
     @model_validator(mode="after")
     def status_fields(self):
+        if self.source == "assessment" and (self.status != "completed" or self.assessment_id is None):
+            raise ValueError("测评完成确认必须提供 assessment_id 且 status 为 completed")
+        if self.source == "manual" and self.assessment_id is not None:
+            raise ValueError("手工确认不能提供 assessment_id")
         if self.status == "skipped" and not self.reason:
             raise ValueError("skipped 必须提供 reason")
         if self.status == "deferred":

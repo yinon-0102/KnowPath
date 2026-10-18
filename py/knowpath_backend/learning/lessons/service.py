@@ -4,7 +4,7 @@ import json
 from knowpath_backend.learning.notes.service import uid, now, fingerprint
 from knowpath_backend.learning.notes.generation import ConfiguredNoteGenerator
 from knowpath_backend.learning.errors import DomainConflict, DomainNotFound
-from knowpath_backend.learning.materials.source_access import SourceAccessService, AssistanceDeliveryChanged
+from knowpath_backend.learning.materials.source_access import SourceAccessService, AssistanceDeliveryChanged, lock_source_dependencies
 from knowpath_backend.learning.workers.model_tasks import enqueue
 from knowpath_backend.learning.lessons.streaming import completed_sections
 from knowpath_backend.learning.lessons.adaptation import build_adaptation_context
@@ -33,9 +33,7 @@ class StudyLessonService:
         node=next((n for rows in nodes.values() for n in rows if n['node_id']==node_id),None)
         if node is None: raise DomainNotFound('node',node_id)
         if generation and (node['plan_id']!=payload['plan_id'] or node['task_id']!=payload['task_id']): raise DomainConflict('STALE_LEARNING_CONTEXT','请使用当前节点任务')
-        plan=self.plans.get_plan(node['plan_id'])
         task=next(t for p in plans if p['id']==node['plan_id'] for t in p['tasks'] if t['id']==node['task_id'])
-        if generation and (node['historical'] or plan['status']!='ready' or task['status'] in {'skipped','deferred'}): raise DomainConflict('STALE_LEARNING_CONTEXT','该学习节点已失效')
         context=task.get('context',{})
         session_id=payload.get('learning_session_id') if generation else None
         if session_id:
@@ -46,6 +44,9 @@ class StudyLessonService:
         topics=copy.deepcopy(context.get('topics',[]))
         if not topics or set(task['topic_ids'])!={t['id'] for t in topics}: raise DomainConflict('FROZEN_CONTEXT_UNAVAILABLE','任务缺少冻结主题来源')
         refs=list(context.get('source_refs',[]))+[r for t in topics for r in t.get('source_refs',[])]
+        lock_source_dependencies(self.spaces.materials, [*space['bindings'], *refs])
+        plan=self.plans.get_plan(node['plan_id'])
+        if generation and (node['historical'] or plan['status']!='ready' or task['status'] in {'skipped','deferred'}): raise DomainConflict('STALE_LEARNING_CONTEXT','该学习节点已失效')
         sources={}
         for ref in refs:
             version=self.spaces.materials.get_version(ref['material_version_id'])
@@ -277,8 +278,9 @@ class StudyLessonService:
 
     def _publish_sections(self,row,sections,job=None):
         with self.repository.transaction():
-            self.spaces.repository.get(row['space_id'])
+            space=self.spaces.repository.get(row['space_id'])
             current=self.repository.get_record('study_lessons',row['id'])
+            lock_source_dependencies(self.spaces.materials, [*space['bindings'], *current['snapshot'].get('bindings',[]), *current['snapshot'].get('sources',[])])
             if job:job.check()
             if current['run_id']!=row['run_id'] or current['status']!='generating':raise DomainConflict('STALE_LEARNING_CONTEXT','讲义任务已替换')
             self._context(current['space_id'],current['node_id'],current)
@@ -335,8 +337,9 @@ class StudyLessonService:
             error={'code':code,'message':'课件生成失败','details':{},'retryable':code!='MODEL_INVALID_RESPONSE'}
         with self.repository.transaction():
             try:
-                self.spaces.repository.get(row['space_id']);current=self.repository.get_record('study_lessons',identifier)
+                space=self.spaces.repository.get(row['space_id']);current=self.repository.get_record('study_lessons',identifier)
             except DomainNotFound:return
+            lock_source_dependencies(self.spaces.materials, [*space['bindings'], *current['snapshot'].get('bindings',[]), *current['snapshot'].get('sources',[])])
             if job:job.check()
             if current['run_id']!=row['run_id'] or current['status']!='generating':return
             run=self.runs.get(row['run_id'])

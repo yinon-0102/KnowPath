@@ -73,13 +73,24 @@ def submit(state, assessment_id, question_id, answer="B", key=None, **extra):
     return state.record_attempt(assessment_id, {"answers": [{"question_id": question_id, "expected_answer_revision": 0, "answer": answer}], **extra}, idempotency_key=key or str(uuid4()))
 
 
+
+def internal_diagnostic(state, assessment_id):
+    """Inspect selection internals while asserting the public disclosure gate."""
+    view = state.assessment_service.diagnostic(assessment_id)
+    assessment = state.assessment_service.repository.get_record('assessments', assessment_id)
+    if assessment['snapshot'].get('feedback_policy') == 'after_round' and assessment['status'] != 'completed':
+        assert view['decisions'] == [] and view['hypotheses'] == []
+    adaptive = assessment['snapshot']['adaptive']
+    return dict(view, decisions=deepcopy(adaptive['decisions']), hypotheses=deepcopy(adaptive['hypotheses']))
+
+
 def test_opt_in_hides_future_pool_and_freezes_weak_selection(adaptive_workspace):
     factory, space_id, topics = adaptive_workspace
     state = factory(TopicQuestions(salt="new"))
     assessment = create(state, space_id)
     assert len(assessment["questions"]) == 1
     assert assessment["questions"][0]["topic_ids"] == [topics["Functions"]]
-    diagnostic = state.assessment_service.diagnostic(assessment["id"])
+    diagnostic = internal_diagnostic(state, assessment["id"])
     assert diagnostic["policy_version"] == "adaptive-v1"
     assert diagnostic["progress"] == {"answered": 0, "presented": 1, "target": 5}
     assert diagnostic["current_question"]["id"] == assessment["questions"][0]["id"]
@@ -88,7 +99,7 @@ def test_opt_in_hides_future_pool_and_freezes_weak_selection(adaptive_workspace)
     assert frozen["selection_inputs"][topics["Basics"]]["evidence_ids"]
     assert frozen["historical_family_ids"]
     assert not any(secret in str(diagnostic) for secret in ("answer_key", "rubric", "source_text", "source_refs"))
-    assert factory().assessment_service.diagnostic(assessment["id"]) == diagnostic
+    assert internal_diagnostic(factory(), assessment["id"]) == diagnostic
 
 
 def test_frozen_legacy_mastery_uses_actual_answer_times_not_delayed_grading(adaptive_workspace, monkeypatch):
@@ -126,15 +137,15 @@ def test_wrong_answer_investigates_known_prerequisite_without_claiming_cause(ada
     assessment = create(state, space_id)
     first = assessment["questions"][0]["id"]
     response = submit(state, assessment["id"], first, key="wrong")
-    trace = factory().assessment_service.diagnostic(assessment["id"])
+    trace = internal_diagnostic(factory(), assessment["id"])
     assert trace["current_question"]["topic_ids"] == [topics["Basics"]]
     assert trace["hypotheses"][0]["status"] == "pending"
     assert trace["hypotheses"][0]["causal_claim"] is False
     assert trace["decisions"][-1]["reason"] == "investigate_prerequisite"
     assert submit(factory(), assessment["id"], first, key="wrong") == response
-    assert factory().assessment_service.diagnostic(assessment["id"]) == trace
+    assert internal_diagnostic(factory(), assessment["id"]) == trace
     submit(factory(), assessment["id"], trace["current_question"]["id"], answer)
-    hypothesis = factory().assessment_service.diagnostic(assessment["id"])["hypotheses"][0]
+    hypothesis = internal_diagnostic(factory(), assessment["id"])["hypotheses"][0]
     assert hypothesis["status"] == status
     assert len(hypothesis["attempt_ids"]) == 2
 
@@ -166,7 +177,7 @@ def test_non_independent_answers_cannot_support_gap(adaptive_workspace, mode):
     if mode == "trigger_assisted":
         state.assessment_service.mark_assisted(space_id, current)
     submit(state, assessment["id"], current)
-    diagnostic = state.assessment_service.diagnostic(assessment["id"])
+    diagnostic = internal_diagnostic(state, assessment["id"])
     if mode in {"trigger_assisted", "open_answer"}:
         assert diagnostic["hypotheses"] == []
         return
@@ -176,7 +187,7 @@ def test_non_independent_answers_cannot_support_gap(adaptive_workspace, mode):
     else:
         state.reset_state(space_id, [topics["Basics"]], "reset", expected_state_version=1, idempotency_key="reset")
     submit(state, assessment["id"], probe)
-    assert state.assessment_service.diagnostic(assessment["id"])["hypotheses"][0]["status"] == "inconclusive"
+    assert internal_diagnostic(state, assessment["id"])["hypotheses"][0]["status"] == "inconclusive"
 
 
 def test_missing_prerequisite_pool_is_explicit_and_does_not_expand_scope(adaptive_workspace):
@@ -184,7 +195,7 @@ def test_missing_prerequisite_pool_is_explicit_and_does_not_expand_scope(adaptiv
     state = factory(TopicQuestions(only_dependent=True, salt="new"))
     assessment = create(state, space_id)
     submit(state, assessment["id"], assessment["questions"][0]["id"])
-    trace = state.assessment_service.diagnostic(assessment["id"])
+    trace = internal_diagnostic(state, assessment["id"])
     assert trace["hypotheses"][0]["status"] == "inconclusive"
     assert trace["hypotheses"][0]["reason"] == "no_available_prerequisite_question"
     assert trace["current_question"]["topic_ids"] == [topics["Functions"]]
@@ -242,7 +253,7 @@ def test_concurrent_replay_and_conflicts_advance_exactly_once(adaptive_workspace
     with ThreadPoolExecutor(max_workers=2) as pool:
         results = list(pool.map(lambda s: submit(s, assessment["id"], qid, key="same-key"), [factory(), factory()]))
     assert results[0] == results[1]
-    trace = factory().assessment_service.diagnostic(assessment["id"])
+    trace = internal_diagnostic(factory(), assessment["id"])
     assert trace["progress"]["answered"] == 1 and len(trace["decisions"]) == 2
     qid = trace["current_question"]["id"]
     def competing(key):
@@ -253,7 +264,7 @@ def test_concurrent_replay_and_conflicts_advance_exactly_once(adaptive_workspace
     with ThreadPoolExecutor(max_workers=2) as pool:
         results = list(pool.map(competing, ["first", "second"]))
     assert sorted(results) == ["ADAPTIVE_QUESTION_ORDER", "recorded"]
-    assert factory().assessment_service.diagnostic(assessment["id"])["progress"]["answered"] == 2
+    assert internal_diagnostic(factory(), assessment["id"])["progress"]["answered"] == 2
 
 
 def test_failed_decision_commit_rolls_back_answer_and_hypothesis(adaptive_workspace, monkeypatch):
@@ -281,11 +292,11 @@ def test_scope_does_not_expand_to_prerequisite_and_repeat_pool_stops(adaptive_wo
     state = factory(TopicQuestions(salt="new"))
     assessment = create(state, space_id, topic_ids=[topics["Functions"]])
     submit(state, assessment["id"], assessment["questions"][0]["id"])
-    trace = state.assessment_service.diagnostic(assessment["id"])
+    trace = internal_diagnostic(state, assessment["id"])
     assert trace["hypotheses"][0]["reason"] == "prerequisite_out_of_scope"
     assert all(d["topic_id"] == topics["Functions"] for d in trace["decisions"])
     repeated = create(factory(), space_id, topic_ids=[topics["Basics"]])
-    trace = factory().assessment_service.diagnostic(repeated["id"])
+    trace = internal_diagnostic(factory(), repeated["id"])
     assert trace["current_question"] is None
     assert trace["completion_reason"] == "no_unseen_question_family"
     factory().finalize_assessment(repeated["id"], {})
@@ -386,23 +397,23 @@ def test_interleaved_queued_diagnostics_preserve_first_observations_and_replay(a
         state.assessment_service.generate(row["id"])
     pools = {row["id"]: deepcopy(state.assessment_service.repository.get_record("assessments", row["id"])["questions"])
              for row in (first, second)}
-    first_question = state.assessment_service.diagnostic(first["id"])["current_question"]["id"]
+    first_question = internal_diagnostic(state, first["id"])["current_question"]["id"]
     result = submit(state, first["id"], first_question, "B", key="interleaved-first")
-    before_replay = factory().assessment_service.diagnostic(first["id"])
+    before_replay = internal_diagnostic(factory(), first["id"])
     assert submit(factory(), first["id"], first_question, "B", key="interleaved-first") == result
-    assert factory().assessment_service.diagnostic(first["id"]) == before_replay
-    second_question = factory().assessment_service.diagnostic(second["id"])["current_question"]["id"]
+    assert internal_diagnostic(factory(), first["id"]) == before_replay
+    second_question = internal_diagnostic(factory(), second["id"])["current_question"]["id"]
     submit(factory(), second["id"], second_question, "B")
     assert reached_families(factory(), first["id"]).isdisjoint(reached_families(factory(), second["id"]))
-    first_probe = factory().assessment_service.diagnostic(first["id"])["current_question"]["id"]
+    first_probe = internal_diagnostic(factory(), first["id"])["current_question"]["id"]
     submit(factory(), first["id"], first_probe, "B")
-    original_hypothesis = factory().assessment_service.diagnostic(first["id"])["hypotheses"][0]
+    original_hypothesis = internal_diagnostic(factory(), first["id"])["hypotheses"][0]
     assert original_hypothesis["status"] == "supported"
-    second_probe = factory().assessment_service.diagnostic(second["id"])["current_question"]["id"]
+    second_probe = internal_diagnostic(factory(), second["id"])["current_question"]["id"]
     submit(factory(), second["id"], second_probe, "B")
-    assert factory().assessment_service.diagnostic(first["id"])["hypotheses"][0] == original_hypothesis
+    assert internal_diagnostic(factory(), first["id"])["hypotheses"][0] == original_hypothesis
     assert reached_families(factory(), first["id"]).isdisjoint(reached_families(factory(), second["id"]))
-    assert factory().assessment_service.diagnostic(second["id"])["current_question"] is None
+    assert internal_diagnostic(factory(), second["id"])["current_question"] is None
     for row in (first, second):
         stored = factory().assessment_service.repository.get_record("assessments", row["id"])
         assert stored["questions"] == pools[row["id"]]

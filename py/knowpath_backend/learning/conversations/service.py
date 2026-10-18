@@ -180,11 +180,12 @@ class MessageService:
         return conversation
 
     def _sources(self, space):
+        from knowpath_backend.learning.knowledge.learning_units import unique_units
         selected, excluded = set(space["topic_ids"]), set(space["excluded_topic_ids"])
         sources, versions = {}, {}
-        for topic in self.spaces.bound_topics(space):
-            if (selected and topic["id"] not in selected) or topic["id"] in excluded:
-                continue
+        permitted = [topic for topic in self.spaces.bound_topics(space)
+                     if (not selected or topic['id'] in selected) and topic['id'] not in excluded]
+        for topic in unique_units(permitted):
             for ref in topic["source_refs"]:
                 version_id = ref["material_version_id"]
                 if version_id not in versions:
@@ -636,6 +637,8 @@ class MessageService:
                 with self.repository.transaction():
                     assisted,space=self.source_access.lock_delivery(plan,initial['space_id'])
                     current=self.repository.get_record('messages',identifier)
+                    from knowpath_backend.learning.materials.source_access import lock_source_dependencies
+                    lock_source_dependencies(self.spaces.materials, [*space['bindings'], *snapshot['bindings'], *snapshot['sources']])
                     if job:job.check()
                     if current['run_id']!=run_id or current['status']!='generating' or self._terminal(current):
                         raise MessageGenerationError('STALE_LEARNING_CONTEXT')
@@ -680,6 +683,8 @@ class MessageService:
                 else:
                     space = self.spaces.repository.get(initial["space_id"])
                 current = self.repository.get_record("messages", identifier)
+                from knowpath_backend.learning.materials.source_access import lock_source_dependencies
+                lock_source_dependencies(self.spaces.materials, [*space['bindings'], *snapshot['bindings'], *snapshot['sources']])
                 if job is not None:
                     job.check()
                 if current["status"] != "generating" or self._terminal(current):
@@ -843,6 +848,8 @@ class MessageService:
             with self.repository.transaction():
                 space = self.spaces.repository.get(initial["space_id"])
                 current = self.repository.get_record("messages", identifier)
+                from knowpath_backend.learning.materials.source_access import lock_source_dependencies
+                lock_source_dependencies(self.spaces.materials, [*space['bindings'], *snapshot['bindings'], *snapshot['sources']])
                 if job is not None:
                     job.check()
                 if current["status"] != "generating" or self._terminal(current):

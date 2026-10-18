@@ -35,7 +35,7 @@ def list_evidence(state: LearningStateDep, space_id: str, topic_id: str | None =
 
 
 @router.post("/api/v1/learning-spaces/{space_id}/knowledge-corrections", status_code=201)
-async def create_knowledge_correction(state: LearningStateDep, space_id: str, payload: CreateCorrection,
+def create_knowledge_correction(state: LearningStateDep, space_id: str, payload: CreateCorrection,
                                       idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None) -> JSONResponse:
     try:
         return JSONResponse(status_code=201, content=state.create_correction(space_id, payload.model_dump(), idempotency_key=idempotency_key))
@@ -44,7 +44,7 @@ async def create_knowledge_correction(state: LearningStateDep, space_id: str, pa
 
 
 @router.post("/api/v1/learning-spaces/{space_id}/knowledge-corrections/{correction_id}/confirm", status_code=202)
-async def confirm_knowledge_correction(state: LearningStateDep, space_id: str, correction_id: str, payload: ConfirmCorrection,
+def confirm_knowledge_correction(state: LearningStateDep, space_id: str, correction_id: str, payload: ConfirmCorrection,
                                        idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None) -> JSONResponse:
     try:
         return JSONResponse(status_code=202, content=state.confirm_correction(space_id, correction_id, payload.model_dump(), idempotency_key=idempotency_key))
@@ -53,7 +53,7 @@ async def confirm_knowledge_correction(state: LearningStateDep, space_id: str, c
 
 
 @router.get("/api/v1/learning-spaces/{space_id}/changes")
-async def list_changes(state: LearningStateDep, space_id: str, cursor: str | None = Query(None, max_length=2048),
+def list_changes(state: LearningStateDep, space_id: str, cursor: str | None = Query(None, max_length=2048),
                        limit: int = Query(20, ge=1, le=100)) -> JSONResponse:
     try:
         state.get_space(space_id)
@@ -63,7 +63,7 @@ async def list_changes(state: LearningStateDep, space_id: str, cursor: str | Non
 
 
 @router.get("/api/v1/learning-spaces/{space_id}/knowledge-updates")
-async def knowledge_updates(state: LearningStateDep, space_id: str) -> JSONResponse:
+def knowledge_updates(state: LearningStateDep, space_id: str) -> JSONResponse:
     try:
         return JSONResponse(status_code=200, content=state.knowledge_updates(space_id))
     except (DomainNotFound, DomainConflict) as exc:
@@ -71,7 +71,7 @@ async def knowledge_updates(state: LearningStateDep, space_id: str) -> JSONRespo
 
 
 @router.post("/api/v1/learning-spaces/{space_id}/knowledge-updates/apply", status_code=202)
-async def apply_knowledge_updates(state: LearningStateDep, space_id: str, payload: ApplyKnowledgeUpdates, idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None) -> JSONResponse:
+def apply_knowledge_updates(state: LearningStateDep, space_id: str, payload: ApplyKnowledgeUpdates, idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None) -> JSONResponse:
     try:
         return JSONResponse(status_code=202, content=state.apply_knowledge_updates(space_id, payload.model_dump(), idempotency_key=idempotency_key))
     except (DomainNotFound, DomainConflict) as exc:

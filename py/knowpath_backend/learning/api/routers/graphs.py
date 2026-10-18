@@ -18,11 +18,41 @@ from ..errors import _domain_error
 router = APIRouter(route_class=ContractRoute)
 
 
+@router.post('/api/v1/materials/{material_id}/retry', status_code=202)
+def retry_material(state: LearningStateDep, material_id: str, payload: IngestMaterial,
+                   idempotency_key: Annotated[str | None, Header(alias='Idempotency-Key')] = None):
+    try:
+        return JSONResponse(status_code=202, content=state.graph_service.retry(material_id, payload.model_dump(), idempotency_key))
+    except (DomainNotFound, DomainConflict) as exc:
+        return _domain_error(exc)
+
+
+@router.post('/api/v1/materials/{material_id}/reparse', status_code=202)
+def reparse_material(state: LearningStateDep, material_id: str, payload: IngestMaterial,
+                     idempotency_key: Annotated[str | None, Header(alias='Idempotency-Key')] = None):
+    try:
+        return JSONResponse(status_code=202, content=state.graph_service.reparse(material_id, payload.model_dump(), idempotency_key))
+    except (DomainNotFound, DomainConflict) as exc:
+        return _domain_error(exc)
+
+
+@router.post('/api/v1/materials/{material_id}/rebuild', status_code=202)
+def rebuild_material(state: LearningStateDep, material_id: str, payload: ReconcileGraph,
+                     idempotency_key: Annotated[str | None, Header(alias='Idempotency-Key')] = None):
+    try:
+        return JSONResponse(status_code=202, content=state.graph_service.rebuild(material_id, payload.model_dump(), idempotency_key))
+    except (DomainNotFound, DomainConflict) as exc:
+        return _domain_error(exc)
+
+
 @router.get("/api/v1/materials/{material_id}/topics")
 def material_topics(state: LearningStateDep, material_id: str, version_id: str | None = None,
+                    graph_revision_id: str | None = Query(None, min_length=1), graph_version: int | None = Query(None, ge=1),
+                    legacy_snapshot: bool = False,
                     include_inactive: bool = False, depth: int | None = Query(None, ge=1, le=100)) -> JSONResponse:
     try:
         return JSONResponse(content=state.graph_queries.material_topics(material_id, version_id,
+                            graph_revision_id=graph_revision_id, graph_version=graph_version, legacy_snapshot=legacy_snapshot,
                             include_inactive=include_inactive, depth=depth))
     except DomainNotFound as exc:
         return _domain_error(exc)
@@ -30,10 +60,13 @@ def material_topics(state: LearningStateDep, material_id: str, version_id: str |
 
 @router.get("/api/v1/materials/{material_id}/graph")
 def material_graph(state: LearningStateDep, material_id: str, version_id: str | None = None,
+                   graph_revision_id: str | None = Query(None, min_length=1), graph_version: int | None = Query(None, ge=1),
+                   legacy_snapshot: bool = False,
                    include_inactive: bool = False, include_sources: bool = True) -> JSONResponse:
     try:
         return JSONResponse(content=state.graph_queries.material_graph(
-            material_id, version_id, include_inactive=include_inactive, include_sources=include_sources))
+            material_id, version_id, graph_revision_id=graph_revision_id, graph_version=graph_version, legacy_snapshot=legacy_snapshot,
+            include_inactive=include_inactive, include_sources=include_sources))
     except DomainNotFound as exc:
         return _domain_error(exc)
 

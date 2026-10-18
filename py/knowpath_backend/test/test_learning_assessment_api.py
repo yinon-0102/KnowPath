@@ -15,13 +15,28 @@ def assessment_api():
     client.close()
 
 
-def create(client, space_id, key="assessment"):
-    return client.post(f"/api/v1/learning-spaces/{space_id}/assessments", json={"question_count": 5, "difficulty_mix": {"easy": 1.0, "medium": 0.0, "hard": 0.0}}, headers={"Idempotency-Key": key})
+def create(client, space_id, key="assessment", *, kind='diagnostic'):
+    return client.post(f"/api/v1/learning-spaces/{space_id}/assessments", json={"kind": kind, "question_count": 5, "difficulty_mix": {"easy": 1.0, "medium": 0.0, "hard": 0.0}}, headers={"Idempotency-Key": key})
+
+
+def test_recoverable_assessment_http_index(assessment_api):
+    client, space_id = assessment_api
+    path = f'/api/v1/learning-spaces/{space_id}/assessments'
+    assert client.get(path).json() == {'items': []}
+    response = create(client, space_id)
+    aid = response.json()['assessment_id']
+    assert create(client, space_id).json() == response.json()
+    rows = client.get(path).json()['items']
+    assert [row['id'] for row in rows] == [aid]
+    assert rows[0]['progress'] == {'answered': 0, 'target': 5}
+    assert client.get('/api/v1/learning-spaces/missing/assessments').status_code == 404
+    assert client.get(path + '?task_id=missing').status_code == 422
+    assert client.get(path + '?plan_id=missing').status_code == 404
 
 
 def test_each_answer_has_feedback_and_refresh_recovers_it(assessment_api):
     client, space_id = assessment_api
-    aid = create(client, space_id).json()["assessment_id"]
+    aid = create(client, space_id, kind='practice').json()["assessment_id"]
     assessment = client.get(f"/api/v1/assessments/{aid}").json()
     question = assessment["questions"][0]
     body = {"include_feedback": True, "answers": [{"question_id": question["id"], "answer": "B", "expected_answer_revision": 0}]}

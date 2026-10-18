@@ -10,6 +10,22 @@ from knowpath_backend.test.test_learning_graph_worker import worker, event_id
 from knowpath_backend.test.test_learning_state_persistence import FixedQuestions, create, answer
 
 
+def test_unchanged_preview_does_not_recompute_source_impact(monkeypatch):
+    from types import SimpleNamespace
+    from knowpath_backend.learning.knowledge.updates import KnowledgeUpdateService
+    service = KnowledgeUpdateService(None, SimpleNamespace(materials=None), None, None)
+    def unexpected(*args, **kwargs):
+        pytest.fail('unchanged binding preview must not scan sources or evidence')
+    monkeypatch.setattr(service, '_impact', unexpected)
+    space = {'id': 'space', 'bindings': [{'material_id': 'material', 'graph_version': 1}]}
+    result = service._preview(space, copy.deepcopy(space['bindings']), [])
+    assert result == {'space_id': 'space', 'bindings': space['bindings'],
+                      'available_updates': [], 'affected_topic_ids': [],
+                      'invalidated_question_ids': [], 'plan_impact': None}
+    result['bindings'][0]['graph_version'] = 2
+    assert space['bindings'][0]['graph_version'] == 1
+
+
 @pytest.fixture
 def updates_workspace(graph_workspace):
     factory, upload, label = graph_workspace
@@ -59,6 +75,59 @@ def test_preview_restart_apply_and_replay(updates_workspace):
     assert run['result_ref']['affected_topic_ids'] == result['affected_topic_ids']
     with pytest.raises(DomainConflict):
         restarted.apply_knowledge_updates(space['id'], {**payload, 'expected_space_version': 2}, idempotency_key=label+'-apply')
+
+
+def test_g16_same_version_stays_pinned_until_explicit_adoption(updates_workspace):
+    factory, upload, label, space = updates_workspace
+    state = factory()
+    state.assessment_service.generator = FixedQuestions()
+    assessment = create(state, space['id'], label+'-pinned-assessment')
+    answer(state, assessment, label+'-pinned-answer', finalize=True)
+    plan = state.create_plan(space['id'], {})
+    binding = copy.deepcopy(space['bindings'][0])
+
+    def projections(current):
+        params = {'version_id': current['material_version_id'], 'graph_revision_id': current['graph_revision_id']}
+        topics = state.graph_queries.material_topics(current['material_id'], **params)
+        graph = state.graph_queries.material_graph(current['material_id'], **params)
+        assert topics['graph_revision_id'] == graph['graph_revision_id'] == current['graph_revision_id']
+        assert topics['graph_version'] == graph['graph_version'] == current['graph_version']
+        assert topics['items'] == graph['nodes']
+        result = copy.deepcopy(topics)
+        for node in result['items']:
+            node.pop('valid_to', None)  # Publishing closes the historical validity interval.
+        return result
+
+    before = projections(binding)
+    payload = changed((factory, upload, label, space))
+    state = factory()
+    state.assessment_service.generator = FixedQuestions()
+    assert projections(binding) == before
+    assert state.space_service.get(space['id'])['bindings'][0] == binding
+    preview = state.knowledge_updates(space['id'])
+    assert preview['available_updates'][0]['graph_version'] == 2
+    assert state.space_service.get(space['id'])['bindings'][0] == binding
+    assert state.assessment_service.repository.get_record('plans', plan['id'])['status'] != 'needs_replan'
+    source = before['items'][0]['source_refs'][0]
+    with TestClient(create_app(state.material_service)) as client:
+        reading = client.get(f"/api/v1/materials/{upload.material.id}/versions/{upload.version.id}/chunks/{source['chunk_id']}",
+                             params={'space_id': space['id']})
+    assert reading.status_code == 200
+    assert label in reading.json()['text']
+    continued = create(state, space['id'], label+'-continue-assessment')
+    assert continued['questions']
+    assert state.graph_queries.material_topics(upload.material.id, upload.version.id)['graph_version'] == 2
+
+    adopted = state.apply_knowledge_updates(space['id'], payload, idempotency_key=label+'-explicit-adopt')
+    current = state.space_service.get(space['id'])['bindings'][0]
+    assert current['material_version_id'] == binding['material_version_id']
+    assert current['graph_revision_id'] != binding['graph_revision_id']
+    assert current['graph_version'] == 2
+    assert projections(current)['items'] != before['items']
+    assert projections(binding) == before
+    assert adopted['stale_state_count'] == 1
+    assert state.assessment_service.repository.get_record('plans', plan['id'])['status'] == 'needs_replan'
+    assert state.assessment_service.repository.get_record('assessments', assessment['id'])['status'] == 'completed'
 
 
 def test_changed_evidence_stale_and_plan_invalidation_persist(updates_workspace):

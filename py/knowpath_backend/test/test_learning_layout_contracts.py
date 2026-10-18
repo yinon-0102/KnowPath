@@ -1,6 +1,7 @@
 """Frozen HTTP and MySQL contracts captured before the directory refactor."""
 
 import json
+import copy
 from pathlib import Path
 
 from fastapi.routing import APIRoute
@@ -44,7 +45,49 @@ def test_full_openapi_matches_pre_refactor_contract():
     expected = json.loads((FIXTURES / "learning_openapi.json").read_text(encoding="utf-8"))
     app = isolated_app()
 
-    actual = app.openapi()
+    actual = copy.deepcopy(app.openapi())
+    for action, schema in [('retry', 'IngestMaterial'), ('reparse', 'IngestMaterial'), ('rebuild', 'ReconcileGraph')]:
+        route = actual['paths'].pop('/api/v1/materials/{material_id}/'+action)
+        assert set(route) == {'post'}
+        operation = route['post']
+        assert operation['requestBody']['content']['application/json']['schema'] == {'$ref': '#/components/schemas/'+schema}
+        assert '202' in operation['responses']
+        assert {p['name'] for p in operation['parameters']} == {'material_id', 'Idempotency-Key'}
+    for path in ('/api/v1/materials/{material_id}/topics', '/api/v1/materials/{material_id}/graph'):
+        parameters = actual['paths'][path]['get']['parameters']
+        additions = {p['name']: p for p in parameters if p['name'] in {'graph_revision_id', 'graph_version', 'legacy_snapshot'}}
+        assert additions == {
+            'graph_revision_id': {'name': 'graph_revision_id', 'in': 'query', 'required': False,
+                'schema': {'anyOf': [{'type': 'string', 'minLength': 1}, {'type': 'null'}], 'title': 'Graph Revision Id'}},
+            'graph_version': {'name': 'graph_version', 'in': 'query', 'required': False,
+                'schema': {'anyOf': [{'type': 'integer', 'minimum': 1}, {'type': 'null'}], 'title': 'Graph Version'}},
+            'legacy_snapshot': {'name': 'legacy_snapshot', 'in': 'query', 'required': False,
+                'schema': {'type': 'boolean', 'title': 'Legacy Snapshot', 'default': False}},
+        }
+        parameters[:] = [p for p in parameters if p['name'] not in additions]
+    recovery = actual['paths']['/api/v1/learning-spaces/{space_id}/assessments'].pop('get')
+    assert recovery['operationId'] == 'recoverable_assessments_api_v1_learning_spaces__space_id__assessments_get'
+    assert recovery['parameters'] == [
+        {'name': 'space_id', 'in': 'path', 'required': True, 'schema': {'type': 'string', 'title': 'Space Id'}},
+        {'name': 'plan_id', 'in': 'query', 'required': False,
+         'schema': {'anyOf': [{'type': 'string'}, {'type': 'null'}], 'title': 'Plan Id'}},
+        {'name': 'task_id', 'in': 'query', 'required': False,
+         'schema': {'anyOf': [{'type': 'string'}, {'type': 'null'}], 'title': 'Task Id'}},
+    ]
+    # T01 completion provenance and T04 opt-in feedback are approved additive
+    # contracts. Assert their full shape before comparing the historical base.
+    schemas = actual['components']['schemas']
+    assert schemas['RecordAttempt']['properties'].pop('include_feedback') == {
+        'type': 'boolean', 'title': 'Include Feedback', 'default': False}
+    assert schemas['RecordAttempt']['required'] == ['answers']
+    assert schemas['UpdateTask']['properties'].pop('source') == {
+        'type': 'string', 'enum': ['manual', 'assessment'], 'title': 'Source', 'default': 'manual'}
+    assert schemas['UpdateTask']['properties'].pop('assessment_id') == {
+        'anyOf': [{'type': 'string', 'minLength': 1}, {'type': 'null'}], 'title': 'Assessment Id'}
+    assert schemas['UpdateTask']['required'] == ['expected_plan_version', 'status']
+    parameters = actual['paths']['/api/v1/plans/{plan_id}/tasks/{task_id}']['patch']['parameters']
+    assert parameters.pop() == {'name': 'Idempotency-Key', 'in': 'header', 'required': False,
+        'schema': {'anyOf': [{'type': 'string'}, {'type': 'null'}], 'title': 'Idempotency-Key'}}
     message_scope = json.loads((FIXTURES / 'learning_message_scope_openapi.json').read_text(encoding='utf-8'))
     assert actual['components']['schemas']['SendMessage']['properties'].pop('material_ids') == message_scope['material_ids_property']
     # Preserve historical contracts; freeze each additive review operation and
@@ -121,15 +164,21 @@ def test_full_openapi_matches_pre_refactor_contract():
 
     routes = list(api_routes(app.routes))
     added_operations = sum(len(operations) for operations in personalization['paths'].values())
-    assert len(routes) == 69 + added_operations
+    assert len(routes) == 73 + added_operations
     assert all(isinstance(route, ContractRoute) for route in routes)
-    assert len({(route.path, method) for route in routes for method in route.methods}) == 69 + added_operations
+    assert len({(route.path, method) for route in routes for method in route.methods}) == 73 + added_operations
 
 
 def test_mysql_schema_matches_pre_refactor_contract():
     expected = json.loads((FIXTURES / "learning_mysql_schema.json").read_text(encoding="utf-8"))
 
     actual = mysql_schema_contract()
+    addition = "\tparser_version VARCHAR(128) NOT NULL DEFAULT 'legacy_unknown', \n"
+    assert addition in actual['material_versions']['table']
+    actual['material_versions']['table'] = actual['material_versions']['table'].replace(addition, '')
+    addition = "\tparse_manifest JSON, \n"
+    assert addition in actual['material_versions']['table']
+    actual['material_versions']['table'] = actual['material_versions']['table'].replace(addition, '')
     # 仅替换本次显式迁移的表快照，其他旧表仍逐字匹配历史契约。
     expected['material_raw_files'] = json.loads((FIXTURES / 'learning_raw_object_schema.json').read_text(encoding='utf-8'))
     from knowpath_backend.learning.persistence.rag_models import TABLES

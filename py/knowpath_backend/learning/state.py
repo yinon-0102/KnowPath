@@ -61,6 +61,7 @@ class LearningState:
         self.sessions: dict[str, dict[str, Any]] = {}
         self.changes: list[dict[str, Any]] = []
         self.plan_sessions = PlanSessionService(learning_repository, space_service, self.run_service, self.assessment_service, self.plans, self.sessions)
+        space_service.planning_states = self.plan_sessions._planning_states
         self.assessment_service.plan_sessions = self.plan_sessions
         from .plans.adjustments import PlanAdjustmentService
         self.plan_adjustments = PlanAdjustmentService(self.plan_sessions)
@@ -178,6 +179,9 @@ class LearningState:
     def evidence_for(self, space_id, **filters):
         return self.assessment_service.evidence(space_id, **filters)
 
+    def preview_plan(self, space_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        return self.plan_sessions.preview_plan(space_id, payload)
+
     def create_plan(self, space_id: str, payload: dict[str, Any], *, idempotency_key: str | None = None) -> dict[str, Any]:
         return self.plan_sessions.create_plan(space_id, payload, idempotency_key)
 
@@ -201,8 +205,14 @@ class LearningState:
         record["note"] = self.notes_service.chapter_reference(record["space_id"], record["node_id"])
         return record
 
-    def update_task(self, plan_id: str, task_id: str, payload: dict[str, Any]) -> dict[str, Any]:
-        return self.plan_sessions.update_task(plan_id, task_id, payload)
+    def update_task(self, plan_id: str, task_id: str, payload: dict[str, Any], *, idempotency_key: str | None = None) -> dict[str, Any]:
+        return self.plan_sessions.update_task(plan_id, task_id, payload, idempotency_key)
+
+    def task_completion_status(self, plan_id: str, task_id: str, payload: dict[str, Any], *, idempotency_key: str | None = None) -> dict[str, Any]:
+        return self.plan_sessions.task_completion_status(plan_id, task_id, payload, idempotency_key)
+
+    def undo_task_completion(self, plan_id: str, task_id: str, payload: dict[str, Any], *, idempotency_key: str | None = None) -> dict[str, Any]:
+        return self.plan_sessions.undo_task_completion(plan_id, task_id, payload, idempotency_key)
 
     def start_session(self, plan_id: str, task_id: str, *, idempotency_key: str | None = None) -> dict[str, Any]:
         return self.plan_sessions.start_session(plan_id, task_id, idempotency_key)

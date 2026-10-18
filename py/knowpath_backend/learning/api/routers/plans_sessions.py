@@ -9,7 +9,7 @@ from fastapi import Header, Query
 from fastapi.responses import JSONResponse
 
 from ...errors import DomainConflict, DomainNotFound
-from knowpath_backend.learning.plans.schemas import CreatePlan, UpdateTask, StartSession, SessionEvent, EmptyObject, OrderPlan
+from knowpath_backend.learning.plans.schemas import CreatePlan, UpdateTask, UndoTaskCompletion, StartSession, SessionEvent, EmptyObject, OrderPlan
 from ..contract import ContractRoute
 from ..dependencies import LearningStateDep
 from ..errors import _domain_error, _error_response
@@ -19,7 +19,7 @@ router = APIRouter(route_class=ContractRoute)
 
 
 @router.get("/api/v1/learning-spaces/{space_id}/workbench")
-async def get_workbench(state: LearningStateDep, space_id: str) -> JSONResponse:
+def get_workbench(state: LearningStateDep, space_id: str) -> JSONResponse:
     try:
         return JSONResponse(status_code=200, content=state.get_workbench(space_id))
     except (DomainNotFound, DomainConflict) as exc:
@@ -27,7 +27,7 @@ async def get_workbench(state: LearningStateDep, space_id: str) -> JSONResponse:
 
 
 @router.get("/api/v1/learning-spaces/{space_id}/progress")
-async def get_progress(state: LearningStateDep, space_id: str,
+def get_progress(state: LearningStateDep, space_id: str,
                        limit: Annotated[int, Query(ge=1, le=50)] = 10,
                        cursor: Annotated[str | None, Query(min_length=1, max_length=2048)] = None) -> JSONResponse:
     try:
@@ -37,7 +37,7 @@ async def get_progress(state: LearningStateDep, space_id: str,
 
 
 @router.get("/api/v1/plans/{plan_id}/tasks/{task_id}/learning-record")
-async def get_learning_record(state: LearningStateDep, plan_id: str, task_id: str) -> JSONResponse:
+def get_learning_record(state: LearningStateDep, plan_id: str, task_id: str) -> JSONResponse:
     try:
         return JSONResponse(status_code=200, content=state.get_learning_record(plan_id, task_id))
     except (DomainNotFound, DomainConflict) as exc:
@@ -45,7 +45,7 @@ async def get_learning_record(state: LearningStateDep, plan_id: str, task_id: st
 
 
 @router.post("/api/v1/learning-spaces/{space_id}/plans", status_code=202)
-async def create_plan(state: LearningStateDep, space_id: str, payload: CreatePlan, idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None) -> JSONResponse:
+def create_plan(state: LearningStateDep, space_id: str, payload: CreatePlan, idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None) -> JSONResponse:
     try:
         plan = state.create_plan(space_id, payload.model_dump(mode="json", exclude_none=True, exclude_unset=True), idempotency_key=idempotency_key)
         return JSONResponse(status_code=202, content={"run_id": plan["run_id"], "plan_id": plan["plan_id"], "status": plan["status"]})
@@ -53,8 +53,17 @@ async def create_plan(state: LearningStateDep, space_id: str, payload: CreatePla
         return _domain_error(exc)
 
 
+@router.post("/api/v1/learning-spaces/{space_id}/plan-preview")
+def preview_plan(state: LearningStateDep, space_id: str, payload: CreatePlan) -> JSONResponse:
+    try:
+        return JSONResponse(status_code=200, content=state.preview_plan(space_id,
+            payload.model_dump(mode="json", exclude_none=True, exclude_unset=True)))
+    except (DomainNotFound, DomainConflict) as exc:
+        return _domain_error(exc)
+
+
 @router.get("/api/v1/plans/{plan_id}")
-async def get_plan(state: LearningStateDep, plan_id: str) -> JSONResponse:
+def get_plan(state: LearningStateDep, plan_id: str) -> JSONResponse:
     try:
         return JSONResponse(status_code=200, content=state.get_plan(plan_id))
     except (DomainNotFound, DomainConflict) as exc:
@@ -62,15 +71,43 @@ async def get_plan(state: LearningStateDep, plan_id: str) -> JSONResponse:
 
 
 @router.patch("/api/v1/plans/{plan_id}/tasks/{task_id}")
-async def update_plan_task(state: LearningStateDep, plan_id: str, task_id: str, payload: UpdateTask) -> JSONResponse:
+def update_plan_task(state: LearningStateDep, plan_id: str, task_id: str, payload: UpdateTask,
+                           idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None) -> JSONResponse:
+    if payload.source == "assessment" and not idempotency_key:
+        return _error_response(400, "IDEMPOTENCY_KEY_REQUIRED", "测评完成确认必须提供 Idempotency-Key")
     try:
-        return JSONResponse(status_code=200, content=state.update_task(plan_id, task_id, payload.model_dump(mode="json", exclude_none=True)))
+        return JSONResponse(status_code=200, content=state.update_task(plan_id, task_id,
+            payload.model_dump(mode="json", exclude_none=True), idempotency_key=idempotency_key))
+    except (DomainNotFound, DomainConflict) as exc:
+        return _domain_error(exc)
+
+
+@router.post('/api/v1/plans/{plan_id}/tasks/{task_id}/completion-status')
+def task_completion_status(state: LearningStateDep, plan_id: str, task_id: str, payload: UpdateTask,
+                           idempotency_key: Annotated[str | None, Header(alias='Idempotency-Key')] = None) -> JSONResponse:
+    if not idempotency_key:
+        return _error_response(400, 'IDEMPOTENCY_KEY_REQUIRED', '查询保存结果必须提供原 Idempotency-Key')
+    try:
+        return JSONResponse(status_code=200, content=state.task_completion_status(plan_id, task_id,
+            payload.model_dump(mode='json', exclude_none=True), idempotency_key=idempotency_key))
+    except (DomainNotFound, DomainConflict) as exc:
+        return _domain_error(exc)
+
+
+@router.post('/api/v1/plans/{plan_id}/tasks/{task_id}/undo-completion')
+def undo_task_completion(state: LearningStateDep, plan_id: str, task_id: str, payload: UndoTaskCompletion,
+                               idempotency_key: Annotated[str | None, Header(alias='Idempotency-Key')] = None) -> JSONResponse:
+    if not idempotency_key:
+        return _error_response(400, 'IDEMPOTENCY_KEY_REQUIRED', '撤销完成必须提供 Idempotency-Key')
+    try:
+        return JSONResponse(status_code=200, content=state.undo_task_completion(plan_id, task_id,
+            payload.model_dump(mode='json'), idempotency_key=idempotency_key))
     except (DomainNotFound, DomainConflict) as exc:
         return _domain_error(exc)
 
 
 @router.post("/api/v1/plans/{plan_id}/sessions", status_code=201)
-async def start_learning_session(state: LearningStateDep, plan_id: str, payload: StartSession, idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None) -> JSONResponse:
+def start_learning_session(state: LearningStateDep, plan_id: str, payload: StartSession, idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None) -> JSONResponse:
     try:
         return JSONResponse(status_code=201, content=state.start_session(plan_id, payload.task_id, idempotency_key=idempotency_key))
     except (DomainNotFound, DomainConflict) as exc:
@@ -78,7 +115,7 @@ async def start_learning_session(state: LearningStateDep, plan_id: str, payload:
 
 
 @router.post("/api/v1/sessions/{session_id}/events", status_code=201)
-async def add_learning_event(state: LearningStateDep, session_id: str, payload: SessionEvent, idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None) -> JSONResponse:
+def add_learning_event(state: LearningStateDep, session_id: str, payload: SessionEvent, idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None) -> JSONResponse:
     if not (idempotency_key or payload.event_id):
         return _error_response(400, "IDEMPOTENCY_KEY_REQUIRED", "会话事件必须提供 Idempotency-Key 或 event_id")
     try:
@@ -88,7 +125,7 @@ async def add_learning_event(state: LearningStateDep, session_id: str, payload: 
 
 
 @router.post("/api/v1/sessions/{session_id}/finish")
-async def finish_learning_session(state: LearningStateDep, session_id: str, _: EmptyObject) -> JSONResponse:
+def finish_learning_session(state: LearningStateDep, session_id: str, _: EmptyObject) -> JSONResponse:
     try:
         return JSONResponse(status_code=200, content=state.finish_session(session_id))
     except (DomainNotFound, DomainConflict) as exc:
@@ -96,7 +133,7 @@ async def finish_learning_session(state: LearningStateDep, session_id: str, _: E
 
 
 @router.post("/api/v1/plans/{plan_id}/order-preview")
-async def preview_plan_order(state: LearningStateDep, plan_id: str, payload: OrderPlan) -> JSONResponse:
+def preview_plan_order(state: LearningStateDep, plan_id: str, payload: OrderPlan) -> JSONResponse:
     try:
         return JSONResponse(status_code=200, content=state.preview_plan_order(plan_id, payload.model_dump(mode="json", exclude_none=True)))
     except (DomainNotFound, DomainConflict) as exc:
@@ -104,7 +141,7 @@ async def preview_plan_order(state: LearningStateDep, plan_id: str, payload: Ord
 
 
 @router.patch("/api/v1/plans/{plan_id}/order")
-async def update_plan_order(state: LearningStateDep, plan_id: str, payload: OrderPlan,
+def update_plan_order(state: LearningStateDep, plan_id: str, payload: OrderPlan,
                             idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None) -> JSONResponse:
     try:
         return JSONResponse(status_code=200, content=state.update_plan_order(plan_id, payload.model_dump(mode="json", exclude_none=True), idempotency_key=idempotency_key))

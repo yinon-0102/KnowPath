@@ -31,7 +31,8 @@ def test_deferred_prerequisite_rejects_impossible_replan(backend, monkeypatch):
     bound = state.space_service.bound_topics
     def with_dependency(space):
         result = bound(space)
-        result[1]["prerequisites"] = [result[0]["id"]]
+        canonical = [t for t in result if t['id'] == t.get('canonical_topic_id', t['id'])]
+        canonical[1]["prerequisites"] = [canonical[0]["id"]]
         return result
     monkeypatch.setattr(state.space_service, "bound_topics", with_dependency)
     plan = state.create_plan(space_id, {})

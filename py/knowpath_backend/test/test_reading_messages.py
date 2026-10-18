@@ -8,7 +8,7 @@ from pydantic import ValidationError
 
 from knowpath_backend.learning.conversations.schemas import SendMessage
 from knowpath_backend.learning.errors import DomainConflict
-from knowpath_backend.learning.materials.service import InMemoryMaterialRepository
+from knowpath_backend.learning.materials.service import InMemoryMaterialRepository, MaterialParser
 from knowpath_backend.learning.rag.retrieval import KeywordRetriever
 from knowpath_backend.learning.state import LearningState
 from knowpath_backend.learning.workers.model_tasks import ModelTaskWorker
@@ -23,9 +23,15 @@ def reading(space, index=0):
 
 @pytest.fixture
 def documents():
+    return _documents()
+
+
+def _documents(parser=None, suffix=''):
     state = LearningState(InMemoryMaterialRepository(), source_retriever=KeywordRetriever())
+    if parser is not None:
+        state.material_service.parser = parser
     uploads = [state.material_service.create(filename=f'{name}.md',
-        content=f'# {name}\n\n{name} facts.\n\n# Detail\n\nAdditional {name} detail.'.encode(),
+        content=f'# {name}\n\n{name} facts.\n\n# Detail\n\nAdditional {name} detail.{suffix}'.encode(),
         idempotency_key='reading-'+name) for name in ('Alpha', 'Beta', 'Foreign')]
     space = state.create_space({'material_ids': [u.material.id for u in uploads[:2]]})
     generator = FixedAnswer()
@@ -115,16 +121,19 @@ def test_reading_refuses_lesson_session_without_inheriting_lesson():
 
 
 @pytest.mark.parametrize('backend', ['capturing', 'vector'])
-def test_reading_source_candidates_cover_document_beyond_lesson_node(documents, monkeypatch, backend):
-    state, space, _, generator = documents
+def test_reading_source_candidates_cover_document_beyond_lesson_node(monkeypatch, backend):
+    class UnmappedSourceParser(MaterialParser):
+        def parse(self, content, *, filename):
+            chunks = super().parse(content, filename=filename)
+            extra = next(chunk for chunk in chunks if chunk.text == 'Unmapped original detail.')
+            for unit in chunks.manifest['units']:
+                unit['chunk_ids'] = [identifier for identifier in unit['chunk_ids'] if identifier != extra.id]
+            return chunks
+    state, space, _, generator = _documents(UnmappedSourceParser(), '\n\nUnmapped original detail.')
     ctx = reading(space)
-    # Simulate a parser chunk not selected by graph topic extraction.
+    # The immutable parse product includes a chunk not selected by graph extraction.
     version = state.material_service.repository.get_version(ctx['material_version_id'])
-    text = 'Unmapped original detail.'
-    extra = replace(version.chunks[0], id='unmapped-reading-chunk', text=text,
-                    content_hash=hashlib.sha256(text.encode()).hexdigest())
-    version.chunks.append(extra)
-    state.material_service.repository.update_version(version)
+    extra = next(chunk for chunk in version.chunks if chunk.text == 'Unmapped original detail.')
     bound_topics = state.space_service.bound_topics
     def mapped_topics(current):
         topics = bound_topics(current)

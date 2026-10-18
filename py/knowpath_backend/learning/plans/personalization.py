@@ -128,7 +128,10 @@ class PlanPersonalization:
                     and bool(state.get('error_tags')))
                 prerequisites.append({'relevant': True, 'required': True, 'effective': effective,
                     'effective_difficulty': max(0, 1 - (state.get('mastery_score') or 0)) if effective else 0})
-            forecast = predict_duration(task['kind'], space_id=space['id'], material_id=material, samples=samples, prerequisites=prerequisites)
+            source_review = any(t.get('is_assessable') is False or t.get('automatic_questions') is False for t in context.get('topics', []))
+            forecast = predict_duration(task['kind'], space_id=space['id'], material_id=material, samples=samples, prerequisites=prerequisites,
+                questions=[] if source_review else None)
+            forecast['answer_basis'] = 'source_review_no_automatic_questions' if source_review else 'standard_five_single_choice_estimate'
             context['duration_forecast'] = forecast
             task['estimated_minutes'] = ceil(forecast['total_minutes'])
         return tasks
@@ -164,12 +167,12 @@ class PlanPersonalization:
                         spent[day] += seconds / 60
         return dict(spent)
 
-    def accumulate_tasks(self, tasks, space_id):
+    def accumulate_tasks(self, tasks, space_id, *, include_active=False, include_deferred=False):
         """Actual time is counted once per session/question, not per plan copy."""
         totals = self.task_elapsed(tasks, space_id)
         active = self._order_active_task_ids(space_id)
         for task in tasks:
-            if task['id'] in active or task['status'] in {'completed', 'skipped', 'deferred'} or task.get('context', {}).get('historical'):
+            if (task['id'] in active and not include_active) or (task['status'] == 'deferred' and not include_deferred) or task['status'] in {'completed', 'skipped'} or task.get('context', {}).get('historical'):
                 continue
             task['context']['accumulated'] = totals[task['id']]
         return tasks
@@ -178,13 +181,21 @@ class PlanPersonalization:
         from .service import now
         sessions = self.plans_sessions_for_accumulation(space_id)
         assessments = self.repository.records('assessments', space_id=space_id, lock=False)
+        # Assessments can belong directly to an earlier task row without a
+        # learning session. Copies share a node; a later learning cycle does not.
+        task_nodes = {t['id']: t['node_id'] for plan in self._space_plans(space_id) for t in plan['tasks']}
+        task_nodes.update({t['id']: t['node_id'] for t in tasks})
         totals = {}
         for task in tasks:
             matching = [s for s in sessions if s.get('context', {}).get('node_id') == task['node_id']]
             study = sum(s.get('activity', {}).get('active_seconds', 0) for s in matching)
             answer = 0
+            session_ids = {s['id'] for s in matching}
             for assessment in assessments:
-                if assessment.get('task_id') == task['id'] or assessment.get('learning_session_id') in {s['id'] for s in matching}:
+                snapshot = assessment.get('snapshot', {})
+                association = snapshot.get('plan_context') or snapshot.get('learning_context') or snapshot
+                node_id = association.get('node_id') or task_nodes.get(assessment.get('task_id'))
+                if node_id == task['node_id'] or assessment.get('learning_session_id') in session_ids:
                     answer += sum(activity_snapshot(a, now()).get('active_seconds', 0) for a in assessment.get('snapshot', {}).get('answer_activity', {}).values())
             totals[task['id']] = {'study_seconds': study, 'answer_seconds': answer}
         return totals

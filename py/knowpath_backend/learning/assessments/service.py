@@ -16,7 +16,8 @@ from knowpath_backend.learning.errors import DomainConflict, DomainNotFound
 from knowpath_backend.learning.assessments.mastery import aggregate, MasteryPolicy
 from knowpath_backend.learning.assessments.review_policy import enrich_observation_times, project_review_state
 from knowpath_backend.learning.assessments.grading import grade_answer, effective_question
-from knowpath_backend.learning.assessments.feedback import answer_feedback, record_feedback_exposure, deliver_feedback_exposure, readable_explanation
+from knowpath_backend.learning.assessments.feedback import (answer_feedback, record_feedback_exposure,
+    deliver_feedback_exposure, readable_explanation, feedback_allowed, disclosed_question_ids, assistance_reasons)
 from knowpath_backend.learning.assessments import adaptive
 from knowpath_backend.learning.assessments.grade_reviews import review_grade
 from knowpath_backend.learning.assessments.question_reviews import report_question, resolve_question_review, question_reviews
@@ -44,11 +45,12 @@ from .activity import AssessmentActivity
 
 
 class AssessmentService(AssessmentActivity):
-    def __init__(self, repository, spaces, runs, generator=None, *, mastery_policy=None):
+    def __init__(self, repository, spaces, runs, generator=None, *, mastery_policy=None, clock=None):
         self.repository, self.spaces, self.runs = repository, spaces, runs
         self.generator = generator if generator is not None else DashScopeQuestionGenerator()
         self.commands = SpaceService(repository, spaces.materials)
         self.mastery_policy = mastery_policy or MasteryPolicy()
+        self.clock = clock or (lambda: now())
 
     def _execute(self, operation, identifier, payload, key, change):
         def guarded_change():
@@ -72,11 +74,14 @@ class AssessmentService(AssessmentActivity):
         return self.commands._execute(operation, identifier, payload, key, guarded_change)
 
     def _topics(self, space):
+        from knowpath_backend.learning.knowledge.learning_units import unique_units
         topics = self.spaces.bound_topics(space)
         selected, excluded = set(space["topic_ids"]), set(space["excluded_topic_ids"])
-        return [dict(topic, revision_id=revision(topic)) for topic in topics
+        return unique_units([dict(topic, revision_id=revision(topic)) for topic in topics
                 if (not selected or topic["id"] in selected) and topic["id"] not in excluded
-                and topic.get("automatic_questions", True)]
+                and (selected or 'structure_key' not in topic or topic['id'] == topic.get('canonical_topic_id', topic['id']))
+                and topic.get("automatic_questions", True) and topic.get('is_learnable', True)
+                and topic.get('is_assessable', True) and (bool(topic.get('source_refs')) if 'is_assessable' in topic else True)])
 
     def _epochs(self, space_id):
         result = {}
@@ -117,11 +122,13 @@ class AssessmentService(AssessmentActivity):
             assessment = {"id": uid(), "space_id": space_id, "kind": payload["kind"],
                 "status": "generating", "topic_ids": requested, "questions": [], "result": None,
                 "run_id": run["id"], "finalize_run_id": None, "submission_id": None,
-                "created_at": now(), "snapshot": {"scope_version": space["scope_version"],
+                "created_at": self.clock(), "snapshot": {"scope_version": space["scope_version"],
                     "bindings": copy.deepcopy(space["bindings"]), "topics": topics,
                     "epochs": self._epochs(space_id), "request": payload,
-                    "assessment_policy_version": "assessment-v1"}}
+                    "assessment_policy_version": "assessment-v1",
+                    "feedback_policy": "after_each_answer" if payload['kind'] == 'practice' else "after_round"}}
             assessment.update(links)
+            assessment['updated_at'] = assessment['created_at']
             assessment["snapshot"]["request"] = {field: copy.deepcopy(value) for field, value in payload.items()
                                                   if field not in {"plan_id", "task_id", "learning_session_id"}}
             if payload.get("adaptive"):
@@ -160,6 +167,7 @@ class AssessmentService(AssessmentActivity):
                 if run["status"] in {"cancelling", "cancelled"}:
                     self.runs.acknowledge_cancel(run_id)
                     current["status"] = "cancelled"
+                    current['updated_at'] = self.clock()
                     self.repository.put_record("assessments", current)
                     if job is not None:
                         job.settle()
@@ -234,6 +242,7 @@ class AssessmentService(AssessmentActivity):
                     adaptive.select_next(current)
                 self.runs.append_event(run["id"], "assessment.stage", {"stage": "ready"})
                 self.runs.complete(run["id"], {"type": "assessment", "id": assessment_id})
+            current['updated_at'] = self.clock()
             self.repository.put_record("assessments", current)
             if job is not None:
                 job.settle()
@@ -259,7 +268,7 @@ class AssessmentService(AssessmentActivity):
             # SQLite BEGIN IMMEDIATE and the memory transaction lock already
             # serialize publication. Never lock a second assessment here.
             history = self.repository.records("assessments", space_id=assessment["space_id"], lock=False)
-        return adaptive.exclude_runtime_exposures(assessment, history, now())
+        return adaptive.exclude_runtime_exposures(assessment, history, self.clock())
 
     def public(self, assessment):
         snapshot = assessment["snapshot"]
@@ -270,12 +279,15 @@ class AssessmentService(AssessmentActivity):
                       graph_versions=[b["graph_version"] for b in snapshot["bindings"]],
                       material_version_ids=[b["material_version_id"] for b in snapshot["bindings"]],
                       assessment_policy_version=snapshot["assessment_policy_version"], questions=[], answers=[])
+        result['feedback_policy'] = snapshot.get('feedback_policy', 'after_each_answer')
+        result['assistance_events'] = [{k: event.get(k) for k in ('kind', 'delivered_at')}
+                                       for event in snapshot.get('assistance_events', [])]
         if assessment["status"] not in {"generating", "failed", "cancelled"}:
             result["questions"] = [adaptive.public_question(q) for q in adaptive.reached_questions(assessment)]
             answers = self._latest(assessment["id"])
             result["answers"] = [{"question_id": qid, "answer_revision": a["answer_revision"], "answer": a["answer"]}
                                  for qid, a in answers.items()]
-            disclosed = set(snapshot.get("feedback_question_ids", []))
+            disclosed = disclosed_question_ids(assessment)
             result["question_feedback"] = [answer_feedback(assessment, q, answers[q["id"]])
                                            for q in adaptive.reached_questions(assessment)
                                            if q["id"] in answers and q["id"] in disclosed]
@@ -289,13 +301,58 @@ class AssessmentService(AssessmentActivity):
         return result
 
     def get(self, assessment_id):
-        deliver_feedback_exposure(self, assessment_id)
-        assessment = self.repository.get_record("assessments", assessment_id)
+        assessment = deliver_feedback_exposure(self, assessment_id)
         if assessment["status"] == "generating":
             run = self.runs.get(assessment["run_id"])
             if run["status"] in {"failed", "cancelled"}:
                 assessment["status"] = run["status"]
         return self.public(assessment)
+
+    def recovery_projection(self, assessment):
+        """Index only: never deliver feedback or expose frozen question/source data."""
+        answers = self.repository.records('attempts', assessment_id=assessment['id'], lock=False)
+        reached = {q['id'] for q in adaptive.reached_questions(assessment)}
+        answered = {a['question_id'] for a in answers if a['question_id'] in reached}
+        snapshot = assessment['snapshot']
+        # Legacy rows have no updated_at. Use only persisted command/run times;
+        # reading this projection never advances the timestamp or writes a row.
+        times = [assessment.get('updated_at') or assessment['created_at']]
+        times.extend(a['created_at'] for a in answers)
+        if (assessment.get('result') or {}).get('graded_at'):
+            times.append(assessment['result']['graded_at'])
+        run = self.runs.get(assessment['run_id'])
+        times.extend(run[field] for field in ('created_at', 'finished_at') if run.get(field))
+        if assessment.get('finalize_run_id'):
+            finalized = self.runs.get(assessment['finalize_run_id'])
+            times.extend(finalized[field] for field in ('created_at', 'finished_at') if finalized.get(field))
+        result = {key: assessment.get(key) for key in ('id', 'space_id', 'kind', 'status',
+                  'run_id', 'plan_id', 'task_id', 'learning_session_id')}
+        if result['status'] == 'generating' and run['status'] in {'failed', 'cancelled'}:
+            result['status'] = run['status']
+        result.update(progress={'answered': len(answered), 'target': snapshot['request']['question_count']},
+                      updated_at=max(times))
+        return result
+
+    def recoverable(self, space_id, *, plan_id=None, task_id=None):
+        self.spaces.repository.get(space_id)
+        if task_id and not plan_id:
+            raise DomainConflict('PLAN_ID_REQUIRED', '关联任务必须提供 plan_id')
+        if plan_id:
+            plan = self.plan_sessions.get_plan(plan_id)
+            if plan['space_id'] != space_id:
+                raise DomainConflict('PLAN_SPACE_MISMATCH', '关联计划不属于当前学习空间')
+            if task_id and not any(task['id'] == task_id for task in plan['tasks']):
+                raise DomainNotFound('task', task_id)
+        rows = []
+        for assessment in self.repository.records('assessments', space_id=space_id, lock=False):
+            if assessment['status'] not in {'generating', 'ready', 'in_progress'}:
+                continue
+            if plan_id and assessment.get('plan_id') != plan_id or task_id and assessment.get('task_id') != task_id:
+                continue
+            item = self.recovery_projection(assessment)
+            if item['status'] in {'generating', 'ready', 'in_progress'}:
+                rows.append(item)
+        return sorted(rows, key=lambda row: (row['updated_at'], row['id']), reverse=True)
 
     def _latest(self, assessment_id):
         answers = {}
@@ -332,8 +389,8 @@ class AssessmentService(AssessmentActivity):
         return observations
 
     def diagnostic(self, assessment_id):
+        assessment = deliver_feedback_exposure(self, assessment_id, full_result=True)
         with self.repository.transaction():
-            assessment = self.repository.get_record("assessments", assessment_id)
             if not assessment["snapshot"].get("adaptive"):
                 raise DomainConflict("ADAPTIVE_NOT_ENABLED", "当前测验未启用自适应诊断")
             if assessment["status"] == "generating":
@@ -358,7 +415,7 @@ class AssessmentService(AssessmentActivity):
                 if (len(payload["answers"]) != 1 or item["question_id"] != diagnostic["current_question_id"]
                         or item["question_id"] in latest or item["expected_answer_revision"] != 0):
                     raise DomainConflict("ADAPTIVE_QUESTION_ORDER", "自适应测验仅接受当前问题的一次回答")
-            timestamp, batch_id = now(), uid()
+            timestamp, batch_id = self.clock(), uid()
             for item in payload["answers"]:
                 question = questions.get(item["question_id"])
                 if question is None:
@@ -393,11 +450,12 @@ class AssessmentService(AssessmentActivity):
                                          attempt=record)
             submitted = [questions[item["question_id"]] for item in payload["answers"]]
             feedback = []
-            if payload["include_feedback"]:
+            if payload["include_feedback"] and feedback_allowed(assessment):
                 feedback = [answer_feedback(assessment, q, latest[q["id"]]) for q in submitted]
                 disclosed = assessment["snapshot"].setdefault("feedback_question_ids", [])
                 disclosed.extend(q["id"] for q in submitted if q["id"] not in disclosed)
                 record_feedback_exposure(assessment, submitted, latest)
+            assessment['updated_at'] = self.clock()
             self.repository.put_record("assessments", assessment)
             if payload["finalize"]:
                 return self._finalize(assessment, False)
@@ -430,7 +488,7 @@ class AssessmentService(AssessmentActivity):
         epochs = self._epochs(space["id"])
         run = self.runs.create("assessment_finalize", status="running")
         assessment.update(submission_id=uid(), finalize_run_id=run["id"])
-        timestamp, question_results, topic_results, evidence = now(), [], [], []
+        timestamp, question_results, topic_results, evidence = self.clock(), [], [], []
         for question in questions:
             answer = answers.get(question["id"])
             score, verdict, feedback = grade_answer(question, answer)
@@ -473,7 +531,7 @@ class AssessmentService(AssessmentActivity):
         space["state_version"] = version
         self.spaces.repository.put(space)
         self.finish_assessment_activity(assessment)
-        assessment.update(status="completed", result={"assessment_id": assessment["id"], "graded_at": timestamp,
+        assessment.update(status="completed", updated_at=timestamp, result={"assessment_id": assessment["id"], "graded_at": timestamp,
             "topic_results": topic_results, "question_results": question_results, "state_version": version,
             "plan_replan_run_id": None})
         if assessment["snapshot"].get("adaptive"):
@@ -520,7 +578,26 @@ class AssessmentService(AssessmentActivity):
         assessment = self.repository.get_record("assessments", assessment_id)
         if assessment["result"] is None:
             raise DomainConflict("ASSESSMENT_NOT_READY", "测验尚未完成评分")
+        assessment = deliver_feedback_exposure(self, assessment_id, full_result=True)
         result = copy.deepcopy(assessment["result"])
+        # Current coverage and explanations are read-only, never part of the
+        # frozen result fingerprint consumed by the notes generation worker.
+        evidence = {e['id']: e for e in self.repository.records('evidence', assessment_id=assessment_id, lock=False)}
+        questions = {q['id']: effective_question(assessment, q) for q in assessment['questions']}
+        answers = self._latest(assessment_id)
+        for row in result['question_results']:
+            q = questions[row['question_id']]
+            row['assistance_reasons'] = assistance_reasons(assessment, q, answers.get(q['id']))
+            if q['type'] == 'short_answer' and q.get('question_review_status') not in {'pending', 'invalid'}:
+                row['reference_answer'] = q.get('answer_key')
+                row['reference_feedback'] = readable_explanation(q)
+        result['summary'] = {verdict: sum(q['verdict'] == verdict for q in result['question_results'])
+                             for verdict in ('correct', 'incorrect', 'unverified')}
+        result['kind'] = assessment['kind']
+        result['current_state'] = self.state(assessment['space_id'])
+        selected_ids = {eid for item in result['current_state']['items'] if item.get('score_validity') != 'stale'
+                        for eid in item.get('evidence_ids', [])}
+        result['summary']['independent_evidence_count'] = len(selected_ids & evidence.keys())
         if getattr(self, "notes", None) is not None:
             result["notes"] = self.notes.assessment_reference(assessment_id)
         adjustment = result.get('adjustment')
@@ -538,7 +615,7 @@ class AssessmentService(AssessmentActivity):
             space = self.spaces.repository.get(space_id)
             items = self.repository.records("states", space_id=space_id)
             current = {t["id"]: revision(t) for t in self.spaces.bound_topics(space)}
-            timestamp, epochs = now(), self._epochs(space_id)
+            timestamp, epochs = self.clock(), self._epochs(space_id)
             rows = enrich_observation_times(self.repository, self.repository.records("evidence", space_id=space_id))
             by_topic = {}
             for row in rows:
@@ -553,8 +630,25 @@ class AssessmentService(AssessmentActivity):
                     item["evidence"] = [evidence[eid] for eid in item["evidence_ids"] if eid in evidence]
             return {"space_id": space_id, "state_version": space["state_version"], "items": items}
 
-    def mark_topic_assisted(self, space_id, topic_id=None):
+    def _record_hint_assistance(self, assessment, *, delivery_id, delivered_at, topic_id=None, question_id=None):
+        snapshot = assessment['snapshot']
+        events = snapshot.setdefault('assistance_events', [])
+        if any(e.get('kind') == 'request_hint' and e.get('delivery_id') == delivery_id for e in events):
+            return
+        event = {'kind': 'request_hint', 'delivery_id': delivery_id, 'space_id': assessment['space_id'],
+                 'delivered_at': delivered_at, 'source_refs': [], 'topic_ids': []}
+        if question_id is not None:
+            event['question_ids'] = [question_id]
+        elif topic_id is not None:
+            event['topic_ids'] = [topic_id]
+        else:
+            event['general_assistance'] = True
+        events.append(event)
+        self.repository.put_record('assessments', assessment)
+
+    def mark_topic_assisted(self, space_id, topic_id=None, *, delivery_id=None, delivered_at=None):
         """Fence current questions and in-flight generation before recording a hint."""
+        delivery_id, delivered_at = delivery_id or uid(), delivered_at or self.clock()
         with self.repository.transaction():
             candidates = self.repository.records("assessments", space_id=space_id, lock=False)
             for candidate in sorted(candidates, key=lambda item: item["id"]):
@@ -565,16 +659,16 @@ class AssessmentService(AssessmentActivity):
                     continue
                 if assessment["status"] == "generating" and self.runs.get(assessment["run_id"])["status"] in {"failed", "cancelled"}:
                     continue
-                snapshot = assessment["snapshot"]
+                snapshot = assessment['snapshot']
                 if topic_id is None:
-                    snapshot["all_topics_assisted"] = True
+                    snapshot['all_topics_assisted'] = True
                 else:
-                    snapshot["consulted_topic_ids"] = sorted(set(snapshot.get("consulted_topic_ids", [])) | {topic_id})
+                    snapshot['consulted_topic_ids'] = sorted(set(snapshot.get('consulted_topic_ids', [])) | {topic_id})
                 from knowpath_backend.learning.materials.source_access import apply_source_assistance
-                apply_source_assistance(assessment["questions"], snapshot)
-                self.repository.put_record("assessments", assessment)
+                apply_source_assistance(assessment['questions'], snapshot)
+                self._record_hint_assistance(assessment, delivery_id=delivery_id, delivered_at=delivered_at, topic_id=topic_id)
 
-    def mark_assisted(self, space_id, question_id):
+    def mark_assisted(self, space_id, question_id, *, delivery_id=None, delivered_at=None):
         # Locate without taking every assessment lock; then lock only its owner.
         candidates = self.repository.records("assessments", space_id=space_id, lock=False)
         owner = next((a["id"] for a in candidates if any(q["id"] == question_id for q in a["questions"])), None)
@@ -584,10 +678,11 @@ class AssessmentService(AssessmentActivity):
             assessment = self.repository.get_record("assessments", owner)
             if assessment["status"] not in {"ready", "in_progress"}:
                 raise DomainConflict("ASSESSMENT_FINALIZED", "测验不再接受提示请求")
-            for question in assessment["questions"]:
-                if question["id"] == question_id:
-                    question["assisted"] = True
-            self.repository.put_record("assessments", assessment)
+            for question in assessment['questions']:
+                if question['id'] == question_id:
+                    question['assisted'] = True
+            self._record_hint_assistance(assessment, delivery_id=delivery_id or uid(),
+                delivered_at=delivered_at or self.clock(), question_id=question_id)
 
     def evidence_page(self, space_id, *, cursor=None, limit=20, **filters):
         if not 1 <= limit <= 100:
@@ -630,7 +725,7 @@ class AssessmentService(AssessmentActivity):
             topics = {t["id"]: revision(t) for t in self.spaces.bound_topics(space)}
             if not set(payload["topic_ids"]) <= topics.keys():
                 raise DomainConflict("TOPIC_OUT_OF_SCOPE", "主题不属于空间绑定资料")
-            version, timestamp = space["state_version"] + 1, now()
+            version, timestamp = space["state_version"] + 1, self.clock()
             self.repository.put_record("resets", {"id": uid(), "space_id": space_id, "topic_ids": payload["topic_ids"],
                 "state_version": version, "reason": payload["reason"], "created_at": timestamp})
             for topic_id in payload["topic_ids"]:

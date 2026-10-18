@@ -8,7 +8,7 @@ def test_assisted_question_summaries_include_all_answered_questions():
     state.assessment_service.generator = FixedQuestions()
     plan = state.plan_sessions._space_plans(sid)[0]
     task = plan['tasks'][0]
-    result = state.create_assessment(sid, {'question_count': 5, 'topic_ids': task['topic_ids'],
+    result = state.create_assessment(sid, {'kind': 'practice', 'question_count': 5, 'topic_ids': task['topic_ids'],
         'plan_id': plan['id'], 'task_id': task['id']})
     aid = result['id']
     assessment = state.get_assessment(aid)
@@ -47,3 +47,16 @@ def test_assisted_question_summaries_include_all_answered_questions():
     assert len(payload['questions']) == 1
     assert {r['evidence_id'] for r in payload['assessment_result']['question_results']} == valid
     assert notes.chapter(ref['chapter_id'])['generation_status'] == '已生成'
+
+
+def test_generated_unverified_note_rows_are_separate_and_readable_without_rewriting_user_text():
+    from knowpath_backend.learning.notes.presentation import readable_markdown
+    facts = {'question_results': [{'question_id': 'q1', 'verdict': 'unverified', 'score': None}]}
+    questions = [{'id': 'q1', 'prompt': '解释函数复用'}]
+    markdown = '## 待核验内容\n- q1\n\n## 个人记录\n- q1\n'
+    projected = readable_markdown(markdown, facts, questions, [], 'a1')
+    assert '第 1 题：解释函数复用 — 待核验，不计为错误或已掌握' in projected
+    assert '## 个人记录\n- q1\n' in projected
+    legacy = readable_markdown('## 待巩固内容\n- q1\n', facts, questions, [], 'a1')
+    assert '需要巩固' not in legacy
+    assert '待核验' in legacy

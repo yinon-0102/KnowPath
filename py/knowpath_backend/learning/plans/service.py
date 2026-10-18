@@ -11,8 +11,10 @@ from sqlalchemy import select
 
 from knowpath_backend.learning.persistence.db import StudyPlanRow, StudyTaskRow, SessionRow, SessionEventRow
 from knowpath_backend.learning.errors import DomainConflict, DomainNotFound
+from knowpath_backend.learning.knowledge.learning_units import frozen_unit, unique_units
 from knowpath_backend.learning.plans.policy import PlannerPolicy, build_tasks, conflict
 from knowpath_backend.learning.plans.workbench import WorkbenchReads
+from knowpath_backend.learning.plans.completion import TaskCompletionReceipts
 from knowpath_backend.learning.plans.ordering import order_topics, material_order, canonical_id, ORDER_POLICY_VERSION
 from knowpath_backend.learning.plans.order_commands import PlanOrderCommands
 from knowpath_backend.learning.plans.personalization import PlanPersonalization
@@ -39,7 +41,7 @@ def iso(value):
     return value.replace(tzinfo=timezone.utc).isoformat()
 
 
-class PlanSessionService(PlanPersonalization, PlanOrderCommands, WorkbenchReads):
+class PlanSessionService(TaskCompletionReceipts, PlanPersonalization, PlanOrderCommands, WorkbenchReads):
     EVENT_TYPES = {"open_material", "request_explanation", "request_hint", "pause", "resume"}
     TASK_STATUSES = {"pending", "in_progress", "completed", "skipped", "deferred"}
 
@@ -89,8 +91,7 @@ class PlanSessionService(PlanPersonalization, PlanOrderCommands, WorkbenchReads)
                 "task_id": task["id"], "node_id": task.get("context", {}).get("node_id", task["id"]),
                 "topic_ids": copy.deepcopy(topic_ids), "kind": task["kind"],
                 "estimated_minutes": task["estimated_minutes"], "reason": task["reason"],
-                "topics": [{"id": t["id"], "name": t["name"], "source_refs": copy.deepcopy(t.get("source_refs", []))}
-                           for t in topics],
+                "topics": [frozen_unit(t) for t in topics],
                 "source_refs": [copy.deepcopy(ref) for t in topics for ref in t.get("source_refs", [])]}
 
     def _planning_states(self, space_id, *, as_of=None):
@@ -148,10 +149,13 @@ class PlanSessionService(PlanPersonalization, PlanOrderCommands, WorkbenchReads)
         selected = set(space.get("topic_ids") or [])
         excluded = set(space.get("excluded_topic_ids") or [])
         topics = [copy.deepcopy(t) for t in self.spaces.bound_topics(space)
-                  if t.get("status", "active") == "active" and (not selected or t["id"] in selected) and t["id"] not in excluded]
+                  if t.get("status", "active") == "active" and t.get('is_learnable', True)
+                  and (selected or 'structure_key' not in t or t['id'] == t.get('canonical_topic_id', t['id']))
+                  and (not selected or t["id"] in selected) and t["id"] not in excluded]
+        topics = unique_units(topics)
         return order_topics(topics, state_rows, config.get("order_mode", "source"),
                             material_order(space, config.get("material_order")), now(),
-                            custom_order=config.get("custom_topic_order"), custom_alias_order=config.get("custom_topic_alias_order"), source_positions=self._source_positions(space))
+                            custom_order=config.get("custom_topic_order"), custom_alias_order=config.get("custom_topic_alias_order"), source_positions=self._source_positions(space), all_topics=self.spaces.bound_topics(space))
 
     def _validate_request(self, space, payload):
         payload = dict(payload or {})
@@ -205,6 +209,12 @@ class PlanSessionService(PlanPersonalization, PlanOrderCommands, WorkbenchReads)
                 "status": row.status, "estimated_minutes": row.estimated_minutes, "reason": row.reason,
                 "note": row.note, "defer_until": iso(row.defer_until), "context": copy.deepcopy(row.context or {})}
         context = result.get("context", {})
+        if result['status'] == 'completed':
+            # Legacy rows predate event IDs. Task IDs are immutable and unique;
+            # use only frozen completion fields (never the editable task note).
+            completion = copy.deepcopy(context.get('completion') or {'source': 'legacy'})
+            completion.setdefault('event_id', 'legacy:' + self._fingerprint('completion', result['id'], completion))
+            result['context'] = context = {**context, 'completion': completion}
         result["node_id"] = context.get("node_id", result["id"])
         result["sequence"] = context.get("sequence", context.get("position", 0) + 1)
         return result
@@ -236,84 +246,98 @@ class PlanSessionService(PlanPersonalization, PlanOrderCommands, WorkbenchReads)
             tasks.sort(key=lambda task: ((task.context or {}).get("position", 10**9), task.id))
             return plan, tasks
 
+    def _prepare_plan(self, space_id, payload):
+        space = self.spaces.repository.get(space_id)
+        config = self._validate_request(space, payload)
+        base = None
+        if config["rebuild_mode"] == "local_replan":
+            base = self._get_plan_sql(config["base_plan_id"], lock=True) if self.sql else self._load_plan_memory(config["base_plan_id"])
+            if base is None:
+                raise DomainNotFound("plan", config["base_plan_id"])
+            base_space = base[0].space_id if self.sql else base["space_id"]
+            if base_space != space_id:
+                raise DomainConflict("PLAN_SPACE_MISMATCH", "基础计划不属于当前学习空间")
+            base_status = base[0].status if self.sql else base["status"]
+            if base_status == "superseded" or self._current_plan_id(space_id) != config["base_plan_id"]:
+                raise DomainConflict("PLAN_NOT_ACTIVE", "基础计划已被替代")
+            base_version = base[0].version if self.sql else base["version"]
+            if base_version != config["expected_plan_version"]:
+                raise DomainConflict("VERSION_CONFLICT", "计划版本已变化", {"latest_plan": self._plan_payload(*base) if self.sql else copy.deepcopy(base)})
+        if base:
+            base_config = base[0].config if self.sql else base.get("config", {})
+            if not any(k in payload for k in ("schedule_mode", "daily_minutes", "horizon_days", "calendar_timezone", "session_count", "minutes_per_session")):
+                for field in ("schedule_mode", "daily_minutes", "horizon_days", "calendar_timezone", "session_count", "minutes_per_session"):
+                    if field in base_config:
+                        config[field] = copy.deepcopy(base_config[field])
+                config.setdefault("schedule_mode", "session_window")
+            if payload.get("order_mode") is None:
+                config["order_mode"] = base_config.get("order_mode", "source")
+                config["custom_topic_order"] = copy.deepcopy(base_config.get("custom_topic_order", []))
+                config["custom_node_order"] = copy.deepcopy(base_config.get("custom_node_order", []))
+                config["custom_topic_alias_order"] = copy.deepcopy(base_config.get("custom_topic_alias_order", []))
+            if payload.get("material_order") is None:
+                inherited = base_config.get("material_order", [])
+                bound = material_order(space)
+                config["material_order"] = [i for i in inherited if i in bound] + [i for i in bound if i not in inherited]
+        states = self._planning_states(space_id)
+        topics = self._ordered_topics(space, states, config)
+        if not topics:
+            raise DomainConflict("PLAN_CONSTRAINT_UNSATISFIABLE", "当前学习范围没有可安排的知识点", {"conflicts": ["empty_scope"], "adjustable_constraints": ["选择至少一个知识点"]})
+        if config["order_mode"] == "custom":
+            available_canonical = list(dict.fromkeys(canonical_id(t) for t in topics))
+            preferred = config.get("custom_topic_order", [])
+            config["custom_topic_order"] = [i for i in preferred if i in available_canonical] + [i for i in available_canonical if i not in preferred]
+            available_ids = {t["id"] for t in topics}
+            config["custom_topic_alias_order"] = [i for i in config.get("custom_topic_alias_order", []) if i in available_ids]
+        old_tasks = ([self._task_payload(t) for t in base[1]] if self.sql else base.get("tasks", [])) if base else []
+        if base:
+            resolved = {task["id"]: task for plan in self._space_plans(space_id) for task in plan["tasks"]}
+            old_tasks = copy.deepcopy(old_tasks)
+            for task in old_tasks:
+                known = resolved.get(task["id"], self._task_payload(task))
+                task.setdefault("context", {}).setdefault("node_id", known["node_id"])
+                task["context"].setdefault("sequence", known["sequence"])
+            base_config = base[0].config if self.sql else base.get("config", {})
+            invalidated = set(base_config.get("invalidated_topic_ids", []))
+            for task in old_tasks:
+                if invalidated.intersection(task["topic_ids"]):
+                    task.setdefault("context", {})["knowledge_invalidated"] = True
+        active_task_ids = self._order_active_task_ids(space_id, lock=True) if base else set()
+        active_nodes = {t.get("context", {}).get("node_id", t["id"]) for t in old_tasks if t["id"] in active_task_ids}
+        tasks = build_tasks(topics, states, config, space, old_tasks, now(), self.policy,
+                            active_node_ids=active_nodes, source_positions=self._source_positions(space))
+        by_topic = {topic["id"]: topic for topic in topics}
+        for task in tasks:
+            context = task["context"]
+            if context["node_id"] == task["id"]:
+                context["topics"] = [frozen_unit(by_topic[topic_id])
+                                     for topic_id in task["topic_ids"] if topic_id in by_topic]
+                context["title"] = "、".join(topic["name"] for topic in context["topics"])
+                context["source_refs"] = [copy.deepcopy(ref) for topic in context["topics"]
+                                          for ref in topic["source_refs"]]
+        if config['schedule_mode'] == 'budget_rolling':
+            from .rolling import allocate_ordered_tasks, local_day
+            self.forecast_tasks(tasks, space, states)
+            self.accumulate_tasks(tasks, space_id, include_active=True, include_deferred=True)
+            allocation = allocate_ordered_tasks(tasks, config, space, local_day(now(), config),
+                spent_minutes=self.spent_minutes(space_id, config))
+            tasks = allocation['tasks']
+            config['schedule_summary'] = allocation['summary']
+            config['schedule_days'] = allocation['days']
+        return space, config, states, tasks
+
+    def preview_plan(self, space_id, payload):
+        # A read transaction gives the same planning inputs without command/run writes.
+        with self._tx():
+            space, config, states, tasks = self._prepare_plan(space_id, dict(payload or {}))
+            return {"space_id": space_id, "config": config, "tasks": tasks,
+                    "summary": config.get("schedule_summary"), "preview": True}
+
     def create_plan(self, space_id, payload, idempotency_key=None):
         payload = dict(payload or {})
         def change():
-            space = self.spaces.repository.get(space_id)
-            config = self._validate_request(space, payload)
-            base = None
-            if config["rebuild_mode"] == "local_replan":
-                base = self._get_plan_sql(config["base_plan_id"], lock=True) if self.sql else self._load_plan_memory(config["base_plan_id"])
-                if base is None:
-                    raise DomainNotFound("plan", config["base_plan_id"])
-                base_space = base[0].space_id if self.sql else base["space_id"]
-                if base_space != space_id:
-                    raise DomainConflict("PLAN_SPACE_MISMATCH", "基础计划不属于当前学习空间")
-                base_status = base[0].status if self.sql else base["status"]
-                if base_status == "superseded" or self._current_plan_id(space_id) != config["base_plan_id"]:
-                    raise DomainConflict("PLAN_NOT_ACTIVE", "基础计划已被替代")
-                base_version = base[0].version if self.sql else base["version"]
-                if base_version != config["expected_plan_version"]:
-                    raise DomainConflict("VERSION_CONFLICT", "计划版本已变化", {"latest_plan": self._plan_payload(*base) if self.sql else copy.deepcopy(base)})
-            if base:
-                base_config = base[0].config if self.sql else base.get("config", {})
-                if not any(k in payload for k in ("schedule_mode", "daily_minutes", "horizon_days", "calendar_timezone", "session_count", "minutes_per_session")):
-                    for field in ("schedule_mode", "daily_minutes", "horizon_days", "calendar_timezone", "session_count", "minutes_per_session"):
-                        if field in base_config:
-                            config[field] = copy.deepcopy(base_config[field])
-                    config.setdefault("schedule_mode", "session_window")
-                if payload.get("order_mode") is None:
-                    config["order_mode"] = base_config.get("order_mode", "source")
-                    config["custom_topic_order"] = copy.deepcopy(base_config.get("custom_topic_order", []))
-                    config["custom_node_order"] = copy.deepcopy(base_config.get("custom_node_order", []))
-                    config["custom_topic_alias_order"] = copy.deepcopy(base_config.get("custom_topic_alias_order", []))
-                if payload.get("material_order") is None:
-                    inherited = base_config.get("material_order", [])
-                    bound = material_order(space)
-                    config["material_order"] = [i for i in inherited if i in bound] + [i for i in bound if i not in inherited]
-            states = self._planning_states(space_id)
-            topics = self._ordered_topics(space, states, config)
-            if not topics:
-                raise DomainConflict("PLAN_CONSTRAINT_UNSATISFIABLE", "当前学习范围没有可安排的知识点", {"conflicts": ["empty_scope"], "adjustable_constraints": ["选择至少一个知识点"]})
-            if config["order_mode"] == "custom":
-                available_canonical = list(dict.fromkeys(canonical_id(t) for t in topics))
-                preferred = config.get("custom_topic_order", [])
-                config["custom_topic_order"] = [i for i in preferred if i in available_canonical] + [i for i in available_canonical if i not in preferred]
-                available_ids = {t["id"] for t in topics}
-                config["custom_topic_alias_order"] = [i for i in config.get("custom_topic_alias_order", []) if i in available_ids]
-            old_tasks = ([self._task_payload(t) for t in base[1]] if self.sql else base.get("tasks", [])) if base else []
-            if base:
-                resolved = {task["id"]: task for plan in self._space_plans(space_id) for task in plan["tasks"]}
-                old_tasks = copy.deepcopy(old_tasks)
-                for task in old_tasks:
-                    known = resolved.get(task["id"], self._task_payload(task))
-                    task.setdefault("context", {}).setdefault("node_id", known["node_id"])
-                    task["context"].setdefault("sequence", known["sequence"])
-                base_config = base[0].config if self.sql else base.get("config", {})
-                invalidated = set(base_config.get("invalidated_topic_ids", []))
-                for task in old_tasks:
-                    if invalidated.intersection(task["topic_ids"]):
-                        task.setdefault("context", {})["knowledge_invalidated"] = True
-            active_task_ids = self._order_active_task_ids(space_id, lock=True) if base else set()
-            active_nodes = {t.get("context", {}).get("node_id", t["id"]) for t in old_tasks if t["id"] in active_task_ids}
-            tasks = build_tasks(topics, states, config, space, old_tasks, now(), self.policy,
-                                active_node_ids=active_nodes, source_positions=self._source_positions(space))
-            by_topic = {topic["id"]: topic for topic in topics}
-            for task in tasks:
-                context = task["context"]
-                if context["node_id"] == task["id"]:
-                    context["topics"] = [{"id": topic_id, "name": by_topic[topic_id]["name"],
-                                          "source_refs": copy.deepcopy(by_topic[topic_id].get("source_refs", []))}
-                                         for topic_id in task["topic_ids"] if topic_id in by_topic]
-                    context["title"] = "、".join(topic["name"] for topic in context["topics"])
-                    context["source_refs"] = [copy.deepcopy(ref) for topic in context["topics"]
-                                              for ref in topic["source_refs"]]
+            space, config, states, tasks = self._prepare_plan(space_id, payload)
             previous_plans = [row for row in self._space_plans(space_id) if row["status"] != "superseded"]
-            if config['schedule_mode'] == 'budget_rolling':
-                from .rolling import allocate_ordered_tasks, local_day
-                self.forecast_tasks(tasks, space, states)
-                tasks = allocate_ordered_tasks(tasks, config, space, local_day(now(), config),
-                    spent_minutes=self.spent_minutes(space_id, config))['tasks']
             config["snapshot"] = self._snapshot(space, states)
             plan_id = uid()
             run = self.runs.create("plan_build", {"type": "plan", "id": plan_id}, status="succeeded")
@@ -361,6 +385,14 @@ class PlanSessionService(PlanPersonalization, PlanOrderCommands, WorkbenchReads)
                 raise DomainNotFound("plan", plan_id)
             result = self._plan_payload(plan, plan["tasks"])
         space = self.spaces.repository.get(result["space_id"])
+        if result.get('config', {}).get('schedule_mode') == 'budget_rolling':
+            # Summarize existing reservations without moving them or persisting a refresh.
+            from .rolling import allocate_ordered_tasks, local_day
+            summary = allocate_ordered_tasks(result['tasks'], result['config'], space, local_day(now(), result['config']),
+                spent_minutes=self.spent_minutes(space['id'], result['config']),
+                protected_ids=[t['id'] for t in result['tasks']],
+                consumed_by_task=self.task_elapsed(result['tasks'], space['id']))['summary']
+            result['config']['schedule_summary'] = summary
         if result["status"] != "superseded" and self._current_plan_id(space["id"]) != plan_id:
             result["status"] = "superseded"
         current = self._snapshot(space, self._planning_states(space["id"]))
@@ -378,14 +410,20 @@ class PlanSessionService(PlanPersonalization, PlanOrderCommands, WorkbenchReads)
             result['adjustment'] = self.adjustments.latest(result['id'])
         return result
 
-    def update_task(self, plan_id, task_id, payload):
+    def update_task(self, plan_id, task_id, payload, idempotency_key=None):
         payload = dict(payload or {})
         expected = payload.get("expected_plan_version")
         status = payload.get("status")
+        source = payload.setdefault("source", "manual")
+        assessment_id = payload.get("assessment_id")
         if type(expected) is not int:
             raise DomainConflict("INVALID_REQUEST", "expected_plan_version 必填")
         if status not in {"completed", "skipped", "deferred"}:
             raise DomainConflict("INVALID_TASK_STATUS", "任务状态不合法")
+        if source not in {"manual", "assessment"} or (source == "assessment" and (status != "completed" or not assessment_id)) or (source == "manual" and assessment_id is not None):
+            raise DomainConflict("INVALID_COMPLETION_SOURCE", "请提供有效的任务完成来源及测评关联")
+        if source == "assessment" and not idempotency_key:
+            raise DomainConflict("IDEMPOTENCY_KEY_REQUIRED", "测评完成确认必须提供稳定的 Idempotency-Key")
         if status == "skipped" and not str(payload.get("reason") or "").strip():
             raise DomainConflict("SKIP_REASON_REQUIRED", "跳过任务必须提供 reason")
         if status == "deferred":
@@ -398,10 +436,22 @@ class PlanSessionService(PlanPersonalization, PlanOrderCommands, WorkbenchReads)
                 raise DomainConflict("DEFER_UNTIL_REQUIRED", "延后任务必须提供带时区的 UTC defer_until") from None
             if parsed.utcoffset().total_seconds() != 0:
                 raise DomainConflict("DEFER_UNTIL_REQUIRED", "defer_until 必须是 UTC 时间")
-        with self._tx():
+        def change():
+            # Assessments are always locked before the owning space and plan.
+            # Do not read an assessment again after taking those latter locks.
+            assessment = self.repository.get_record("assessments", assessment_id) if source == "assessment" else None
+            if assessment is not None:
+                if assessment.get("plan_id") != plan_id or assessment.get("task_id") != task_id:
+                    raise DomainConflict("ASSESSMENT_TASK_MISMATCH", "测评不属于当前计划与任务")
+                if assessment["status"] != "completed":
+                    raise DomainConflict("ASSESSMENT_NOT_COMPLETED", "请先完成关联测评，再确认本节点完成")
+            completion = {"event_id": 'completion:' + self._fingerprint('completion', plan_id,
+                {'task_id': task_id, 'plan_version': expected + 1}), "source": source,
+                "confirmed_at": now(), **({"assessment_id": assessment_id} if assessment else {})}
             if self.sql:
                 plan_row, _ = self._get_plan_sql(plan_id, lock=False)
-                self.spaces.repository.get(plan_row.space_id)
+                space = self.spaces.repository.get(plan_row.space_id)
+                self._validate_completion_space(space, assessment)
                 plan_row, tasks = self._get_plan_sql(plan_id, lock=True)
                 if plan_row.version != expected:
                     raise DomainConflict("VERSION_CONFLICT", "计划版本已变化", {"latest_plan": self._plan_payload(plan_row, tasks)})
@@ -409,6 +459,9 @@ class PlanSessionService(PlanPersonalization, PlanOrderCommands, WorkbenchReads)
                 if task is None:
                     raise DomainNotFound("task", task_id)
                 self._validate_task_write(self.get_plan(plan_id)["status"], self._task_payload(task))
+                if status == "completed":
+                    original = self._task_payload(task)['context']['completion'] if task.status == 'completed' else completion
+                    task.context = {**(task.context or {}), "completion": original}
                 task.status = status
                 task.note = payload.get("note") or payload.get("reason")
                 task.defer_until = parse_dt(payload.get("defer_until")) if status == "deferred" else None
@@ -416,22 +469,103 @@ class PlanSessionService(PlanPersonalization, PlanOrderCommands, WorkbenchReads)
                 if getattr(self, "notes", None) is not None:
                     self.uow._current.get().flush()
                     self.notes.synchronize(plan_row.space_id)
-                return self._task_payload(task) | {"plan_id": plan_id, "plan_version": plan_row.version}
+                progress = self._task_progress(self._plan_payload(plan_row, tasks))
+                return self._completion_receipt(self._task_payload(task) | {"plan_id": plan_id, "plan_version": plan_row.version, **progress}, plan_row.space_id)
             plan = self._load_plan_memory(plan_id)
             if plan is None:
                 raise DomainNotFound("plan", plan_id)
+            space = self.spaces.repository.get(plan["space_id"])
+            self._validate_completion_space(space, assessment)
             if plan["version"] != expected:
                 raise DomainConflict("VERSION_CONFLICT", "计划版本已变化", {"latest_plan": copy.deepcopy(plan)})
             task = next((t for t in plan["tasks"] if t["id"] == task_id), None)
             if task is None:
                 raise DomainNotFound("task", task_id)
             self._validate_task_write(self.get_plan(plan_id)["status"], task)
+            if status == "completed":
+                original = self._task_payload(task)['context']['completion'] if task['status'] == 'completed' else completion
+                task["context"] = {**task.get("context", {}), "completion": original}
             task.update(status=status, note=payload.get("note") or payload.get("reason"), defer_until=payload.get("defer_until") if status == "deferred" else None)
             plan["version"] += 1
             self.repository.materials.assessment_data["plans"][plan_id] = copy.deepcopy(plan)
             if getattr(self, "notes", None) is not None:
                 self.notes.synchronize(plan["space_id"])
-            return copy.deepcopy(task) | {"plan_id": plan_id, "plan_version": plan["version"]}
+            return self._completion_receipt(self._task_payload(task) | {"plan_id": plan_id, "plan_version": plan["version"], **self._task_progress(plan)}, plan['space_id'])
+        # Include the task in the fingerprint so a key cannot replay across tasks.
+        result = self.assessments._execute("plan.task.update", plan_id, {**payload, "task_id": task_id}, idempotency_key, change)
+        return self._with_completion_navigation(result)
+
+    def undo_task_completion(self, plan_id, task_id, payload, idempotency_key=None):
+        payload = copy.deepcopy(payload or {})
+        if not idempotency_key:
+            raise DomainConflict('IDEMPOTENCY_KEY_REQUIRED', '撤销完成必须提供稳定的 Idempotency-Key')
+        if type(payload.get('expected_plan_version')) is not int or payload['expected_plan_version'] < 1:
+            raise DomainConflict('INVALID_REQUEST', 'expected_plan_version 必填')
+        if not isinstance(payload.get('reason'), str) or not payload['reason'].strip():
+            raise DomainConflict('UNDO_REASON_REQUIRED', '请填写撤销本次任务完成的原因')
+        if len(payload['reason']) > 2000 or not isinstance(payload.get('completion_event_id'), str) or not payload['completion_event_id'].strip():
+            raise DomainConflict('INVALID_REQUEST', '请提供有效的原完成事件及撤销原因')
+
+        def change():
+            # Discover ownership without a lock, then lock space -> plan -> task.
+            # Undo never acquires an assessment lock or rewrites learning facts.
+            if self.sql:
+                plan_row, _ = self._get_plan_sql(plan_id)
+                space = self.spaces.repository.get(plan_row.space_id)
+                self._validate_completion_space(space, None)
+                plan_row, tasks = self._get_plan_sql(plan_id, lock=True)
+                plan = self._plan_payload(plan_row, tasks)
+            else:
+                plan_row = self._load_plan_memory(plan_id)
+                if plan_row is None:
+                    raise DomainNotFound('plan', plan_id)
+                space = self.spaces.repository.get(plan_row['space_id'])
+                self._validate_completion_space(space, None)
+                plan = self._plan_payload(plan_row, plan_row['tasks'])
+            # Reject history before version checks: it must never be reactivated.
+            current = self.get_plan(plan_id)
+            if current['status'] != 'ready':
+                raise DomainConflict('PLAN_NOT_ACTIVE', '历史、失效或需要重新规划的计划不能撤销完成')
+            task = next((t for t in plan['tasks'] if t['id'] == task_id), None)
+            if task is None:
+                raise DomainNotFound('task', task_id)
+            self._validate_task_write(current['status'], task)
+            if plan['version'] != payload['expected_plan_version']:
+                raise DomainConflict('VERSION_CONFLICT', '计划版本已变化，请刷新核对原完成事件后再次确认', {'latest_plan': current})
+            completion = task.get('context', {}).get('completion')
+            if task['status'] != 'completed' or not completion or completion['event_id'] != payload['completion_event_id']:
+                raise DomainConflict('COMPLETION_NOT_CURRENT', '原完成事件已撤销或被新的完成替代，请刷新后重新核对')
+            topics = {t['id'] for t in self._ordered_topics(space, {})}
+            if not set(task['topic_ids']).issubset(topics):
+                raise DomainConflict('TASK_NOT_ACTIVE', '范围外的任务不能通过撤销恢复')
+            context = copy.deepcopy(task.get('context', {}))
+            context.setdefault('completion_history', []).append({'event_id': uid(), 'action': 'undo_completion',
+                'completion': copy.deepcopy(completion), 'reason': payload['reason'], 'undone_at': now(),
+                'expected_plan_version': payload['expected_plan_version']})
+            context.pop('completion', None)
+            if self.sql:
+                row = next(t for t in tasks if t.id == task_id)
+                row.context, row.status, row.defer_until = context, 'pending', None
+                plan_row.version += 1
+                self.uow._current.get().flush()
+                result = self._task_payload(row)
+                updated = self._plan_payload(plan_row, tasks)
+            else:
+                row = next(t for t in plan_row['tasks'] if t['id'] == task_id)
+                row.update(context=context, status='pending', defer_until=None)
+                plan_row['version'] += 1
+                self.repository.materials.assessment_data['plans'][plan_id] = copy.deepcopy(plan_row)
+                result = self._task_payload(row)
+                updated = self._plan_payload(plan_row, plan_row['tasks'])
+            return result | {'plan_id': plan_id, 'plan_version': updated['version'], **self._task_progress(updated)}
+        return self.assessments._execute('plan.task.undo_completion', plan_id, {**payload, 'task_id': task_id}, idempotency_key, change)
+
+    @staticmethod
+    def _validate_completion_space(space, assessment):
+        if space["status"] == "archived":
+            raise DomainConflict("SPACE_ARCHIVED", "请先恢复学习空间，再修改任务记录")
+        if assessment is not None and assessment["space_id"] != space["id"]:
+            raise DomainConflict("ASSESSMENT_TASK_MISMATCH", "测评不属于当前学习空间")
 
     def _validate_task_write(self, plan_status, task):
         if plan_status not in {"ready", "needs_replan"}:
@@ -440,7 +574,7 @@ class PlanSessionService(PlanPersonalization, PlanOrderCommands, WorkbenchReads)
             raise DomainConflict("TASK_NOT_ACTIVE", "历史任务保留原有记录，不能修改")
 
     def _validate_active_task(self, space, task):
-        current_topics = {t["id"] for t in self.assessments._topics(space)}
+        current_topics = {t["id"] for t in self._ordered_topics(space, {})}
         if (task["status"] in {"completed", "skipped", "deferred"} or task.get("context", {}).get("historical")
                 or not set(task["topic_ids"]).issubset(current_topics)):
             raise DomainConflict("TASK_NOT_ACTIVE", "历史、范围外、已完成、跳过或延期的任务不能开始会话")
@@ -531,10 +665,11 @@ class PlanSessionService(PlanPersonalization, PlanOrderCommands, WorkbenchReads)
                     return copy.deepcopy(existing["response"])
             # Assessment -> space -> session is the shared lock order with grading.
             # All writes, including assisted, roll back if the session rejects the event.
+            receipt_id, received_at = uid(), now()
             if event_type == "request_hint" and payload.get("question_id"):
-                self.assessments.mark_assisted(space_id, payload["question_id"])
+                self.assessments.mark_assisted(space_id, payload["question_id"], delivery_id=receipt_id, delivered_at=received_at)
             elif event_type == "request_hint":
-                self.assessments.mark_topic_assisted(space_id, payload.get("topic_id"))
+                self.assessments.mark_topic_assisted(space_id, payload.get("topic_id"), delivery_id=receipt_id, delivered_at=received_at)
             space = self.spaces.repository.get(space_id)
             if self.sql:
                 row = self._find_session_sql(session_id, lock=True)
@@ -547,8 +682,8 @@ class PlanSessionService(PlanPersonalization, PlanOrderCommands, WorkbenchReads)
             topic_id = payload.get("topic_id")
             if topic_id and topic_id not in {t["id"] for t in self.assessments._topics(space)}:
                 raise DomainConflict("TOPIC_OUT_OF_SCOPE", "事件知识点不属于当前学习范围")
-            response = {"id": uid(), "event_id": event_id, "type": event_type,
-                        "topic_id": topic_id, "question_id": payload.get("question_id"), "received_at": now()}
+            response = {"id": receipt_id, "event_id": event_id, "type": event_type,
+                        "topic_id": topic_id, "question_id": payload.get("question_id"), "received_at": received_at}
             stored = {**payload, "fingerprint": fingerprint, "response": response}
             if self.sql:
                 db.add(SessionEventRow(id=response["id"], session_id=session_id, client_event_id=event_id,

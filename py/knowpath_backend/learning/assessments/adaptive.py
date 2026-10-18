@@ -194,6 +194,7 @@ def update_hypotheses(assessment, observations):
 
 
 def diagnostic_view(assessment):
+    from .feedback import feedback_allowed
     adaptive = assessment["snapshot"]["adaptive"]
     current_id = adaptive["current_question_id"] if assessment["status"] in {"ready", "in_progress"} else None
     question = next((q for q in reached_questions(assessment) if q["id"] == current_id), None)
@@ -202,7 +203,8 @@ def diagnostic_view(assessment):
             "progress": {"answered": len(adaptive["answered_question_ids"]),
                          "presented": len(adaptive["presented_question_ids"]),
                          "target": assessment["snapshot"]["request"]["question_count"]},
-            "decisions": deepcopy(adaptive["decisions"]), "hypotheses": deepcopy(adaptive["hypotheses"]),
+            "decisions": deepcopy(adaptive["decisions"]) if feedback_allowed(assessment) else [],
+            "hypotheses": deepcopy(adaptive["hypotheses"]) if feedback_allowed(assessment) else [],
             "runtime_excluded_family_count": len(adaptive.get("runtime_family_exclusions", [])),
             "completion_reason": adaptive["completion_reason"],
             "limitations": ["Rule priorities are not calibrated probabilities.",

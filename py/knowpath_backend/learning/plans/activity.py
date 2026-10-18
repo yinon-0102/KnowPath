@@ -135,7 +135,7 @@ def advance_activity(activity, server_now, event="heartbeat"):
     if event in _EVENTS:
         reason, add = _EVENTS[event]
         reasons.add(reason) if add else reasons.discard(reason)
-    if event in {"heartbeat", "reconnect", "visible", "resume", "ready", "assessment_end"}:
+    if event in {"heartbeat", "reconnect", "visible", "resume", "ready"}:
         reasons.discard("disconnected")
     if event == "finish":
         state["status"] = "finished"

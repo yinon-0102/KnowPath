@@ -42,7 +42,7 @@ async def resolve_citation(service: MaterialServiceDep, source_access: SourceAcc
 
 
 @router.post("/api/v1/materials", status_code=201)
-async def create_material(ingestion: IngestionServiceDep,
+async def create_material(ingestion: IngestionServiceDep, state: LearningStateDep,
     file: UploadFile = File(...),
     idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
     name: str | None = Form(None),
@@ -78,6 +78,7 @@ async def create_material(ingestion: IngestionServiceDep,
         content={
             "material": {
                 "id": result.material.id,
+                "lifecycle": await asyncio.to_thread(state.graph_service.lifecycle, result.material.id, result.version.id),
                 "name": result.material.name,
                 "type": result.material.type,
                 "status": result.material.status,
@@ -91,6 +92,8 @@ async def create_material(ingestion: IngestionServiceDep,
                 "id": result.version.id,
                 "material_id": result.version.material_id,
                 "filename": result.version.filename,
+                "parser_version": result.version.parser_version,
+                "parse_manifest": result.version.parse_manifest,
                 "content_hash": result.version.content_hash,
                 "status": result.version.status,
                 "chunk_count": len(result.version.chunks),
@@ -102,15 +105,31 @@ async def create_material(ingestion: IngestionServiceDep,
 
 
 @router.get("/api/v1/materials")
-async def list_materials(service: MaterialServiceDep,
+def list_materials(service: MaterialServiceDep, state: LearningStateDep,
     status: Literal["uploaded", "processing", "ready", "needs_review", "failed", "archived"] | None = None,
     cursor: str | None = Query(None, max_length=2048), limit: int = Query(20, ge=1, le=100),
 ) -> JSONResponse:
-    items = [{"id": material.id, "name": material.name, "type": material.type,
+    items = []
+    for snapshot in service.repository.list_materials():
+        try:
+            with service.repository.transaction():
+                # Refresh metadata under the same parent lock and transaction
+                # as lifecycle, so a new version cannot split the row's facts.
+                material = service.repository.get_material(snapshot.id)
+                if material is None or status is not None and material.status != status:
+                    continue
+                lifecycle = state.graph_service.lifecycle(material.id)
+        except DomainNotFound as exc:
+            # A DELETE may commit after the list snapshot and before this
+            # item's lifecycle transaction. Omit only that deleted parent.
+            if exc.resource == 'material' and exc.resource_id == snapshot.id:
+                continue
+            raise
+        items.append({"id": material.id, "name": material.name, "type": material.type,
               "status": material.status, "version": material.version,
+              "lifecycle": lifecycle,
               "current_version_id": material.current_version_id, "size_bytes": material.size_bytes,
-              "created_at": material.created_at.isoformat(), "updated_at": material.updated_at.isoformat()}
-             for material in service.repository.list_materials() if status is None or material.status == status]
+              "created_at": material.created_at.isoformat(), "updated_at": material.updated_at.isoformat()})
     try:
         return JSONResponse(content=page_records(items, scope=["materials", status], limit=limit, cursor=cursor))
     except DomainConflict as exc:
@@ -164,7 +183,7 @@ async def create_material_version(ingestion: IngestionServiceDep,
 
 
 @router.get("/api/v1/materials/{material_id}/versions")
-async def list_material_versions(service: MaterialServiceDep, state: LearningStateDep, material_id: str, cursor: str | None = Query(None, max_length=2048),
+def list_material_versions(service: MaterialServiceDep, state: LearningStateDep, material_id: str, cursor: str | None = Query(None, max_length=2048),
                                 limit: int = Query(20, ge=1, le=100)) -> JSONResponse:
     if service.repository.get_material(material_id) is None:
         return _error_response(404, "RESOURCE_NOT_FOUND", "资料不存在", {"material_id": material_id})
@@ -174,33 +193,53 @@ async def list_material_versions(service: MaterialServiceDep, state: LearningSta
         if revision["status"] in {"published", "superseded"} and revision.get("graph_version") is not None:
             version_id = revision["material_version_id"]
             published_versions[version_id] = max(published_versions.get(version_id, 0), revision["graph_version"])
-    items = [{"id": version.id, "material_id": version.material_id, "filename": version.filename,
+    versions = service.repository.list_versions(material_id)
+    if not versions and service.repository.get_material(material_id) is None:
+        return _error_response(404, "RESOURCE_NOT_FOUND", "资料不存在", {"material_id": material_id})
+    try:
+        items = [{"id": version.id, "material_id": version.material_id, "filename": version.filename,
+              "parser_version": version.parser_version, "parse_manifest": version.parse_manifest,
+              "lifecycle": state.graph_service.lifecycle(material_id, version.id),
               "content_hash": version.content_hash, "status": version.status,
               "graph_version": published_versions.get(version.id), "created_at": version.created_at.isoformat()}
-             for version in service.repository.list_versions(material_id)]
-    try:
+             for version in versions]
         return JSONResponse(content=page_records(items, scope=["material_versions", material_id], limit=limit, cursor=cursor))
+    except DomainNotFound as exc:
+        if (exc.resource == 'material' and exc.resource_id == material_id
+                or exc.resource == 'material_version' and exc.resource_id in {version.id for version in versions}):
+            return _domain_error(exc)
+        raise
     except DomainConflict as exc:
         return _domain_error(exc)
 
 
 @router.get("/api/v1/materials/{material_id}")
-async def get_material(service: MaterialServiceDep, source_access: SourceAccessDep, material_id: str, space_id: str | None = None) -> JSONResponse:
+def get_material(service: MaterialServiceDep, state: LearningStateDep, source_access: SourceAccessDep, material_id: str, space_id: str | None = None) -> JSONResponse:
     material = service.repository.get_material(material_id)
     if material is None:
         return _error_response(404, "RESOURCE_NOT_FOUND", "资料不存在", {"material_id": material_id})
     version = service.repository.get_version(material.current_version_id)
     if version and version.chunks:
         try:
-            await asyncio.to_thread(source_access.consult, material_id, version.id,
+            source_access.consult(material_id, version.id,
                                     [chunk.id for chunk in version.chunks], space_id)
         except (DomainNotFound, DomainConflict) as exc:
             return _domain_error(exc)
+    try:
+        # Source consultation can yield while a newer version commits. Project
+        # the version returned in this response, without holding locks across it.
+        lifecycle = state.graph_service.lifecycle(material_id, material.current_version_id)
+    except DomainNotFound as exc:
+        if (exc.resource == 'material' and exc.resource_id == material_id
+                or exc.resource == 'material_version' and exc.resource_id == material.current_version_id):
+            return _domain_error(exc)
+        raise
     return JSONResponse(
         status_code=200,
         content={
             "material": {
                 "id": material.id,
+                "lifecycle": lifecycle,
                 "name": material.name,
                 "type": material.type,
                 "status": material.status,
@@ -212,6 +251,8 @@ async def get_material(service: MaterialServiceDep, source_access: SourceAccessD
             },
             "version": {
                 "id": version.id,
+                "parser_version": version.parser_version,
+                "parse_manifest": version.parse_manifest,
                 "filename": version.filename,
                 "content_hash": version.content_hash,
                 "status": version.status,
@@ -235,7 +276,7 @@ async def get_material(service: MaterialServiceDep, source_access: SourceAccessD
 
 
 @router.get("/api/v1/materials/{material_id}/versions/{version_id}/chunks/{chunk_id}")
-async def get_source_chunk(service: MaterialServiceDep, source_access: SourceAccessDep, material_id: str, version_id: str, chunk_id: str, space_id: str | None = None) -> JSONResponse:
+def get_source_chunk(service: MaterialServiceDep, source_access: SourceAccessDep, material_id: str, version_id: str, chunk_id: str, space_id: str | None = None) -> JSONResponse:
     version = service.repository.get_version(version_id)
     if version is None or version.material_id != material_id:
         return _error_response(404, "RESOURCE_NOT_FOUND", "资料版本不存在", {"version_id": version_id})
@@ -243,7 +284,7 @@ async def get_source_chunk(service: MaterialServiceDep, source_access: SourceAcc
     if chunk is None:
         return _error_response(404, "RESOURCE_NOT_FOUND", "来源片段不存在", {"chunk_id": chunk_id})
     try:
-        await asyncio.to_thread(source_access.consult, material_id, version_id, [chunk_id], space_id)
+        source_access.consult(material_id, version_id, [chunk_id], space_id)
     except (DomainNotFound, DomainConflict) as exc:
         return _domain_error(exc)
     return JSONResponse(
@@ -263,15 +304,15 @@ async def get_source_chunk(service: MaterialServiceDep, source_access: SourceAcc
 
 
 @router.get("/api/v1/materials/{material_id}/versions/{version_id}/file")
-async def get_material_file(service: MaterialServiceDep, source_access: SourceAccessDep,
+def get_material_file(service: MaterialServiceDep, source_access: SourceAccessDep,
                             material_id: str, version_id: str, space_id: str | None = None) -> Response:
     version = service.repository.get_version(version_id)
     if version is None or version.material_id != material_id:
         return _error_response(404, "RESOURCE_NOT_FOUND", "资料版本不存在", {"version_id": version_id})
     try:
-        await asyncio.to_thread(source_access.consult, material_id, version_id,
+        source_access.consult(material_id, version_id,
                                 [chunk.id for chunk in version.chunks], space_id)
-        content = await asyncio.to_thread(service.repository.get_raw, version_id)
+        content = service.repository.get_raw(version_id)
     except (DomainNotFound, DomainConflict) as exc:
         return _domain_error(exc)
     if content is None:

@@ -31,6 +31,7 @@ def topic_fingerprint(topic, state, config, policy):
 
 
 def build_tasks(topics, states, config, space, old_tasks, timestamp, policy, *, active_node_ids=None, source_positions=None):
+    topics = [topic for topic in topics if topic.get('is_learnable', True)]
     moment = datetime.fromisoformat(timestamp)
     today = moment.date()
     old_by_topic = {t["topic_ids"][0]: t for t in old_tasks if not t.get("context", {}).get("historical")}

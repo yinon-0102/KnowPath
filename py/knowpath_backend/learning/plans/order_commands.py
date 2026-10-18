@@ -6,18 +6,24 @@ from knowpath_backend.learning.errors import DomainConflict
 from knowpath_backend.learning.persistence.db import SessionRow
 from knowpath_backend.learning.plans.ordering import material_order, source_key, source_label, canonical_id, fill_ordered_slots, ORDER_POLICY_VERSION
 from knowpath_backend.learning.plans.policy import schedule_tasks
+from knowpath_backend.learning.spaces.scope import canonical, mastered
 
 
-def prerequisite_conflicts(tasks, states):
+def prerequisite_conflicts(tasks, states, topics):
+    universe = {t['id']: t for t in topics}
+    owner = lambda identifier: canonical(universe.get(identifier, {'id': identifier}))
     by_topic = {topic: (index, task) for index, task in enumerate(tasks)
                 if not task.get('context', {}).get('historical') for topic in task['topic_ids']}
+    by_canonical = {owner(topic): entry for topic, entry in by_topic.items()}
     result = []
     for index, task in enumerate(tasks):
         if task['status'] in {'completed', 'skipped', 'deferred'} or task.get('context', {}).get('historical'):
             continue
         for parent in task.get('context', {}).get('prerequisites', []):
-            found = by_topic.get(parent)
-            if states.get(parent, {}).get('status') == 'mastered' or (found and found[1]['status'] == 'completed'):
+            # Frozen legacy plans may contain two separate alias task rows.
+            # Keep an exact deferred/skipped row authoritative when it exists.
+            found = by_topic.get(parent) or by_canonical.get(owner(parent))
+            if (parent in universe and mastered(universe[parent], states, topics)) or (found and found[1]['status'] == 'completed'):
                 continue
             if not found or found[0] >= index or found[1]['status'] in {'deferred', 'skipped'}:
                 node_label = task.get('context', {}).get('title') or '、'.join(task['topic_ids'])
@@ -103,7 +109,7 @@ class PlanOrderCommands:
             candidate['tasks'] = fill_ordered_slots(candidate['tasks'], ordered, fixed_ids, states)
         for position, task in enumerate(candidate['tasks']):
             task['context']['position'] = position
-        conflicts = prerequisite_conflicts(candidate['tasks'], states)
+        conflicts = prerequisite_conflicts(candidate['tasks'], states, self.spaces.bound_topics(space))
         explanations = []
         topics_by_id = {t['id']: t for t in self.spaces.bound_topics(space)}
         before_positions = {t['id']: i for i, t in enumerate(plan['tasks'])}

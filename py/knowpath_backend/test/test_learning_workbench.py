@@ -43,9 +43,173 @@ def assessment(state, space_id, **links):
 
 def test_empty_workbench_and_progress(workbench):
     _, state, space_id, _, _ = workbench
-    assert state.get_workbench(space_id) == {"space_id": space_id, "current_plan": None, "active_session": None}
-    assert state.get_progress(space_id) == {"space_id": space_id, "rounds": [], "completed_count": 0,
+    assert state.get_workbench(space_id) == {"space_id": space_id, "current_plan": None, "active_session": None, "recoverable_assessments": []}
+    assert state.get_progress(space_id) == {"space_id": space_id, "current_plan_id": None, "current_plan_version": None, "rounds": [], "completed_count": 0,
                                            "total_count": 0, "next_cursor": None}
+
+
+def test_recoverable_index_is_read_only_safe_and_restores_four_of_five(workbench, monkeypatch):
+    import copy
+    factory, state, space_id, _, _ = workbench
+    plan = state.create_plan(space_id, {})
+    task = plan['tasks'][0]
+    old = assessment(state, space_id)
+    old = state.get_assessment(old['id'])
+    for question in old['questions']:
+        state.record_attempt(old['id'], {'answers': [{'question_id': question['id'], 'answer': 'A', 'expected_answer_revision': 0}]})
+    state.finalize_assessment(old['id'], {'allow_unanswered': False})
+    linked = assessment(state, space_id, plan_id=plan['id'], task_id=task['id'])
+    linked = state.get_assessment(linked['id'])
+    for question in linked['questions'][:4]:
+        state.record_attempt(linked['id'], {'answers': [{'question_id': question['id'], 'answer': 'A', 'expected_answer_revision': 0}]})
+    free = assessment(state, space_id)
+    queued = state.create_assessment(space_id, {'kind': 'practice', 'question_count': 5}, dispatch=lambda *args: None)
+    dead = state.create_assessment(space_id, {'kind': 'practice', 'question_count': 5}, dispatch=lambda *args: None)
+    state.run_service.fail(dead['run_id'], {'code': 'MODEL_UNAVAILABLE', 'message': 'failed'})
+    state = factory()
+    service = state.assessment_service
+    repo = service.repository
+    before = {name: copy.deepcopy(repo.records(name, lock=False)) for name in ['assessments', 'attempts', 'evidence']}
+    version = copy.deepcopy(state.get_space(space_id))
+    monkeypatch.setattr(service, 'get', lambda *args: pytest.fail('index must not disclose detail'))
+    monkeypatch.setattr(service, 'diagnostic', lambda *args: pytest.fail('index must not disclose diagnostic'))
+    rows = service.recoverable(space_id)
+    assert {row['id'] for row in rows} == {linked['id'], free['id'], queued['id']}
+    item = next(row for row in rows if row['id'] == linked['id'])
+    assert item['progress'] == {'answered': 4, 'target': 5}
+    assert (item['plan_id'], item['task_id']) == (plan['id'], task['id'])
+    assert item['updated_at']
+    assert service.recoverable(space_id, plan_id=plan['id'], task_id=task['id']) == [item]
+    assert state.get_workbench(space_id)['recoverable_assessments'] == rows
+    forbidden = {'answer', 'answer_key', 'rubric', 'questions', 'snapshot', 'question_feedback', 'source_text'}
+    def safe(value):
+        if isinstance(value, dict):
+            assert not forbidden.intersection(value)
+            for child in value.values(): safe(child)
+        elif isinstance(value, list):
+            for child in value: safe(child)
+    safe(rows)
+    assert service.recoverable(space_id) == rows
+    assert {name: repo.records(name, lock=False) for name in before} == before
+    assert state.get_space(space_id) == version
+    # A restarted service answers the same fifth question and repeated finalize
+    # retains the original evidence, including an older completed round.
+    fifth = linked['questions'][4]
+    state.record_attempt(linked['id'], {'answers': [{'question_id': fifth['id'], 'answer': 'A', 'expected_answer_revision': 0}]})
+    first = state.finalize_assessment(linked['id'], {'allow_unanswered': False})
+    evidence = copy.deepcopy(repo.records('evidence', space_id=space_id, lock=False))
+    assert factory().finalize_assessment(linked['id'], {'allow_unanswered': False}) == first
+    assert repo.records('evidence', space_id=space_id, lock=False) == evidence
+    assert old['id'] not in {row['id'] for row in service.recoverable(space_id)}
+
+
+def test_recoverable_filters_validate_space_and_task_ownership(workbench):
+    from knowpath_backend.learning.errors import DomainNotFound
+    _, state, space_id, _, _ = workbench
+    plan = state.create_plan(space_id, {})
+    other = state.create_space({'name': 'Other', 'material_ids': [state.get_space(space_id)['bindings'][0]['material_id']]})
+    with pytest.raises(DomainConflict):
+        state.assessment_service.recoverable(other['id'], plan_id=plan['id'])
+    with pytest.raises(DomainConflict):
+        state.assessment_service.recoverable(space_id, task_id=plan['tasks'][0]['id'])
+    with pytest.raises(DomainNotFound):
+        state.assessment_service.recoverable(space_id, plan_id=plan['id'], task_id='missing')
+    with pytest.raises(DomainNotFound):
+        state.assessment_service.recoverable('missing')
+
+
+def test_recovery_updated_at_tracks_commands_and_legacy_fallback_is_stable(workbench):
+    factory, state, space_id, _, _ = workbench
+    service = state.assessment_service
+    clock = ['2030-01-01T00:00:00+00:00']
+    service.clock = lambda: clock[0]
+    created = state.create_assessment(space_id, {'kind': 'retest', 'question_count': 5}, dispatch=lambda *args: None)
+    repo = service.repository
+    assert repo.get_record('assessments', created['id'])['updated_at'] == clock[0]
+    clock[0] = '2030-01-01T00:01:00+00:00'
+    service.generate(created['id'])
+    ready = repo.get_record('assessments', created['id'])
+    assert ready['updated_at'] == clock[0]
+    clock[0] = '2030-01-01T00:02:00+00:00'
+    state.record_attempt(created['id'], {'answers': [{'question_id': ready['questions'][0]['id'], 'answer': 'A', 'expected_answer_revision': 0}]})
+    assert repo.get_record('assessments', created['id'])['updated_at'] == clock[0]
+    clock[0] = '2030-01-01T00:03:00+00:00'
+    state.finalize_assessment(created['id'], {'allow_unanswered': True})
+    completed = repo.get_record('assessments', created['id'])
+    assert completed['updated_at'] == clock[0]
+    del completed['updated_at']
+    repo.put_record('assessments', completed)
+    projection = factory().assessment_service.recovery_projection(repo.get_record('assessments', created['id']))
+    assert projection['updated_at'] >= completed['result']['graded_at']
+    assert factory().assessment_service.recovery_projection(repo.get_record('assessments', created['id'])) == projection
+    assert 'updated_at' not in repo.get_record('assessments', created['id'])
+
+
+def test_recovery_excludes_all_terminal_states_and_preserves_other_space(workbench):
+    import copy
+    _, state, space_id, _, _ = workbench
+    service = state.assessment_service
+    repo = service.repository
+    for status in ('completed', 'failed', 'cancelled', 'stale'):
+        created = assessment(state, space_id)
+        row = repo.get_record('assessments', created['id'])
+        row['status'] = status
+        repo.put_record('assessments', row)
+    other = state.create_space({'name': 'Other', 'material_ids': [state.get_space(space_id)['bindings'][0]['material_id']]})
+    foreign = assessment(state, other['id'])
+    foreign_before = copy.deepcopy(repo.get_record('assessments', foreign['id']))
+    assert service.recoverable(space_id) == []
+    assert {row['id'] for row in service.recoverable(other['id'])} == {foreign['id']}
+    assert repo.get_record('assessments', foreign['id']) == foreign_before
+    waiting = state.create_assessment(space_id, {'kind': 'retest', 'question_count': 5}, dispatch=lambda *args: None)
+    service.clock = lambda: '2030-01-01T00:04:00+00:00'
+    state.run_service.request_cancel(waiting['run_id'])
+    service.generate(waiting['id'])
+    cancelled = repo.get_record('assessments', waiting['id'])
+    assert cancelled['status'] == 'cancelled'
+    assert cancelled['updated_at'] == '2030-01-01T00:04:00+00:00'
+    assert service.recoverable(space_id) == []
+
+
+@pytest.mark.parametrize("change", ["version", "plan"])
+def test_progress_current_plan_proof_comes_from_its_canonical_node_snapshot(workbench, monkeypatch, change):
+    _, state, space_id, _, clock = workbench
+    first = state.create_plan(space_id, {})
+    service = state.plan_sessions
+    canonical = service._canonical_nodes
+    def race_after_snapshot(plans, sessions):
+        nodes = canonical(plans, sessions)
+        # Commands also build notes from canonical nodes; inject this race only
+        # in the read under test, rather than recursively racing the command.
+        monkeypatch.setattr(service, "_canonical_nodes", canonical)
+        if change == "version":
+            state.update_task(first["id"], first["tasks"][0]["id"], {"status": "completed", "expected_plan_version": 1})
+        else:
+            clock[0] = "2026-09-02T10:00:00+00:00"
+            state.create_plan(space_id, {})
+        return nodes
+    monkeypatch.setattr(service, "_canonical_nodes", race_after_snapshot)
+    progress = state.get_progress(space_id)
+    assert (progress["current_plan_id"], progress["current_plan_version"]) == (first["id"], 1)
+    assert progress["completed_count"] == 0
+    latest = state.get_workbench(space_id)["current_plan"]
+    assert (latest["id"], latest["version"]) != (progress["current_plan_id"], progress["current_plan_version"])
+
+
+def test_progress_proof_survives_history_pagination_and_inherited_nodes(workbench):
+    _, state, space_id, _, clock = workbench
+    first = state.create_plan(space_id, {})
+    current = first
+    for day in range(2, 13):
+        clock[0] = f"2026-09-{day:02d}T10:00:00+00:00"
+        current = replan(state, space_id, current)
+    page = state.get_progress(space_id)
+    assert len(page["rounds"]) == 10
+    assert all(not row["nodes"] for row in page["rounds"])
+    assert (page["current_plan_id"], page["current_plan_version"]) == (current["id"], current["version"])
+    older = state.get_progress(space_id, cursor=page["next_cursor"])
+    assert (older["current_plan_id"], older["current_plan_version"]) == (current["id"], current["version"])
+    assert older["rounds"][-1]["nodes"][0]["plan_id"] == current["id"]
 
 
 def test_restart_restores_paused_active_session_and_stable_task_order(workbench):

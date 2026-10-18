@@ -24,6 +24,18 @@ def finish(state, assessment):
     state.finalize_assessment(assessment['id'], {'allow_unanswered': False})
 
 
+def test_note_completion_explains_generation_task_confirmation_and_mastery_separately(workbench):
+    _, state, sid, _, _ = workbench
+    _, _, assessment = completed(state, sid)
+    chapter = publish(state, assessment)
+    conditions = chapter['completion_conditions']
+    assert chapter['generation_status'] == '已生成'
+    assert conditions['task_confirmed'] is False
+    assert conditions['all_topics_mastered'] is False
+    assert conditions['topics'][0]['evidence_sufficiency']['missing']
+    assert chapter['status'] == 'IN_PROGRESS'
+
+
 def test_finished_session_waits_then_uses_real_time(workbench):
     _, state, sid, _, clock = workbench
     plan = state.create_plan(sid, {})

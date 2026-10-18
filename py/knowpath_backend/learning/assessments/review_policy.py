@@ -90,7 +90,7 @@ def independent_evidence(evidence, *, window=20):
     return list(families.values())[-window:]
 
 
-def evidence_sufficiency(selected, *, minimum_families=3, minimum_assessments=2, minimum_spacing_hours=24):
+def evidence_sufficiency(selected, *, minimum_families=3, minimum_assessments=2, minimum_spacing_hours=24, as_of=None):
     times = [observation_time(e) for e in selected]
     assessments = {e.get("assessment_id") for e in selected if e.get("assessment_id")}
     hours = (max(times) - min(times)).total_seconds() / 3600 if times else 0
@@ -103,7 +103,12 @@ def evidence_sufficiency(selected, *, minimum_families=3, minimum_assessments=2,
         missing.append("insufficient_observation_spacing")
     if not any(e.get("is_application") for e in selected):
         missing.append("no_application_observation")
+    earliest = min(times) + timedelta(hours=minimum_spacing_hours) if times else None
     return {"status": "unknown" if not selected else "insufficient" if missing else "sufficient",
+            "requirements": {"minimum_families": minimum_families, "minimum_assessments": minimum_assessments,
+                             "minimum_spacing_hours": minimum_spacing_hours, "application_required": True},
+            "earliest_retest_at": earliest.isoformat() if earliest else None,
+            "can_retest_now": earliest is None or as_of is not None and moment(as_of) >= earliest,
             "independent_families": len(selected), "distinct_assessments": len(assessments),
             "spacing_hours": hours, "has_application": any(e.get("is_application") for e in selected),
             "unknown_difficulty_count": sum(e.get("difficulty") not in {"easy", "medium", "hard"} for e in selected),
@@ -188,9 +193,10 @@ def project_mastery_state(state, evidence, *, revision_id, epoch, as_of, mastery
     result = deepcopy(state)
     eligible = effective_evidence(evidence, revision_id=revision_id, epoch=epoch, as_of=as_of)
     selected = independent_evidence(eligible, window=policy.window)
-    result["evidence_sufficiency"] = evidence_sufficiency(selected,
+    coverage = evidence_sufficiency(selected,
         minimum_families=policy.minimum_families, minimum_assessments=policy.minimum_assessments,
-        minimum_spacing_hours=policy.minimum_spacing_hours)
+        minimum_spacing_hours=policy.minimum_spacing_hours, as_of=as_of)
+    result["evidence_sufficiency"] = coverage
     if state.get("topic_revision_id") != revision_id or state.get("epoch", 0) != epoch:
         result.update(score_validity="stale", status="needs_review")
         return result
@@ -205,6 +211,7 @@ def project_mastery_state(state, evidence, *, revision_id, epoch, as_of, mastery
     for field in ("status", "mastery_score", "score_validity", "evidence_ids",
                   "independent_evidence_count", "error_tags", "evidence_sufficiency"):
         result[field] = rebuilt[field]
+    result['evidence_sufficiency'] = coverage
     return result
 
 

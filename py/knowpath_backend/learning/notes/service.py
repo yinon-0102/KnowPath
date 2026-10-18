@@ -188,6 +188,14 @@ class NotesService:
         sessions = {(b.get('learning_time') or {}).get('id'): b['learning_time'] for b in c['blocks'] if b.get('learning_time')}
         c['elapsed_seconds'] = sum(s['elapsed_seconds'] for s in sessions.values()) if sessions and all(s.get('elapsed_seconds') is not None for s in sessions.values()) else None
         self._present(c, generations)
+        nodes = self.plans._canonical_nodes(self.plans._space_plans(c['space_id']), self.plans._space_sessions(c['space_id']))
+        task = next((t for tasks in nodes.values() for t in tasks if t['node_id'] == c['node_id']), {})
+        states = self.assessments.state(c['space_id'])['items']
+        topics = [s for s in states if s['topic_id'] in c['topic_ids']]
+        c['completion_conditions'] = {'task_confirmed': task.get('status') == 'completed',
+            'all_topics_mastered': bool(c['topic_ids']) and len(topics) == len(c['topic_ids'])
+                and all(s['status'] == 'mastered' and s.get('score_validity') != 'stale' for s in topics),
+            'topics': topics}
         c['markdown'] = '\n\n'.join(b.get('display_markdown', b['markdown']) for b in c['blocks'])
         return dict(c, generations=[{k: copy.deepcopy(g.get(k)) for k in ('id', 'status', 'run_id', 'error', 'snapshot')} for g in generations])
 
@@ -418,10 +426,15 @@ class NotesService:
         with self.repository.transaction():
             try:
                 assessment = self.repository.get_record('assessments', g['assessment_id'])
-                self.spaces.repository.get(g['space_id'])
+                space = self.spaces.repository.get(g['space_id'])
                 current = self.repository.get_record('note_generations', identifier)
                 c = self.repository.get_record('note_chapters', g['chapter_id'])
             except DomainNotFound: return
+            from knowpath_backend.learning.materials.source_access import lock_source_dependencies
+            lock_source_dependencies(self.spaces.materials, [*space['bindings'],
+                *assessment['snapshot']['bindings'], *snapshot['sources'],
+                *(ref for result in snapshot['assessment_result'].get('question_results', [])
+                  for ref in result.get('source_refs', []))])
             if job is not None: job.check()
             if current['run_id'] != g['run_id'] or current['status'] != 'generating': return
             run = self.runs.get(g['run_id'])
@@ -456,8 +469,9 @@ class NotesService:
                     source_text = '\n'.join(f"- [{r['chunk_id']}](/api/v1/materials/{r['material_id']}/versions/{r['material_version_id']}/chunks/{r['chunk_id']}?space_id={c['space_id']})" for r in refs)
                     core = '\n\n'.join(x['markdown'] for x in items) or '本次暂无独立验证的核心知识。'
                     corrections_text = '\n'.join('- 纠偏记录：' + assessment['id'] + ':' + existing_evidence[x['evidence_id']]['question_id'] for x in valid_corrections) or '本次暂无已确认纠偏。'
-                    pending = '\n'.join('- ' + x['question_id'] for x in result_rows if x['verdict'] != 'correct') or '以当前掌握状态和后续独立复测为准。'
-                    markdown = f"## 学习范围\n{c['title']}\n\n## 核心知识\n{core}\n\n## 本次学习时间\n{time_text}\n\n## 测评结果\n{score_text}\n\n## 理解纠偏\n{corrections_text}\n\n## 待巩固内容\n{pending}\n\n## 验收情况\n章节完成状态由任务与当前版本全部主题的后端掌握状态确定。\n\n## 来源\n{source_text}"
+                    pending = '\n'.join('- ' + x['question_id'] for x in result_rows if x['verdict'] in {'incorrect', 'partial'}) or '本次暂无已确认错误，仍以当前掌握状态和后续独立复测为准。'
+                    unverified = '\n'.join('- ' + x['question_id'] for x in result_rows if x['verdict'] == 'unverified') or '本次暂无待核验作答。'
+                    markdown = f"## 学习范围\n{c['title']}\n\n## 核心知识\n{core}\n\n## 本次学习时间\n{time_text}\n\n## 测评结果\n{score_text}\n\n## 理解纠偏\n{corrections_text}\n\n## 待巩固内容\n{pending}\n\n## 待核验内容\n{unverified}\n\n## 验收情况\n章节完成状态由任务明确确认与当前版本全部主题的后端掌握状态确定；笔记生成不代表已掌握。\n\n## 来源\n{source_text}"
                     from .presentation import readable_markdown
                     markdown = readable_markdown(markdown, snapshot['assessment_result'], snapshot.get('questions', []), refs, assessment['id'])
                     core_items = [dict(x, question_id=existing_evidence[x['evidence_id']]['question_id'], source_refs=existing_evidence[x['evidence_id']]['source_refs']) for x in items]

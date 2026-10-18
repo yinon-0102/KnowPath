@@ -25,6 +25,59 @@ def test_initial_default_follows_source_not_topic_hash(ordered_backend):
     assert plan['config']['order_mode'] == 'source'
     assert plan['config']['order_policy_version'] == 'order-v1'
 
+
+def test_new_default_canonical_scope_has_one_task_per_unit_in_all_order_modes(ordered_backend):
+    state = LearningState(ordered_backend)
+    material = state.material_service.create(filename='units.md', content=b'# Chapter\n\nIntroduction.\n\n## A\n\nA fact.\n\n## B\n\nB fact.', idempotency_key='default-units')
+    space = state.create_space({'material_ids': [material.material.id], 'weekly_minutes': 120})
+    assert space['scope_mode'] == 'all'
+    assert len(space['topic_ids']) == 3
+    for mode in ('source', 'adaptive'):
+        plan = state.create_plan(space['id'], {'order_mode': mode})
+        assert len(plan['tasks']) == 3
+        assert {t['topic_ids'][0] for t in plan['tasks']} == set(space['topic_ids'])
+    reordered = state.update_plan_order(plan['id'], {'expected_plan_version': 1, 'order_mode': 'custom',
+        'ordered_node_ids': [t['node_id'] for t in reversed(plan['tasks'])]})
+    assert len(reordered['tasks']) == 3
+    assert {t['topic_ids'][0] for t in reordered['tasks']} == set(space['topic_ids'])
+
+
+def test_selected_legacy_alias_still_orders_before_its_canonical_dependent():
+    from knowpath_backend.learning.plans.ordering import order_topics
+    a = {'id': 'a', 'name': 'A', 'source_refs': [{'material_id': 'm', 'line_start': 2}]}
+    alias = dict(a, id='alias_a', canonical_topic_id='a')
+    b = {'id': 'b', 'name': 'B', 'prerequisites': ['a'], 'source_refs': [{'material_id': 'm', 'line_start': 1}]}
+    ordered = order_topics([alias, b], {}, 'source', ['m'], '2026-10-18T00:00:00+00:00', all_topics=[a, alias, b])
+    assert [t['id'] for t in ordered] == ['alias_a', 'b']
+
+
+@pytest.mark.parametrize('validity', ['valid', 'stale', 'missing_revision', 'wrong_revision'])
+def test_custom_preview_and_apply_use_current_revision_mastery_for_prerequisites(validity, monkeypatch):
+    from knowpath_backend.learning.assessments.service import revision
+    state, space_id, _ = seed(InMemoryMaterialRepository())
+    bound = state.space_service.bound_topics
+    def dependencies(space):
+        topics = bound(space)
+        canonical = [t for t in topics if t['id'] == t['canonical_topic_id']]
+        for t in topics:
+            if t['canonical_topic_id'] == canonical[-1]['id']: t['prerequisites'] = [canonical[0]['id']]
+        return topics
+    monkeypatch.setattr(state.space_service, 'bound_topics', dependencies)
+    plan = state.create_plan(space_id, {})
+    parent = next(t for t in dependencies(state.space_service.get(space_id)) if t['id'] == plan['tasks'][0]['topic_ids'][0])
+    row = {'id': 'mastery', 'space_id': space_id, 'topic_id': parent['id'], 'status': 'mastered',
+           'score_validity': 'stale' if validity == 'stale' else 'current', 'topic_revision_id': revision(parent)}
+    if validity == 'missing_revision': row.pop('topic_revision_id')
+    if validity == 'wrong_revision': row['topic_revision_id'] = 'old-revision'
+    state.graph_service.repository.put_record('states', row)
+    payload = {'expected_plan_version': 1, 'order_mode': 'custom', 'ordered_node_ids': [t['node_id'] for t in reversed(plan['tasks'])]}
+    preview = state.preview_plan_order(plan['id'], payload)
+    assert preview['can_apply'] is (validity == 'valid')
+    if validity == 'valid':
+        assert state.update_plan_order(plan['id'], payload)['version'] == 2
+    else:
+        with pytest.raises(DomainConflict): state.update_plan_order(plan['id'], payload)
+
 def test_custom_preview_is_readonly_and_apply_preserves_identity(ordered_backend):
     state, space_id, _ = seed(ordered_backend)
     plan = state.create_plan(space_id, {})
@@ -79,7 +132,7 @@ def test_custom_preference_inherited_by_local_replan(ordered_backend):
     assert [t['node_id'] for t in rebuilt['tasks']] == [t['node_id'] for t in ordered['tasks']]
 
 def test_adaptive_prioritizes_weakness_and_source_breaks_ties(ordered_backend, monkeypatch):
-    state, space_id, topics = seed(ordered_backend)
+    state, space_id, topics = seed(ordered_backend, legacy=True)
     target = topics[-1]['id']
     monkeypatch.setattr(state.plan_sessions, '_planning_states', lambda *args, **kwargs: {target: {'status': 'unstable'}})
     source = state.create_plan(space_id, {})
@@ -92,7 +145,7 @@ def test_adaptive_prioritizes_weakness_and_source_breaks_ties(ordered_backend, m
 
 
 def test_custom_prerequisite_conflict_preview_and_rollback(ordered_backend, monkeypatch):
-    state, space_id, _ = seed(ordered_backend)
+    state, space_id, _ = seed(ordered_backend, legacy=True)
     bound = state.space_service.bound_topics
     def prerequisites(space):
         topics = bound(space)
@@ -147,7 +200,7 @@ def test_multiple_materials_follow_posted_and_explicit_order(ordered_backend):
 
 
 def test_completed_skipped_and_future_deferred_preserve_metadata(ordered_backend):
-    state, space_id, _ = seed(ordered_backend)
+    state, space_id, _ = seed(ordered_backend, legacy=True)
     plan = state.create_plan(space_id, {})
     tasks = plan['tasks']
     state.update_task(plan['id'], tasks[0]['id'], {'expected_plan_version': 1, 'status': 'completed', 'note': 'keep note'})
@@ -228,7 +281,7 @@ def test_source_adjusts_movable_tasks_before_a_fixed_active_dependent():
 def test_apply_schedule_conflict_rolls_back_plan_and_replay(ordered_backend, monkeypatch, count, constraint):
     from dataclasses import replace
     from datetime import date, timedelta
-    state, space_id, _ = seed(ordered_backend)
+    state, space_id, _ = seed(ordered_backend, legacy=True)
     state.update_profile(space_id, {"target_date": (date.today() + timedelta(days=2)).isoformat(), "expected_version": 1})
     topics = state.plan_sessions._ordered_topics(state.space_service.repository.get(space_id), {})
     states = {t["id"]: {"status": "unstable"} for t in topics[2:]}
@@ -285,7 +338,7 @@ def test_active_session_from_base_plan_fixes_inherited_node(ordered_backend):
     assert state.get_workbench(space_id)['active_session']['id'] == active['id']
 
 def test_custom_preference_appends_new_and_excludes_removed_topics(ordered_backend):
-    state, space_id, topics = seed(ordered_backend)
+    state, space_id, topics = seed(ordered_backend, legacy=True)
     functions = [t['id'] for t in topics if t['name'] == 'Functions']
     loops = [t['id'] for t in topics if t['name'] == 'Loops']
     state.set_scope(space_id, {'topic_ids': functions, 'expected_version': 2})
@@ -311,7 +364,7 @@ def test_label_uses_earliest_known_source_ref():
 def test_custom_conflict_has_legal_readonly_suggestion(ordered_backend, monkeypatch):
     from sqlalchemy import select
     from knowpath_backend.learning.persistence.db import Base
-    state, space_id, _ = seed(ordered_backend)
+    state, space_id, _ = seed(ordered_backend, legacy=True)
     bound = state.space_service.bound_topics
     def dependencies(space):
         topics = bound(space)
@@ -349,7 +402,7 @@ def test_custom_conflict_has_legal_readonly_suggestion(ordered_backend, monkeypa
 
 
 def test_deferred_prerequisite_explains_no_feasible_suggestion(ordered_backend, monkeypatch):
-    state, space_id, _ = seed(ordered_backend)
+    state, space_id, _ = seed(ordered_backend, legacy=True)
     bound = state.space_service.bound_topics
     def dependencies(space):
         topics = bound(space)
@@ -385,7 +438,7 @@ def test_snapshot_locator_label_requires_matching_bound_version():
     assert source_label(topic, ['m'], positions) == '原文位置未记录'
 
 def test_custom_node_interleaving_survives_unchanged_local_replan(ordered_backend):
-    state, space_id, _ = seed(ordered_backend)
+    state, space_id, _ = seed(ordered_backend, legacy=True)
     plan = state.create_plan(space_id, {})
     expected = [plan['tasks'][i]['node_id'] for i in [0, 2, 1, 3]]
     ordered = state.update_plan_order(plan['id'], {'expected_plan_version': 1, 'order_mode': 'custom', 'ordered_node_ids': expected})
@@ -395,7 +448,7 @@ def test_custom_node_interleaving_survives_unchanged_local_replan(ordered_backen
 
 def test_suggestion_checks_source_schedule_capacity(ordered_backend, monkeypatch):
     from dataclasses import replace
-    state, space_id, _ = seed(ordered_backend)
+    state, space_id, _ = seed(ordered_backend, legacy=True)
     bound = state.space_service.bound_topics
     # Keep source locators distinct so source task durations alternate 20/15.
     original = state.plan_sessions._ordered_topics(state.space_service.repository.get(space_id), {})

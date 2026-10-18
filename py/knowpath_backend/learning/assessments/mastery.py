@@ -46,7 +46,7 @@ def aggregate(topic_id, revision_id, evidence, previous, state_version, assessed
     epoch = evidence[0].get("epoch", 0) if evidence else previous.get("epoch", 0)
     schedule = review_schedule(evidence, revision_id=revision_id, epoch=epoch, as_of=cutoff)
     sufficiency = evidence_sufficiency(selected, minimum_families=policy.minimum_families,
-        minimum_assessments=policy.minimum_assessments, minimum_spacing_hours=policy.minimum_spacing_hours)
+        minimum_assessments=policy.minimum_assessments, minimum_spacing_hours=policy.minimum_spacing_hours, as_of=cutoff)
     return {"topic_id": topic_id, "topic_revision_id": revision_id,
             "mastery_score": score, "score_validity": "current" if score is not None else "unverified",
             "status": status, "evidence_ids": [e["id"] for e in selected],

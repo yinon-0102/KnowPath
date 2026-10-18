@@ -1,7 +1,7 @@
 """Versioned schedule application, activity and recommendation contracts."""
 from typing import Annotated, Literal
 from fastapi import APIRouter, Header
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from ..contract import ContractRoute
 from ..dependencies import LearningStateDep
 from .notes import response
@@ -36,8 +36,18 @@ class Activity(Request):
 
 
 class AnswerActivity(Request):
-    question_id: str = Field(min_length=1)
-    event: Literal['shown','heartbeat','pause','resume','hidden','visible','disconnect','reconnect','waiting','ready'] = 'heartbeat'
+    question_id: str | None = Field(default=None, min_length=1)
+    phase_id: str | None = Field(default=None, min_length=1, max_length=128)
+    event: Literal['shown','heartbeat','pause','resume','hidden','visible','disconnect','reconnect','waiting','ready','assessment_end'] = 'heartbeat'
+
+    @model_validator(mode='after')
+    def identity(self):
+        if self.event == 'assessment_end':
+            if not self.phase_id and not self.question_id:
+                raise ValueError('结束测评阶段必须提供阶段或历史题目标识')
+        elif not self.question_id:
+            raise ValueError('题目活动必须提供题目标识')
+        return self
 
 
 Key = Annotated[str | None, Header(alias='Idempotency-Key')]

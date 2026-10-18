@@ -59,10 +59,10 @@ def readable_markdown(markdown, facts, questions, refs, assessment_id):
                 qid = content.removeprefix(prefix)
                 if content.startswith(prefix) and qid in labels:
                     content = f'- {labels[qid]} — 已记录作答纠正，说明见本章纠偏内容'
-            elif heading.startswith('## 待巩固内容'):
+            elif heading.startswith(('## 待巩固内容', '## 待核验内容')):
                 qid = content.removeprefix('- ')
                 if content.startswith('- ') and qid in labels:
-                    content = f'- {labels[qid]} — 需要巩固'
+                    content = f'- {labels[qid]} — ' + ('待核验，不计为错误或已掌握' if result_map[qid].get('verdict') == 'unverified' else '需要巩固')
             elif heading.startswith('## 来源'):
                 link = re.fullmatch(r'- \[([^\]]+)\]\(/api/v1/materials/[^\s)]+\)', content)
                 if link and link[1] in sources:
@@ -73,4 +73,4 @@ def readable_markdown(markdown, facts, questions, refs, assessment_id):
             output.append(content + newline)
         return heading + ''.join(output)
 
-    return re.sub(r'(^## (?:测评结果|理解纠偏|待巩固内容|来源)\n)(.*?)(?=^## |\Z)', section, markdown, flags=re.M | re.S)
+    return re.sub(r'(^## (?:测评结果|理解纠偏|待巩固内容|待核验内容|来源)\n)(.*?)(?=^## |\Z)', section, markdown, flags=re.M | re.S)

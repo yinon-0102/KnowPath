@@ -57,6 +57,7 @@ def _requires_idempotency(path: str) -> bool:
     return not (
         path.startswith("/api/v1/health")
         or path.startswith("/api/v1/plans/") and path.endswith("/order-preview") and len(path.split("/")) == 6
+        or path.startswith("/api/v1/learning-spaces/") and path.endswith("/plan-preview") and len(path.split("/")) == 6
         or path.startswith("/api/v1/runs/") and path.endswith("/cancel")
         or path.startswith("/api/v1/assessments/") and path.endswith("/finalize")
         or path.startswith("/api/v1/sessions/") and path.endswith("/finish")
