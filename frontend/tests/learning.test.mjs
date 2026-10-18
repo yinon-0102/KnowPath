@@ -1,7 +1,18 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createLearningController, renderLearning, comparisonPayload, assessmentTopics, assessmentPayload } from '../src/learning.js';
+import { createLearningController, renderLearning, comparisonPayload, assessmentTopics, assessmentPayload, assessmentTaskCompletion, renderCompletionRecovery } from '../src/learning.js';
 import { createApi, ApiError } from '../src/api.js';
+
+test('completion recovery persists a usable action with distinct saving, unknown and saved messages', () => {
+  const target = { spaceId: 's', planId: 'p', taskId: 't', source: 'manual' };
+  for (const [status, phrase, label] of [['saving', '正在保存', '查询保存结果'], ['querying', '正在查询', '查询保存结果'], ['unknown', '结果待确认', '查询保存结果'], ['navigation_pending', '已完成', '继续学习']]) {
+    const html = renderCompletionRecovery([{ target, entry: { status, busy: status === 'saving' || status === 'querying', pending: status === 'unknown' ? {} : null, navigationPending: status === 'navigation_pending' } }]);
+    assert.match(html, new RegExp(phrase)); assert.match(html, new RegExp(label)); assert.match(html, /data-action="completion-recover"/);
+    if (status === 'saving' || status === 'querying') assert.match(html, /disabled/);
+    if (status === 'unknown') assert.match(html, /data-action="completion-retry"/);
+  }
+  assert.equal(renderCompletionRecovery([]), '');
+});
 
 test('concurrent exposure exclusions and history limits are explained without leaking other questions', () => {
   const html = renderLearning({ mode: 'live', space: { id: 's1', name: 'Space' }, state: {
@@ -19,6 +30,300 @@ test('concurrent exposure exclusions and history limits are explained without le
 const memory = () => { const map = new Map(); return { getItem: k => map.get(k) ?? null, setItem: (k, v) => map.set(k, v) }; };
 const trace = (id = 'q1') => ({ assessment_id: 'a1', adaptive: true, status: 'in_progress', policy_version: 'adaptive-v1', current_question: id ? { id, type: 'single_choice', prompt: 'Which definition?', options: [{ id: 'A', text: 'Definition' }, { id: 'B', text: 'Alternative' }] } : null, progress: { answered: id === 'q1' ? 0 : id ? 1 : 2, presented: id === 'q1' ? 1 : 2, target: 5 }, decisions: [], hypotheses: [], completion_reason: id ? null : 'no_unseen_question_family' });
 const context = () => ({ mode: 'live', spaceId: 's1', active: true });
+
+const recoveryRound = (id, extra = {}) => ({ id, space_id: 's1', kind: 'retest', status: 'in_progress', question_count: 5,
+  feedback_policy: 'after_round', questions: Array.from({ length: 5 }, (_, i) => ({ id: `${id}-q${i + 1}`, type: 'single_choice', options: [{ id: 'A', text: 'A' }] })),
+  answers: Array.from({ length: 4 }, (_, i) => ({ question_id: `${id}-q${i + 1}` })), ...extra });
+
+test('empty storage recovers the server round at four of five and explicit selection checks owner', async () => {
+  let creates = 0;
+  const round = recoveryRound('a', { plan_id: 'p', task_id: 't', learning_session_id: 'ss' });
+  const api = { recoverableAssessments: async () => ({ items: [{ id: 'a', space_id: 's1' }] }), assessment: async () => round,
+    createAssessment: async () => { creates++; } };
+  const controller = createLearningController({ api, context, storage: memory() });
+  await controller.recover({ assessmentId: 'a', planId: 'p', taskId: 't', learningSessionId: 'ss' });
+  assert.equal(controller.snapshot().assessmentId, 'a');
+  assert.equal(controller.snapshot().diagnostic.current_question.id, 'a-q5');
+  assert.deepEqual(controller.snapshot().diagnostic.progress, { answered: 4, target: 5 });
+  assert.equal(controller.snapshot().answerDraftKey.includes('p'), true);
+  assert.equal(creates, 0);
+  await controller.recover({ assessmentId: 'a', taskId: 'other', planId: 'p' });
+  assert.match(controller.snapshot().error, /归属|任务/);
+  assert.equal(controller.snapshot().diagnostic, null);
+});
+
+test('multiple server rounds require selection and same-space late answers preserve both round intents', async () => {
+  const storage = memory(); let release, sending;
+  const waiting = new Promise(resolve => { sending = resolve; });
+  const api = { recoverableAssessments: async () => ({ items: ['a', 'b'].map(id => ({ id, space_id: 's1', status: 'in_progress', progress: { answered: 4, target: 5 } })) }),
+    assessment: async id => recoveryRound(id),
+    recordAttempt: async () => { sending(); return new Promise(resolve => { release = resolve; }); } };
+  const controller = createLearningController({ api, context, storage });
+  await controller.recover();
+  assert.equal(controller.snapshot().assessmentId, '');
+  assert.equal(controller.snapshot().recoverableAssessments.length, 2);
+  assert.match(renderLearning({ space: { id: 's1' }, state: controller.snapshot() }), /data-action="learning-select"/);
+  await controller.resume('a'); controller.draftAnswer('A');
+  const pending = controller.answer('A'); await waiting;
+  await controller.resume('b'); controller.draftAnswer('A');
+  release({}); await pending;
+  assert.equal(controller.snapshot().assessmentId, 'b');
+  assert.equal(controller.snapshot().pendingAnswer, null);
+  assert.equal(controller.snapshot().answerDraft.assessmentId, 'b');
+  await controller.resume('a');
+  assert.equal(controller.snapshot().pendingAnswer.acknowledged, true);
+  await controller.resume('b');
+  assert.equal(controller.snapshot().answerDraft.assessmentId, 'b');
+});
+
+test('only confirmed pre-create rejection unlocks a new body and key', async () => {
+  for (const error of [new ApiError('invalid', 422, 'INVALID_REQUEST'), new ApiError('scope', 409, 'TOPIC_OUT_OF_SCOPE')]) {
+    const calls = [];
+    const controller = createLearningController({ context, storage: memory(), api: {
+      space: async () => ({ id: 's1' }), topics: async () => [{ id: 't', source_refs: [{}] }],
+      createAssessment: async (_, body, options) => { calls.push({ body, key: options.key }); throw error; },
+    } });
+    await controller.loadKnowledge(); await controller.start({ kind: 'practice', count: '5', type: 'single_choice' });
+    await controller.start({ kind: 'retest', count: '7', type: 'short_answer' });
+    assert.notEqual(calls[0].key, calls[1].key);
+    assert.equal(calls[1].body.question_count, 7); assert.equal(calls[1].body.kind, 'retest');
+  }
+});
+
+test('unknown create outcomes keep original immutable request across settings, route and reload', async () => {
+  for (const error of [new ApiError('network', 0, 'NETWORK'), new ApiError('server', 503, 'HTTP_ERROR'), new ApiError('conflict', 409, 'IDEMPOTENCY_CONFLICT'), null]) {
+    const calls = [], storage = memory(); let routeKey = 'one';
+    const api = { createAssessment: async (_, body, options) => { calls.push({ body: structuredClone(body), key: options.key }); if (error) throw error; return {}; } };
+    const controller = createLearningController({ api, storage, context: () => ({ ...context(), routeKey }) });
+    await controller.start(); routeKey = 'two'; controller.sync();
+    await controller.start(); await createLearningController({ api, storage, context }).start();
+    assert.deepEqual(calls[0], calls[1]); assert.deepEqual(calls[1], calls[2]);
+    assert.match(renderLearning({ space: { id: 's1' }, state: controller.snapshot() }), /创建结果尚未确认/);
+  }
+});
+
+test('unknown creation retries skip fresh owner validation and keep the original body and key', async () => {
+  let ownerValidations = 0, routeKey = 'task-a'; const calls = [];
+  const controller = createLearningController({ context: () => ({ ...context(), routeKey, assessmentContext: null }), storage: memory(),
+    prepareCreation: async () => {
+      ownerValidations++;
+      if (ownerValidations > 1) throw new Error('current plan no longer allows creation');
+      return { space_id: 's1', plan_id: 'p', task_id: 'a', learning_session_id: 'session', topic_ids: ['topic'] };
+    }, api: { space: async () => ({ id: 's1', topic_ids: ['topic'] }), topics: async () => [{ id: 'topic', source_refs: [{}] }],
+      createAssessment: async (_, body, options) => { calls.push({ body: structuredClone(body), key: options.key }); throw new ApiError('unknown', 0, 'NETWORK'); } } });
+  await controller.loadKnowledge(); await controller.start({ kind: 'practice', count: '5', type: 'single_choice' });
+  routeKey = 'task-b'; controller.sync();
+  await controller.start({ kind: 'retest', count: '7', type: 'short_answer' });
+  assert.equal(ownerValidations, 1); assert.equal(calls.length, 2); assert.deepEqual(calls[0], calls[1]);
+  assert.equal(calls[1].body.task_id, 'a'); assert.equal(calls[1].body.question_count, 5);
+});
+
+test('unknown accepted creation is reconciled by exact ID before starting a new intent after recovered completion', async () => {
+  const storage = memory(), calls = []; let fail = true;
+  const api = { space: async () => ({ id: 's1' }), topics: async () => [{ id: 'topic', source_refs: [{}] }],
+    createAssessment: async (_, body, options) => {
+      calls.push({ body: structuredClone(body), key: options.key });
+      if (fail) { fail = false; throw new ApiError('accepted but lost', 503, 'HTTP_ERROR'); }
+      return { assessment_id: calls.length < 3 ? 'a' : 'b', run_id: 'run' };
+    }, waitRun: async () => {},
+    recoverableAssessments: async () => ({ items: [{ id: 'a', space_id: 's1' }] }),
+    assessment: async id => recoveryRound(id, { status: id === 'a' ? 'completed' : 'in_progress' }),
+    assessmentResult: async id => ({ assessment_id: id, question_results: [] }),
+  };
+  const first = createLearningController({ api, context, storage }); await first.start();
+  const restored = createLearningController({ api, context, storage }); await restored.loadKnowledge(); await restored.recover();
+  assert.equal(restored.snapshot().assessmentId, 'a');
+  await restored.start({ kind: 'practice', count: '7', type: 'single_choice' });
+  assert.equal(calls.length, 3); assert.deepEqual(calls[0], calls[1]);
+  assert.notEqual(calls[1].key, calls[2].key); assert.equal(calls[2].body.question_count, 7);
+  assert.equal(restored.snapshot().assessmentId, 'b');
+});
+
+test('reconciling an unknown creation that is now explicitly rejected releases its original intent', async () => {
+  let reject = true; const calls = [];
+  const controller = createLearningController({ context, storage: memory(), api: {
+    space: async () => ({ id: 's1' }), topics: async () => [{ id: 'topic', source_refs: [{}] }],
+    createAssessment: async (_, body, options) => { calls.push({ body, key: options.key }); throw reject
+      ? new ApiError('unknown', 0, 'NETWORK') : new ApiError('outside', 422, 'TOPIC_OUT_OF_SCOPE'); },
+    assessment: async id => recoveryRound(id, { status: 'completed' }), assessmentResult: async () => ({ question_results: [] }),
+  } });
+  await controller.loadKnowledge(); await controller.start({ count: '5', type: 'single_choice', kind: 'practice' });
+  await controller.resume('c'); reject = false;
+  await controller.start({ count: '7', type: 'single_choice', kind: 'practice' });
+  await controller.start({ count: '8', type: 'single_choice', kind: 'practice' });
+  assert.equal(calls[0].key, calls[1].key); assert.notEqual(calls[1].key, calls[2].key);
+  assert.equal(calls[2].body.question_count, 8);
+});
+
+test('setup initialization gate and revision keep late defaults from replacing a user setting', async () => {
+  let setupReady = false, creates = 0;
+  const controller = createLearningController({ storage: memory(), context: () => ({ ...context(), setupReady }),
+    api: { createAssessment: async () => { creates++; return {}; } } });
+  await controller.start(); assert.equal(creates, 0); assert.match(controller.snapshot().error, /初始化/);
+  const revision = controller.snapshot().setupRevision;
+  controller.configure({ kind: 'retest', count: '7' });
+  setupReady = true; controller.configureDefaults({ kind: 'practice' }, revision);
+  assert.equal(controller.snapshot().setup.kind, 'retest'); assert.equal(controller.snapshot().setup.count, '7');
+});
+
+test('failed initialization leaves a usable recovery retry while creation stays disabled', () => {
+  const controller = createLearningController({ context: () => ({ ...context(), setupReady: false }), api: {}, storage: memory() });
+  controller.initializeError(new Error('temporary offline'));
+  const html = renderLearning({ space: { id: 's1' }, state: controller.snapshot() });
+  assert.match(html, /data-action="learning-initialize"(?![^>]*disabled)/);
+  assert.match(html, /id="learning-start-form"[^]*?<fieldset disabled/);
+});
+
+test('a late accepted create cannot replace another same-space round or its pending answer', async () => {
+  let release; const storage = memory();
+  const api = { createAssessment: async () => new Promise(resolve => { release = resolve; }), assessment: async id => recoveryRound(id),
+    recordAttempt: async () => { throw new ApiError('unknown', 0, 'NETWORK'); } };
+  const controller = createLearningController({ api, context, storage });
+  const creating = controller.start();
+  await controller.resume('b'); await controller.answer('A');
+  release({ assessment_id: 'a', run_id: 'r' }); await creating;
+  assert.equal(controller.snapshot().assessmentId, 'b'); assert.equal(controller.snapshot().pendingAnswer.answer, 'A');
+  await controller.resume('a'); assert.equal(controller.snapshot().diagnostic.current_question.id, 'a-q5');
+  await controller.resume('b'); assert.equal(controller.snapshot().pendingAnswer.answer, 'A');
+});
+
+test('late create receipt preserves an already recovered same-round answer intent', async () => {
+  let release;
+  const controller = createLearningController({ context, storage: memory(), api: {
+    createAssessment: async () => new Promise(resolve => { release = resolve; }), assessment: async id => recoveryRound(id),
+    recordAttempt: async () => { throw new ApiError('unknown', 0, 'NETWORK'); },
+  } });
+  const creating = controller.start(); await controller.resume('a'); await controller.answer('A');
+  release({ assessment_id: 'a', run_id: 'r' }); await creating;
+  await controller.resume(); assert.equal(controller.snapshot().pendingAnswer.answer, 'A');
+});
+
+test('late shown activity response cannot restore the departed round pending answer into the new round', async () => {
+  let release, slow = false;
+  const controller = createLearningController({ context, storage: memory(), api: {
+    assessment: async id => recoveryRound(id), recordAttempt: async () => { throw new ApiError('unknown', 0, 'NETWORK'); },
+    assessmentActivity: async (id, body) => id === 'a' && slow && body.event === 'shown'
+      ? new Promise(resolve => { release = resolve; }) : {},
+  } });
+  await controller.resume('a'); await controller.answer('A'); await controller.resume('b');
+  slow = true; const refreshing = controller.resume('a');
+  await new Promise(resolve => setImmediate(resolve));
+  await controller.resume('b'); release({}); await refreshing;
+  assert.equal(controller.snapshot().assessmentId, 'b'); assert.equal(controller.snapshot().pendingAnswer, null);
+  controller.dispose();
+});
+
+test('an old answer receipt cannot replace a newer pending question after leaving and returning to the same round', async () => {
+  let release, reads = 4, sends = 0;
+  const api = { assessment: async id => recoveryRound(id, { question_count: 6,
+      questions: Array.from({ length: 6 }, (_, i) => ({ id: `${id}-q${i + 1}`, type: 'single_choice', options: [{ id: 'A', text: 'A' }] })),
+      answers: Array.from({ length: reads }, (_, i) => ({ question_id: `${id}-q${i + 1}` })) }),
+    recordAttempt: async () => { if (++sends === 1) return new Promise(resolve => { release = resolve; }); throw new ApiError('unknown', 0, 'NETWORK'); } };
+  const controller = createLearningController({ context, storage: memory(), api });
+  await controller.resume('a'); const original = controller.answer('A');
+  await controller.resume('b'); reads = 5; await controller.resume('a'); await controller.answer('A');
+  const current = structuredClone(controller.snapshot().pendingAnswer);
+  release({}); await original; await controller.resume();
+  assert.deepEqual(controller.snapshot().pendingAnswer, current);
+  assert.equal(current.questionId, 'a-q6');
+});
+
+test('late GET and finalize from one round cannot replace another same-space round', async () => {
+  let releaseGet, releaseFinalize, slow = false;
+  const controller = createLearningController({ context, storage: memory(), api: {
+    assessment: async id => slow && id === 'a' ? new Promise(resolve => { releaseGet = resolve; }) : recoveryRound(id, { answers: Array.from({ length: 5 }, (_, i) => ({ question_id: `${id}-q${i + 1}` })) }),
+    finalizeAssessment: async () => new Promise(resolve => { releaseFinalize = resolve; }),
+  } });
+  await controller.resume('a');
+  const finalizing = controller.finalize(); await controller.resume('b');
+  releaseFinalize({ run_id: 'done' }); await finalizing;
+  assert.equal(controller.snapshot().assessmentId, 'b'); assert.equal(controller.snapshot().pendingFinalize, null);
+  slow = true; const oldGet = controller.resume('a'); await controller.resume('b');
+  releaseGet(recoveryRound('a')); await oldGet;
+  assert.equal(controller.snapshot().assessmentId, 'b'); assert.equal(controller.snapshot().diagnostic.current_question, null);
+});
+
+test('new tab recovers generating run and completed lost-finalize response using the same ID', async () => {
+  const reads = [], polls = []; let status = 'generating';
+  const api = { assessment: async id => { reads.push(id); return recoveryRound(id, { status, run_id: 'original-run' }); },
+    waitRun: async id => { polls.push(id); status = 'ready'; },
+    assessmentResult: async id => ({ assessment_id: id, question_results: [{ evidence_id: 'original-evidence' }] }),
+    finalizeAssessment: async () => { throw new Error('recovery GET must not finalize'); } };
+  const controller = createLearningController({ api, context, storage: memory() });
+  await controller.recover({ assessmentId: 'a' }); assert.deepEqual(polls, ['original-run']);
+  assert.equal(controller.snapshot().diagnostic.current_question.id, 'a-q5');
+  status = 'completed';
+  await createLearningController({ api, context, storage: memory() }).recover({ assessmentId: 'a' });
+  assert.ok(reads.every(id => id === 'a'));
+});
+
+test('new tab recovers a pending generation and cancels the original sealed run', async () => {
+  const cancellations = []; let cancelled = false, creates = 0;
+  const controller = createLearningController({ context: () => ({ ...context(), setupReady: false }), storage: memory(), api: {
+    assessment: async id => ({ id, space_id: 's1', status: cancelled ? 'cancelled' : 'generating', run_id: 'original-run' }),
+    waitRun: async id => { throw new ApiError(cancelled ? 'cancelled' : 'still generating', 200,
+      cancelled ? 'RUN_CANCELLED' : 'RUN_PENDING', { runId: id, runStatus: cancelled ? 'cancelled' : 'running' }); },
+    cancelRun: async id => { cancellations.push(id); cancelled = true; },
+    createAssessment: async () => { creates++; },
+  } });
+  await controller.recover({ assessmentId: 'a' });
+  assert.equal(controller.snapshot().assessmentStatus, 'generating'); assert.match(controller.snapshot().error, /仍在生成/);
+  assert.equal(controller.snapshot().setupReady, false);
+  const html = renderLearning({ space: { id: 's1' }, state: controller.snapshot() });
+  assert.match(html, /<button[^>]*data-action="learning-cancel"[^>]*>/);
+  assert.doesNotMatch(html.match(/<button[^>]*data-action="learning-cancel"[^>]*>/)[0], /disabled/);
+  await controller.cancelGeneration();
+  assert.deepEqual(cancellations, ['original-run']); assert.equal(controller.snapshot().assessmentId, 'a');
+  assert.equal(controller.snapshot().assessmentStatus, 'cancelled'); assert.equal(creates, 0);
+});
+
+test('recovering a round rejects a generation run that conflicts with its saved receipt', async () => {
+  const storage = memory();
+  storage.setItem('knowpath-learning-assessments-v1', JSON.stringify({ s1: { assessmentId: 'a', runId: 'original-run' } }));
+  let polls = 0;
+  const controller = createLearningController({ context, storage, api: {
+    assessment: async id => ({ id, space_id: 's1', status: 'generating', run_id: 'foreign-run' }),
+    waitRun: async () => { polls++; },
+  } });
+  await controller.recover({ assessmentId: 'a' });
+  assert.match(controller.snapshot().error, /出题任务.*不一致/); assert.equal(polls, 0);
+});
+
+test('legacy detail without association keeps the owner captured before create awaits', async () => {
+  let owner = { space_id: 's1', plan_id: 'p1', task_id: 't1', topic_ids: ['topic'] }, release;
+  const controller = createLearningController({ context: () => ({ ...context(), assessmentContext: owner }), storage: memory(), api: {
+    space: async () => ({ id: 's1' }), topics: async () => [{ id: 'topic', source_refs: [{}] }],
+    createAssessment: async () => new Promise(resolve => { release = resolve; }), waitRun: async () => {}, assessment: async () => recoveryRound('a'),
+  } });
+  await controller.loadKnowledge(); const pending = controller.start();
+  owner = { ...owner, task_id: 't2' }; release({ assessment_id: 'a', run_id: 'r' }); await pending;
+  controller.draftAnswer('A'); assert.equal(controller.snapshot().answerDraft.taskId, 't1');
+});
+
+test('completed linked assessment offers explicit task confirmation and reinforcement', () => {
+  const plan = { id: 'p1', space_id: 's1', status: 'ready', version: 1, tasks: [{ id: 'task1', status: 'pending' }, { id: 'task2', status: 'pending' }] };
+  const state = { busy: '', error: '', assessmentId: 'a1', assessment: { id: 'a1', space_id: 's1', plan_id: 'p1', task_id: 'task1', status: 'completed' },
+    diagnostic: { assessment_id: 'a1', status: 'completed', progress: { answered: 5, target: 5 } }, result: { question_results: Array(5).fill({ verdict: 'correct' }) } };
+  const html = renderLearning({ space: { id: 's1' }, state, plan });
+  assert.match(html, /确认本节点完成并继续/); assert.match(html, /继续巩固/);
+  assert.match(html, /仍需.*确认|确认.*任务完成/);
+  const last = renderLearning({ space: { id: 's1' }, state: { ...state, assessment: { ...state.assessment, task_id: 'task2' } }, plan: { ...plan, tasks: [{ ...plan.tasks[0], status: 'completed' }, plan.tasks[1]] } });
+  assert.match(last, /查看本轮总结/);
+  assert.doesNotMatch(renderLearning({ space: { id: 's1' }, state: { ...state, assessment: { ...state.assessment, task_id: 'foreign' } }, plan }), /确认本节点完成并继续/);
+});
+
+test('result completion retains the server association after route context is switched', async () => {
+  const storage = memory(); storage.setItem('knowpath-learning-assessments-v1', JSON.stringify({ s1: { assessmentId: 'a1' } }));
+  let association = { space_id: 's1', plan_id: 'p1', task_id: 'other' };
+  const controller = createLearningController({ storage, context: () => ({ ...context(), assessmentContext: association }), api: {
+    assessment: async () => ({ id: 'a1', space_id: 's1', plan_id: 'p1', task_id: 'original', status: 'completed' }),
+    assessmentResult: async () => ({ assessment_id: 'a1', question_results: [] }),
+  } });
+  await controller.resume(); association = null;
+  const plan = { id: 'p1', space_id: 's1', status: 'ready', version: 1, tasks: [{ id: 'original', status: 'pending' }, { id: 'other', status: 'pending' }] };
+  assert.equal(assessmentTaskCompletion({ id: 's1' }, controller.snapshot(), plan).taskId, 'original');
+  assert.equal(assessmentTaskCompletion({ id: 's1' }, controller.snapshot(), { ...plan, tasks: [{ id: 'original', status: 'completed' }] }), null);
+});
 
 test('assessment selection uses only available current-scope topics with sources', () => {
   const source = { material_id: 'm1', material_version_id: 'v1', chunk_id: 'c1' };

@@ -78,13 +78,14 @@ test('SSE failure preserves the backend context invalidation code', async t => {
   await assert.rejects(createApi(() => 'local').readMessage({ run_id: 'r' }), error => error.code === 'STALE_LEARNING_CONTEXT');
 });
 test('topic lookup uses frozen material versions and rejects inconsistent graph snapshots', async t => {
-  const bindings = [{ material_id: 'm1', material_version_id: 'v1', graph_version: 3 }];
-  let graphVersion = 3, captured;
-  t.mock.method(globalThis, 'fetch', async url => { captured = url; return json({ material_id: 'm1', version_id: 'v1', graph_version: graphVersion, items: [{ id: 't1' }] }); });
+  const bindings = [{ material_id: 'm1', material_version_id: 'v1', graph_version: 1 }];
+  let graphVersion = 1, captured;
+  t.mock.method(globalThis, 'fetch', async url => { captured = url; return json({ material_id: 'm1', version_id: 'v1', graph_revision_id: null, graph_version: graphVersion, items: [{ id: 't1' }] }); });
   const api = createApi(() => '');
   assert.deepEqual(await api.topics({ bindings }), [{ id: 't1' }]);
-  assert.ok(captured.endsWith('/materials/m1/topics?version_id=v1'));
-  graphVersion = 4;
+  assert.equal(new URL(captured).searchParams.get('graph_version'), '1');
+  assert.equal(new URL(captured).searchParams.get('legacy_snapshot'), 'true');
+  graphVersion = 2;
   await assert.rejects(() => api.topics({ bindings }), error => error.code === 'STALE_KNOWLEDGE');
 });
 test('material graph loads the complete published projection in one request', async t => {
@@ -102,19 +103,73 @@ test('material graph loads the complete published projection in one request', as
   assert.ok(calls[0].endsWith('/materials/m1/graph?version_id=v1&include_sources=true'));
 });
 
+test('space topics and graph pin the same revision and reject mismatched response identity', async t => {
+  const binding = { material_id: 'm/1', material_version_id: 'v/1', graph_version: 1, graph_revision_id: 'r/1' };
+  const calls = []; let revision = binding.graph_revision_id, material = binding.material_id;
+  t.mock.method(globalThis, 'fetch', async (url, options) => {
+    calls.push({ url: new URL(url), options });
+    return json({ material_id: material, version_id: binding.material_version_id, graph_version: 1,
+      graph_revision_id: revision, items: [{ id: 'old' }], nodes: [{ id: 'old' }], edges: [] });
+  });
+  const api = createApi(() => ''), space = { bindings: [binding] };
+  const controller = new AbortController();
+  assert.deepEqual(await api.topics(space, { signal: controller.signal }), [{ id: 'old' }]);
+  assert.deepEqual((await api.graph(space, { signal: controller.signal })).nodes, [{ id: 'old' }]);
+  for (const call of calls) {
+    assert.equal(call.url.searchParams.get('graph_revision_id'), binding.graph_revision_id);
+    assert.equal(call.url.searchParams.get('version_id'), binding.material_version_id);
+    assert.equal(call.url.searchParams.get('graph_version'), '1');
+  }
+  revision = 'new-revision';
+  await assert.rejects(api.topics(space), e => e.code === 'STALE_KNOWLEDGE');
+  await assert.rejects(api.graph(space), e => e.code === 'STALE_KNOWLEDGE');
+  revision = binding.graph_revision_id; material = 'wrong-material';
+  await assert.rejects(api.graph(space), e => e.code === 'STALE_KNOWLEDGE');
+});
+
+test('space graph and topics preserve cancellation options', async t => {
+  const controller = new AbortController(); controller.abort();
+  t.mock.method(globalThis, 'fetch', async (_, options) => {
+    assert.equal(options.signal.aborted, true);
+    throw new DOMException('Aborted', 'AbortError');
+  });
+  const api = createApi(() => ''), space = { bindings: [{ material_id: 'm', material_version_id: 'v', graph_version: 1 }] };
+  for (const operation of ['topics', 'graph']) await assert.rejects(api[operation](space, { signal: controller.signal }), e => e.name === 'AbortError');
+});
+
+test('legacy space reads original projection and requires null revision identity', async t => {
+  let revision = null; const calls = [];
+  t.mock.method(globalThis, 'fetch', async url => {
+    calls.push(new URL(url));
+    return json({ material_id: 'm', version_id: 'v', graph_version: 1, graph_revision_id: revision,
+      nodes: [{ id: 'original' }], edges: [], items: [{ id: 'original' }] });
+  });
+  const api = createApi(() => ''), space = { bindings: [{ material_id: 'm', material_version_id: 'v', graph_version: 1 }] };
+  await api.topics(space); await api.graph(space);
+  for (const url of calls) {
+    assert.equal(url.searchParams.get('legacy_snapshot'), 'true');
+    assert.equal(url.searchParams.get('graph_version'), '1');
+    assert.equal(url.searchParams.get('graph_revision_id'), null);
+  }
+  for (revision of ['published-one', undefined]) {
+    await assert.rejects(api.topics(space), e => e.code === 'STALE_KNOWLEDGE');
+    await assert.rejects(api.graph(space), e => e.code === 'STALE_KNOWLEDGE');
+  }
+});
+
 test('space graph reads each bound material projection once instead of each root topic', async t => {
   const calls = [];
   t.mock.method(globalThis, 'fetch', async url => {
     calls.push(url);
-    if (url.includes('/materials/m1/graph?')) return json({ material_id: 'm1', version_id: 'v1', graph_version: 2,
+    if (url.includes('/materials/m1/graph?')) return json({ material_id: 'm1', version_id: 'v1', graph_version: 2, graph_revision_id: 'r2',
       nodes: [{ id: 'a', material_version_id: 'v1', graph_version: 2 }], edges: [], sources: [] });
-    if (url.includes('/materials/m2/graph?')) return json({ material_id: 'm2', version_id: 'v2', graph_version: 3,
+    if (url.includes('/materials/m2/graph?')) return json({ material_id: 'm2', version_id: 'v2', graph_version: 3, graph_revision_id: 'r3',
       nodes: [{ id: 'b', material_version_id: 'v2', graph_version: 3 }], edges: [], sources: [] });
     assert.fail(`unexpected graph request ${url}`);
   });
   const graph = await createApi(() => '').graph({ bindings: [
-    { material_id: 'm1', material_version_id: 'v1', graph_version: 2 },
-    { material_id: 'm2', material_version_id: 'v2', graph_version: 3 },
+    { material_id: 'm1', material_version_id: 'v1', graph_version: 2, graph_revision_id: 'r2' },
+    { material_id: 'm2', material_version_id: 'v2', graph_version: 3, graph_revision_id: 'r3' },
   ], topic_ids: ['a', 'b'] });
   assert.deepEqual(graph.nodes.map(node => node.id), ['a', 'b']);
   assert.equal(calls.length, 2);
@@ -228,4 +283,14 @@ test('task completion includes the current plan version', async t => {
   let captured; t.mock.method(globalThis, 'fetch', async (url, options) => { captured = { url, ...options }; return json({ status: 'completed', plan_version: 4 }); });
   await createApi(() => '').completeTask({ id: 'p1', version: 3 }, { id: 't1' });
   assert.equal(captured.method, 'PATCH'); assert.deepEqual(JSON.parse(captured.body), { status: 'completed', expected_plan_version: 3 });
+});
+
+test('task undo sends original version event reason and stable key through the public API', async t => {
+  let captured;
+  t.mock.method(globalThis,'fetch',async(url,options)=>{captured={url,...options};return json({status:'pending',plan_version:4});});
+  const body={expected_plan_version:3,completion_event_id:'e1',reason:'mistake'};
+  await createApi(()=>'').undoTaskCompletion('p/1','t/1',body,{key:'undo-key'});
+  assert.match(captured.url,/plans\/p%2F1\/tasks\/t%2F1\/undo-completion$/);
+  assert.equal(captured.method,'POST');assert.deepEqual(JSON.parse(captured.body),body);
+  assert.equal(new Headers(captured.headers).get('Idempotency-Key'),'undo-key');
 });

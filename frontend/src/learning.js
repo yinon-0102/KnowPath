@@ -1,21 +1,32 @@
-import { esc, uid, storageRead, storageWrite } from './store.js';
+import { esc, uid, storageRead, storageWrite, createAssessmentDraftStore } from './store.js';
 import { renderNoteMarkdown, notePath } from './notes.js';
 import { createActivityController } from './activity.js';
+import { spacePath } from './workbench.js';
+import { allocationExplanation, allocationReason, renderScheduleSummary } from './progress.js';
+import { assessmentKindLabel, renderResultSummary, renderMasteryGaps, renderAssistanceReasons } from './assessment-presentation.js';
 
 const SAVED = 'knowpath-learning-assessments-v1';
 const SETUPS = 'knowpath-learning-setups-v1';
 const terminal = status => ['completed', 'failed', 'cancelled', 'stale'].includes(status);
-const blank = spaceId => ({ spaceId, busy: '', error: '', assessmentId: '', assessmentStatus: '', assessmentMode: '', generationError: null, diagnostic: null, result: null, evolution: null, comparison: null, replay: null, pendingAnswer: null, pendingFinalize: null, assessmentStage: '', generationStartedAt: null, knowledge: null, setup: { topic: '', count: '5', type: 'single_choice', kind: 'diagnostic' } });
+const blank = spaceId => ({ spaceId, busy: '', error: '', assessmentId: '', assessmentStatus: '', assessmentMode: '', generationError: null, diagnostic: null, result: null, evolution: null, comparison: null, replay: null, answerDraft: null, pendingAnswer: null, pendingFinalize: null, assessmentStage: '', generationStartedAt: null, knowledge: null, setupRevision: 0, recoverableAssessments: [], setup: { topic: '', count: '5', type: 'single_choice', kind: 'diagnostic' } });
+const answerRevision = question => Number.isInteger(question?.answer_revision) && question.answer_revision >= 0 ? question.answer_revision : 0;
 const failureMessage = error => ({
   QUESTION_VALIDATION_FAILED: '生成的题目未通过校验，本轮没有可用题目。可以重新生成；如反复失败，需要检查出题服务返回的内容。',
   MODEL_UNAVAILABLE: '出题模型暂时不可用。请检查模型服务后重新生成题目。',
   RUN_CANCELLED: '本轮出题已取消，可以重新生成题目。',
-  RUN_PENDING: '题目仍在生成，点击“继续 / 刷新诊断”查询本轮进度。',
+  RUN_PENDING: '题目仍在生成，点击“继续 / 刷新测评”查询本轮进度。',
 })[error.code] || error.message || '操作未完成，请重试。';
 const unsupportedAdaptive = error => [400, 422].includes(error.status) && error.code === 'INVALID_REQUEST'
   && Array.isArray(error.details?.errors) && error.details.errors.length > 0
   && error.details.errors.every(item => item.type === 'extra_forbidden'
     && JSON.stringify(item.loc) === JSON.stringify(['body', 'adaptive']));
+// These errors are raised before prepare creates either an assessment or a run.
+// A timeout, 5xx, missing ID, abort or idempotency conflict proves no such thing.
+const creationRejected = error => [400, 404, 409, 422].includes(error.status) && [
+  'INVALID_REQUEST', 'TOPIC_OUT_OF_SCOPE', 'PLAN_ID_REQUIRED', 'PLAN_SPACE_MISMATCH',
+  'PLAN_NOT_ACTIVE', 'TASK_NOT_ACTIVE', 'TOPIC_TASK_MISMATCH', 'SESSION_SPACE_MISMATCH',
+  'SESSION_TASK_MISMATCH',
+].includes(error.code);
 
 function standardDiagnostic(assessment) {
   const questions = assessment.questions || [];
@@ -68,26 +79,106 @@ export function assessmentPayload(setup, topics) {
     question_types: setup.type === 'mixed' ? ['single_choice', 'short_answer'] : [setup.type] };
 }
 
-export function createLearningController({ api, context, changed = () => {}, committed = async () => {}, storage }) {
+export function assessmentTaskCompletion(space, state, plan) {
+  const assessment = state.assessment;
+  if (!space || !plan || assessment?.status !== 'completed' || state.diagnostic?.status !== 'completed'
+      || (assessment.id || assessment.assessment_id) !== state.assessmentId || state.diagnostic.assessment_id !== state.assessmentId
+      || assessment.space_id !== space.id || plan.space_id !== space.id || assessment.plan_id !== (plan.id || plan.plan_id)
+      || !['ready', 'needs_replan'].includes(plan.status) || space.status === 'archived') return null;
+  const task = plan.tasks?.find(item => item.id === assessment.task_id);
+  if (!task || task.historical || task.context?.historical || !['pending', 'in_progress'].includes(task.status)) return null;
+  return { spaceId: space.id, planId: assessment.plan_id, taskId: assessment.task_id, expectedPlanVersion: plan.version,
+    source: 'assessment', assessmentId: state.assessmentId };
+}
+
+export function renderCompletionRecovery(rows = []) {
+  return rows.map(({ target, entry }) => {
+    const saved = entry.navigationPending || ['saved', 'navigation_pending'].includes(entry.status);
+    const message = entry.status === 'saving' ? '正在保存节点完成，请稍候。' : entry.status === 'querying' ? '正在查询原完成请求，请稍候。'
+      : saved ? '节点已完成，导航待恢复。' : '节点完成结果待确认，原请求已保留。';
+    return `<section class="notice" aria-label="节点完成恢复" role="status"><p>${message}</p>${entry.error ? `<p class="form-error">${esc(entry.error)}</p>` : ''}<button type="button" class="button button-primary" data-action="completion-recover" data-plan="${esc(target.planId)}" data-task="${esc(target.taskId)}" ${entry.busy ? 'disabled' : ''}>${saved ? '继续学习' : '查询保存结果'}</button>${entry.pending && !entry.busy ? `<button type="button" class="button button-secondary" data-action="completion-retry" data-plan="${esc(target.planId)}" data-task="${esc(target.taskId)}">重试原完成确认</button>` : ''}</section>`;
+  }).join('');
+}
+
+export function renderAssessmentCompletion(space, state, plan, completion = {}, disabled = false) {
+  const target = assessmentTaskCompletion(space, state, plan);
+  if (!target) return '';
+  const last = !plan.tasks.some(task => task.id !== target.taskId && !task.historical && !task.context?.historical && ['pending', 'in_progress'].includes(task.status));
+  if (completion.navigationPending || completion.pending || completion.busy) return '';
+  const label = completion.needsConfirmation ? '再次确认本节点完成' : last ? '确认本节点完成并查看本轮总结' : '确认本节点完成并继续';
+  return `<section class="notice" aria-label="节点完成确认"><p>测评已完成，任务仍需你明确确认完成。继续巩固会保留当前任务进度。</p>${completion.needsConfirmation ? '<p role="alert">计划已更新，请核对原节点后再次确认。不会自动完成其他节点。</p>' : ''}${completion.error ? `<p class="form-error" role="alert">${esc(completion.error)}</p>` : ''}<div class="learning-actions"><button type="button" class="button button-primary" data-action="learning-complete-task" ${disabled || completion.busy || completion.blocked ? 'disabled' : ''}>${label}</button><a class="button button-secondary" href="${spacePath(space.id, 'study', { plan: target.planId, task: target.taskId })}">继续巩固</a></div></section>`;
+}
+
+export function createLearningController({ api, context, prepareCreation, changed = () => {}, activityChanged = () => {}, committed = async () => {}, storage }) {
   let view = blank(''), identity = '', generation = 0, activeRequest;
+  let recoveryFilter = {};
   const pendingKeys = new Map(), descriptors = new Map();
-  const activity = createActivityController({ storage, send: body => api.assessmentActivity?.(view.assessmentId, body),
-    changed: value => { view.activity = value.activity; view.paused = value.paused; view.needsActivityCheck = value.needsActivityCheck; changed(); } });
-  function saved(spaceId) {
-    if (descriptors.has(spaceId)) return { ...descriptors.get(spaceId) };
+  const drafts = createAssessmentDraftStore(storage);
+  const activity = createActivityController({ storage, disposeEvent: 'assessment_end', send: ({ assessment_id, ...body }) => api.assessmentActivity?.(assessment_id, body),
+    changed: value => { view.activity = value.activity; view.paused = value.paused; view.needsActivityCheck = value.needsActivityCheck; view.activityError = value.error || ''; activityChanged(view); } });
+  function draftScope() {
+    const association = view.assessment, owner = saved(view.spaceId).owner;
+    return { spaceId: view.spaceId, assessmentId: view.assessmentId,
+      planId: association?.space_id === view.spaceId ? association.plan_id ?? owner?.planId ?? '' : '',
+      taskId: association?.space_id === view.spaceId ? association.task_id ?? owner?.taskId ?? '' : '' };
+  }
+  function draftIdentity(question = view.diagnostic?.current_question) {
+    return question && !terminal(view.diagnostic?.status) && view.assessmentId
+      ? { ...draftScope(), questionId: question.id, answerRevision: answerRevision(question) } : null;
+  }
+  function draftAnswer(value, expectedKey) {
+    sync(); const identity = draftIdentity();
+    if (!identity || view.busy || view.answerFeedback || typeof value !== 'string' || expectedKey && drafts.key(identity) !== expectedKey) return;
+    const question = view.diagnostic.current_question;
+    if (question.type === 'single_choice' && !(question.options || []).some(option => option.id === value)) return;
+    view.answerDraft = drafts.set(identity, value);
+    // Input events never rebuild the form or convert a draft into a submission.
+  }
+  function envelope(spaceId) {
+    if (descriptors.has(spaceId)) return descriptors.get(spaceId);
     const value = storageRead(storage, SAVED, {});
     const descriptor = value && typeof value === 'object' && !Array.isArray(value) && value[spaceId] && typeof value[spaceId] === 'object' ? { ...value[spaceId] } : {};
-    descriptors.set(spaceId, descriptor);
-    return { ...descriptor };
+    const entry = descriptor.rounds ? descriptor : { rounds: descriptor.assessmentId ? { [descriptor.assessmentId]: descriptor } : {},
+      intent: descriptor.assessmentId ? {} : descriptor, selected: descriptor.assessmentId ? { '': descriptor.assessmentId } : {} };
+    descriptors.set(spaceId, entry);
+    return entry;
   }
-  function save(spaceId, value) {
-    descriptors.set(spaceId, { ...value });
+  function saved(spaceId, assessmentId = view.spaceId === spaceId ? view.assessmentId : '') {
+    const entry = envelope(spaceId);
+    return { ...(assessmentId ? entry.rounds[assessmentId] : entry.intent) };
+  }
+  function persist(spaceId) {
     const prior = storageRead(storage, SAVED, {});
     const values = prior && typeof prior === 'object' && !Array.isArray(prior) ? prior : {};
-    storageWrite(storage, SAVED, { ...values, [spaceId]: value });
+    storageWrite(storage, SAVED, { ...values, [spaceId]: envelope(spaceId) });
   }
-  function creationSetup(setup, spaceId) {
-    const association = context().assessmentContext;
+  function save(spaceId, value, assessmentId = value.assessmentId || (view.spaceId === spaceId ? view.assessmentId : '')) {
+    const entry = envelope(spaceId);
+    if (assessmentId) entry.rounds[assessmentId] = { ...value, assessmentId };
+    else entry.intent = { ...value };
+    persist(spaceId);
+  }
+  function rememberSelection(spaceId, assessmentId) {
+    envelope(spaceId).selected[context().routeKey || ''] = assessmentId;
+    persist(spaceId);
+  }
+  function restoreDescriptor(assessmentId) {
+    const persisted = saved(view.spaceId, assessmentId);
+    for (const field of ['assessmentStatus', 'assessmentMode', 'assessmentStage']) view[field] = persisted[field] || '';
+    for (const field of ['generationError', 'pendingAnswer', 'pendingFinalize', 'generationStartedAt']) view[field] = persisted[field] || null;
+    view.assessmentId = assessmentId || '';
+    view.answerFeedback = null; // The server confirms this round's disclosure policy.
+  }
+  function selectRound(assessmentId, filter = recoveryFilter) {
+    sync(); activity.dispose(); activeRequest?.abort(); generation++;
+    const { spaceId, knowledge, setup, setupRevision, recoverableAssessments } = view;
+    view = { ...blank(spaceId), knowledge, setup, setupRevision, recoverableAssessments };
+    view.explicitSelection = Boolean(filter.assessmentId);
+    recoveryFilter = { ...filter };
+    restoreDescriptor(assessmentId);
+    rememberSelection(spaceId, assessmentId);
+  }
+  function creationSetup(setup, spaceId, association = context().assessmentContext) {
     if (association === undefined) return setup;
     const { plan_id, task_id, learning_session_id, topic_ids, allowed_kinds, ...base } = setup;
     if (association?.space_id !== spaceId) return base;
@@ -102,28 +193,28 @@ export function createLearningController({ api, context, changed = () => {}, com
     };
   }
   function sync() {
-    const current = context(), next = JSON.stringify([current.spaceId, current.active !== false]);
+    const current = context(), next = JSON.stringify([current.spaceId, current.active !== false, current.routeKey || '', current.assessmentId || '']);
     if (identity !== next) {
       activity.dispose();
       activeRequest?.abort(); generation++; identity = next;
       view = blank(current.spaceId || '');
       if (current.spaceId) {
-        const persisted = saved(current.spaceId);
-        view.assessmentId = typeof persisted.assessmentId === 'string' ? persisted.assessmentId : '';
-        view.assessmentStatus = persisted.assessmentStatus || '';
-        view.assessmentMode = persisted.assessmentMode || '';
-        view.generationError = persisted.generationError || null;
-        view.pendingAnswer = persisted.pendingAnswer || null;
-        view.answerFeedback = persisted.answerFeedback || null;
-        view.pendingFinalize = persisted.pendingFinalize || null;
-        view.assessmentStage = persisted.assessmentStage || '';
-        view.generationStartedAt = persisted.generationStartedAt || null;
+        recoveryFilter = {};
+        // A server index supersedes the old tab pointer. Legacy clients/tests
+        // without that endpoint still migrate their verified round once.
+        const selected = current.assessmentId || (!api.recoverableAssessments ? envelope(current.spaceId).selected[current.routeKey || ''] : '');
+        restoreDescriptor(typeof selected === 'string' ? selected : '');
         const setups = storageRead(storage, SETUPS, {});
         const setup = setups && typeof setups === 'object' ? setups[current.spaceId] : null;
         if (setup && typeof setup === 'object') view.setup = { ...view.setup, ...setup };
       }
     }
     view.setup = creationSetup(view.setup, current.spaceId);
+    view.setupReady = current.setupReady !== false;
+    view.creationState = saved(view.spaceId, '').creationState || '';
+    const currentDraft = draftIdentity();
+    view.answerDraft = currentDraft ? drafts.get(currentDraft) : null;
+    view.answerDraftKey = currentDraft ? drafts.key(currentDraft) : '';
     return view;
   }
   function live(ticket) { sync(); return ticket === generation && !activeRequest?.signal.aborted; }
@@ -137,14 +228,16 @@ export function createLearningController({ api, context, changed = () => {}, com
     activeRequest = new AbortController();
     const signal = activeRequest.signal;
     view.busy = label; view.error = ''; changed();
-    try { await work({ ticket, spaceId, signal }); }
+    try { await work({ ticket, spaceId, signal, assessmentId: view.assessmentId, owner: { ...recoveryFilter } }); }
     catch (error) { if (live(ticket) && error.name !== 'AbortError') view.error = failureMessage(error); }
     finally { if (live(ticket)) { view.busy = ''; changed(); } }
   }
   function generationState(task, assessmentId, status, error = null) {
     if (!live(task.ticket)) return;
     view.assessmentId = assessmentId; view.assessmentStatus = status; view.generationError = error;
-    save(task.spaceId, { ...saved(task.spaceId), assessmentId, assessmentStatus: status, assessmentMode: view.assessmentMode, generationError: error });
+    task.assessmentId = assessmentId;
+    rememberSelection(task.spaceId, assessmentId);
+    save(task.spaceId, { ...saved(task.spaceId, task.assessmentId), assessmentId, assessmentStatus: status, assessmentMode: view.assessmentMode, generationError: error });
     changed();
   }
   function generationProgress(task, update = {}) {
@@ -155,11 +248,11 @@ export function createLearningController({ api, context, changed = () => {}, com
     view.assessmentStage = stage;
     const started = Date.parse(update.created_at || '');
     view.generationStartedAt ||= Number.isFinite(started) ? started : Date.now();
-    save(task.spaceId, { ...saved(task.spaceId), assessmentStage: stage, generationStartedAt: view.generationStartedAt });
+    save(task.spaceId, { ...saved(task.spaceId, task.assessmentId), assessmentStage: stage, generationStartedAt: view.generationStartedAt });
     changed();
   }
   async function waitGeneration(task, assessmentId, runId) {
-    if (!runId) throw new Error('服务未返回出题任务标识，请刷新诊断确认状态。');
+    if (!runId) throw new Error('服务未返回出题任务标识，请刷新测评确认状态。');
     try { const completed = await api.waitRun(runId, task.signal, update => generationProgress(task, update)); generationProgress(task, completed); }
     catch (error) {
       // Only a confirmed terminal run can unlock a new creation request.
@@ -170,15 +263,30 @@ export function createLearningController({ api, context, changed = () => {}, com
     }
   }
   async function refresh(task, assessmentId) {
-    if (!assessmentId) throw new Error('当前没有可恢复的诊断，请先开始诊断。');
+    if (!assessmentId) throw new Error('当前没有可恢复的测评，请先开始测评。');
     let assessment = await api.assessment(assessmentId, { signal: task.signal });
     if (!live(task.ticket)) return;
+    const validateOwner = value => {
+      if ((value.id || value.assessment_id) !== assessmentId || value.space_id !== task.spaceId
+          || task.owner?.planId && value.plan_id !== task.owner.planId
+          || task.owner?.taskId && value.task_id !== task.owner.taskId
+          || task.owner?.learningSessionId && value.learning_session_id !== task.owner.learningSessionId) {
+        view.diagnostic = null; view.assessment = null; view.result = null;
+        throw new Error('测评标识、空间或封存任务归属与链接不一致，已停止恢复。');
+      }
+      const knownRunId = saved(task.spaceId, assessmentId).runId;
+      if (knownRunId && value.run_id && knownRunId !== value.run_id)
+        throw new Error('测评出题任务与原轮创建回执不一致，已停止恢复。');
+    };
+    validateOwner(assessment);
+    const persisted = saved(task.spaceId, assessmentId);
+    if (assessment.run_id) save(task.spaceId, { ...persisted, assessmentId, runId: assessment.run_id }, assessmentId);
     if (assessment.space_id !== task.spaceId) { view.diagnostic = null; view.result = null; view.assessmentStatus = ''; view.generationError = null; throw new Error('测验不属于当前学习空间，已停止显示。'); }
     view.assessmentMode = assessment.adaptive === true ? 'adaptive' : 'standard';
     generationState(task, assessmentId, assessment.status, view.generationError);
     if (['failed', 'cancelled'].includes(assessment.status)) {
       view.diagnostic = null; view.result = null;
-      await waitGeneration(task, assessmentId, assessment.run_id || saved(task.spaceId).runId);
+      await waitGeneration(task, assessmentId, assessment.run_id || saved(task.spaceId, task.assessmentId).runId);
       throw new Error('本轮出题已结束且没有可用题目，请重新生成题目。');
     }
     if (assessment.status === 'generating') {
@@ -186,15 +294,25 @@ export function createLearningController({ api, context, changed = () => {}, com
       if (!live(task.ticket)) return;
       assessment = await api.assessment(assessmentId, { signal: task.signal });
       if (!live(task.ticket)) return;
+      validateOwner(assessment);
       if (assessment.space_id !== task.spaceId) { view.diagnostic = null; view.result = null; view.assessmentStatus = ''; view.generationError = null; throw new Error('测验所属空间发生变化，请刷新。'); }
     }
     generationState(task, assessmentId, assessment.status);
-    const descriptor = saved(task.spaceId);
+    if ((assessment.id || assessment.assessment_id) !== assessmentId) throw new Error('测评标识与当前结果不一致，请刷新。');
+    view.assessment = assessment;
+    const descriptor = saved(task.spaceId, task.assessmentId);
+    descriptor.owner = { spaceId: assessment.space_id, assessmentId,
+      planId: assessment.plan_id ?? descriptor.createBody?.plan_id ?? descriptor.owner?.planId ?? '',
+      taskId: assessment.task_id ?? descriptor.createBody?.task_id ?? descriptor.owner?.taskId ?? '',
+      learningSessionId: assessment.learning_session_id ?? descriptor.createBody?.learning_session_id ?? descriptor.owner?.learningSessionId ?? '' };
+    descriptor.feedbackPolicy = assessment.feedback_policy;
     const acknowledged = new Set(descriptor.feedbackAcknowledgedIds || []);
-    const feedback = (assessment.question_feedback || []).find(item => !acknowledged.has(item.question_id));
+    const immediateFeedback = assessment.feedback_policy !== 'after_round' && assessment.status !== 'completed';
+    if (!immediateFeedback) delete descriptor.answerFeedback;
+    const feedback = immediateFeedback && (assessment.question_feedback || []).find(item => !acknowledged.has(item.question_id));
     if (feedback) descriptor.answerFeedback = { ...feedback, question: (assessment.questions || []).find(q => q.id === feedback.question_id) || descriptor.answerFeedback?.question };
     view.answerFeedback = descriptor.answerFeedback || null;
-    save(task.spaceId, descriptor);
+    save(task.spaceId, descriptor, task.assessmentId);
     const diagnostic = assessment.adaptive === true
       ? await api.diagnostic(assessmentId, { signal: task.signal })
       : standardDiagnostic(assessment);
@@ -204,21 +322,25 @@ export function createLearningController({ api, context, changed = () => {}, com
     const priorQuestionId = view.diagnostic?.current_question?.id;
     if (currentQuestionId && currentQuestionId !== priorQuestionId) view.questionStartedAt = Date.now();
     view.diagnostic = diagnostic; generationState(task, assessmentId, diagnostic.status);
+    const currentDraft = draftIdentity();
+    drafts.retain(draftScope(), currentDraft);
+    view.answerDraft = currentDraft ? drafts.get(currentDraft) : null;
     if (api.assessmentActivity && currentQuestionId && !view.answerFeedback) {
-      try { await activity.attach(`assessment:${assessmentId}:${currentQuestionId}`, { question_id: currentQuestionId }, 'shown'); }
+      try { await activity.attach(`assessment:${assessmentId}:${currentQuestionId}`, { assessment_id: assessmentId, question_id: currentQuestionId, phase_id: uid() }, 'shown'); }
       catch (error) { if (live(task.ticket)) view.activityError = error.message; }
     }
-    else activity.dispose({ notify: false });
+    else activity.dispose();
+    if (!live(task.ticket)) return;
     if (diagnostic.current_question) generationProgress(task, { stage: 'ready' });
     if (descriptor.pendingAnswer && diagnostic.current_question?.id !== descriptor.pendingAnswer.questionId) {
-      delete descriptor.pendingAnswer; save(task.spaceId, descriptor);
+      delete descriptor.pendingAnswer; save(task.spaceId, descriptor, task.assessmentId);
     }
     view.pendingAnswer = descriptor.pendingAnswer || null;
     if (diagnostic.status === 'completed') {
       const result = await api.assessmentResult(assessmentId, { signal: task.signal });
       if (live(task.ticket)) {
         view.result = result; view.pendingFinalize = null;
-        const latest = saved(task.spaceId); delete latest.pendingFinalize; save(task.spaceId, latest);
+        const latest = saved(task.spaceId, task.assessmentId); delete latest.pendingFinalize; save(task.spaceId, latest, task.assessmentId);
         const completion = result.completion?.result || result.completion || result.result || result;
         view.adjustment = completion.adjustment || result.adjustment || null;
         const adjustmentRun = view.adjustment?.run_id || completion.plan_replan_run_id || result.plan_replan_run_id;
@@ -242,18 +364,56 @@ export function createLearningController({ api, context, changed = () => {}, com
     });
   }
   async function start(setup) {
-    return run('正在生成并验证诊断题目…', async task => {
-      if (view.assessmentId && !terminal(view.assessmentStatus || view.diagnostic?.status)) throw new Error('当前有一轮诊断，请先继续或刷新这轮诊断。');
-      let descriptor = saved(task.spaceId);
-      if (descriptor.assessmentId) descriptor = {};
-      descriptor.createKey ||= uid();
-      const configured = setup || context().assessmentContext != null ? creationSetup({ ...view.setup, ...setup }, task.spaceId) : null;
+    return run('正在生成并验证测评题目…', async task => {
+      if (context().setupReady === false) throw new Error('测评关联与设置正在初始化，请稍候。');
+      if (view.recoverableAssessments.length && !view.assessmentId) throw new Error('请选择要继续的测评轮次。');
+      if (view.assessmentId && !terminal(view.assessmentStatus || view.diagnostic?.status)) throw new Error('当前有一轮测评，请先继续或刷新这轮测评。');
+      task.assessmentId = '';
+      let descriptor = saved(task.spaceId, task.assessmentId);
+      if (descriptor.createKey && descriptor.createBody && view.assessmentId && terminal(view.assessmentStatus || view.diagnostic?.status)) {
+        const completedId = view.assessmentId;
+        // A read-only index cannot identify which creation key produced a row.
+        // Replay the immutable original request before retiring that intent.
+        let receipt;
+        try { receipt = await api.createAssessment(task.spaceId, descriptor.createBody, { signal: task.signal, key: descriptor.createKey }); }
+        catch (error) {
+          if (creationRejected(error) && saved(task.spaceId, '').createKey === descriptor.createKey) save(task.spaceId, { creationState: 'not_created' }, '');
+          throw error;
+        }
+        const acceptedId = receipt?.assessment_id || receipt?.assessment?.id;
+        if (!acceptedId) throw new Error('服务未返回测评标识，原创建结果仍未确认。');
+        const accepted = { ...descriptor, ...saved(task.spaceId, acceptedId), assessmentId: acceptedId, creationState: 'accepted',
+          runId: receipt.run_id || receipt.assessment?.run_id };
+        save(task.spaceId, accepted, acceptedId);
+        if (saved(task.spaceId, '').createKey === descriptor.createKey) save(task.spaceId, { creationState: 'accepted', assessmentId: acceptedId }, '');
+        if (!live(task.ticket)) return;
+        save(task.spaceId, {}, '');
+        if (acceptedId !== completedId) { task.assessmentId = acceptedId; await refresh(task, acceptedId); return; }
+        descriptor = {};
+      }
+      if (descriptor.creationState === 'accepted' && descriptor.assessmentId) {
+        task.assessmentId = descriptor.assessmentId;
+        await refresh(task, descriptor.assessmentId);
+        if (live(task.ticket)) save(task.spaceId, {}, '');
+        return;
+      }
+      const requestedSetup = { ...view.setup, ...setup };
+      let association = context().assessmentContext;
+      // Validate the current creation owner only for a fresh intent. An unknown
+      // request must retain its original body/key even if the route has changed.
+      if (!descriptor.createBody && prepareCreation) {
+        association = await prepareCreation(task);
+        if (!live(task.ticket)) return;
+      }
+      const configured = setup || association != null ? creationSetup(requestedSetup, task.spaceId, association) : null;
       if (configured) view.setup = configured;
       descriptor.createBody ||= configured ? assessmentPayload(configured, view.knowledge?.eligible || [])
         : { adaptive: true, kind: 'diagnostic', question_count: 5, question_types: ['single_choice'] };
-      save(task.spaceId, descriptor);
+      descriptor.createKey ||= uid();
+      descriptor.creationState = 'unknown';
+      save(task.spaceId, descriptor, task.assessmentId);
       view.assessmentId = ''; view.assessmentStatus = ''; view.assessmentMode = ''; view.generationError = null;
-      view.diagnostic = null; view.result = null; view.pendingAnswer = null; view.pendingFinalize = null; view.answerFeedback = null;
+      view.diagnostic = null; view.assessment = null; view.result = null; view.answerDraft = null; view.pendingAnswer = null; view.pendingFinalize = null; view.answerFeedback = null;
       view.assessmentStage = ''; view.generationStartedAt = null;
       let response;
       try {
@@ -261,19 +421,35 @@ export function createLearningController({ api, context, changed = () => {}, com
       } catch (error) {
         // Older servers reject the extra field before creating a run. Only
         // this explicit schema rejection permits switching request contracts.
-        if (!live(task.ticket) || !descriptor.createBody.adaptive || !unsupportedAdaptive(error)) throw error;
+        if (!descriptor.createBody.adaptive || !unsupportedAdaptive(error) || !live(task.ticket)) {
+          if (creationRejected(error) && saved(task.spaceId, '').createKey === descriptor.createKey) save(task.spaceId, { creationState: 'not_created' }, '');
+          throw error;
+        }
         const { adaptive, ...body } = descriptor.createBody;
-        descriptor = { createBody: body, createKey: uid() }; save(task.spaceId, descriptor);
-        response = await api.createAssessment(task.spaceId, body, { signal: task.signal, key: descriptor.createKey });
+        descriptor = { createBody: body, createKey: uid(), creationState: 'unknown' }; save(task.spaceId, descriptor, '');
+        try { response = await api.createAssessment(task.spaceId, body, { signal: task.signal, key: descriptor.createKey }); }
+        catch (fallbackError) {
+          if (creationRejected(fallbackError) && saved(task.spaceId, '').createKey === descriptor.createKey) save(task.spaceId, { creationState: 'not_created' }, '');
+          throw fallbackError;
+        }
       }
       const assessmentId = response.assessment_id || response.assessment?.id;
       if (!assessmentId) throw new Error('服务未返回诊断标识，请使用相同请求重试。');
-      descriptor = { assessmentId, runId: response.run_id || response.assessment?.run_id, assessmentStatus: 'generating', assessmentMode: descriptor.createBody.adaptive ? 'adaptive' : 'standard' }; save(task.spaceId, descriptor);
+      const acceptedKey = descriptor.createKey;
+      descriptor = { ...descriptor, creationState: 'accepted', assessmentId, runId: response.run_id || response.assessment?.run_id,
+        assessmentStatus: response.assessment?.status || 'generating', assessmentMode: descriptor.createBody.adaptive ? 'adaptive' : 'standard' };
+      // Another route may already have recovered this accepted round while its
+      // original create response was delayed. Keep its newer per-round intents.
+      descriptor = { ...descriptor, ...saved(task.spaceId, assessmentId), creationState: 'accepted', assessmentId };
+      task.assessmentId = assessmentId;
+      save(task.spaceId, descriptor, assessmentId);
+      if (saved(task.spaceId, '').createKey === acceptedKey) save(task.spaceId, { creationState: 'accepted', assessmentId }, '');
       if (!live(task.ticket)) return;
+      save(task.spaceId, {}, '');
       view.assessmentMode = descriptor.assessmentMode;
       generationState(task, assessmentId, 'generating');
       generationProgress(task, { stage: 'waiting', created_at: response.created_at || response.assessment?.created_at });
-      await waitGeneration(task, assessmentId, descriptor.runId);
+      if (descriptor.runId) await waitGeneration(task, assessmentId, descriptor.runId);
       if (live(task.ticket)) await refresh(task, assessmentId);
     });
   }
@@ -281,64 +457,106 @@ export function createLearningController({ api, context, changed = () => {}, com
     return run('正在记录回答并选择下一题…', async task => {
       const question = view.diagnostic?.current_question;
       if (view.answerFeedback) throw new Error('请先阅读本题解析，再进入下一题。');
-      if (saved(task.spaceId).pendingAnswer?.acknowledged) { await refresh(task, view.assessmentId); return; }
-      if (!question) throw new Error('没有待提交的当前问题，请刷新诊断。');
+      if (saved(task.spaceId, task.assessmentId).pendingAnswer?.acknowledged) { await refresh(task, view.assessmentId); return; }
+      if (!question) throw new Error('没有待提交的当前问题，请刷新测评。');
       if (question.type === 'single_choice' && !(question.options || []).some(option => option.id === value)) throw new Error('请选择一个有效选项。');
       if (typeof value !== 'string' || !value.trim()) throw new Error('请先填写答案。');
-      const descriptor = saved(task.spaceId);
+      const descriptor = saved(task.spaceId, task.assessmentId);
       if (descriptor.pendingAnswer && descriptor.pendingAnswer.answer !== value) throw new Error('上次提交结果尚未确认，请先刷新诊断或重试原答案。');
-      descriptor.pendingAnswer ||= { questionId: question.id, answer: value, key: uid() };
-      save(task.spaceId, descriptor); view.pendingAnswer = descriptor.pendingAnswer;
-      if (api.assessmentActivity) { try { await activity.event('waiting'); } catch (error) { view.activityError = error.message; } }
+      descriptor.pendingAnswer ||= { questionId: question.id, answer: value, key: uid(),
+        body: { include_feedback: descriptor.feedbackPolicy !== 'after_round', answers: [{ question_id: question.id, expected_answer_revision: answerRevision(question), answer: value }] } };
+      // Upgrade saved intents from older clients once, then retry the same body.
+      descriptor.pendingAnswer.body ||= { include_feedback: true, answers: [{ question_id: descriptor.pendingAnswer.questionId, expected_answer_revision: 0, answer: descriptor.pendingAnswer.answer }] };
+      save(task.spaceId, descriptor, task.assessmentId); view.pendingAnswer = descriptor.pendingAnswer;
+      if (api.assessmentActivity) { try { await activity.event('waiting'); } catch (error) { if (live(task.ticket)) view.activityError = error.message; } }
+      if (!live(task.ticket)) return;
       let response;
       try {
-        response = await api.recordAttempt(view.assessmentId, { include_feedback: true, answers: [{ question_id: question.id, expected_answer_revision: 0, answer: value }] }, { signal: task.signal, key: descriptor.pendingAnswer.key });
+        response = await api.recordAttempt(task.assessmentId, descriptor.pendingAnswer.body, { signal: task.signal, key: descriptor.pendingAnswer.key });
       } catch (error) {
         if (live(task.ticket) && api.assessmentActivity) await activity.event('ready').catch(() => {});
         throw error;
       }
-      descriptor.pendingAnswer.acknowledged = true;
-      const feedback = response?.question_feedback?.find(item => item.question_id === question.id);
-      if (feedback) descriptor.answerFeedback = { ...feedback, question };
-      save(task.spaceId, descriptor);
+      const latest = saved(task.spaceId, task.assessmentId);
+      if (latest.pendingAnswer?.key !== descriptor.pendingAnswer.key) return;
+      latest.pendingAnswer = { ...latest.pendingAnswer, acknowledged: true };
+      const feedback = descriptor.feedbackPolicy !== 'after_round' && response?.question_feedback?.find(item => item.question_id === question.id);
+      if (feedback) latest.answerFeedback = { ...feedback, question };
+      Object.assign(descriptor, latest);
+      save(task.spaceId, latest, task.assessmentId);
       if (!live(task.ticket)) return;
       view.answerFeedback = descriptor.answerFeedback || null;
       view.pendingAnswer = descriptor.pendingAnswer;
       try { await refresh(task, descriptor.assessmentId); }
-      catch (error) { throw new Error(`答案已记录，但更新题目失败。请继续 / 刷新诊断，无需重新提交。${failureMessage(error)}`); }
+      catch (error) { throw new Error(`答案已记录，但更新题目失败。请继续 / 刷新测评，无需重新提交。${failureMessage(error)}`); }
     });
   }
   async function next() {
     return run('正在进入下一题…', async task => {
-      const descriptor = saved(task.spaceId);
+      const descriptor = saved(task.spaceId, task.assessmentId);
       if (descriptor.answerFeedback) {
         descriptor.feedbackAcknowledgedIds = [...new Set([...(descriptor.feedbackAcknowledgedIds || []), descriptor.answerFeedback.question_id])];
-        delete descriptor.answerFeedback; save(task.spaceId, descriptor);
+        delete descriptor.answerFeedback; save(task.spaceId, descriptor, task.assessmentId);
       }
       view.answerFeedback = null;
       await refresh(task, view.assessmentId);
     });
   }
   async function finalize() {
-    return run('正在汇总已完成诊断…', async task => {
-      if (!view.assessmentId || !view.diagnostic || view.diagnostic.current_question) throw new Error('请先完成当前问题，再汇总诊断。');
-      const assessmentId = view.assessmentId, descriptor = saved(task.spaceId);
+    return run('正在提交整轮并汇总测评…', async task => {
+      if (!view.assessmentId || !view.diagnostic || view.diagnostic.current_question) throw new Error('请先完成当前问题，再汇总测评。');
+      const assessmentId = view.assessmentId, descriptor = saved(task.spaceId, task.assessmentId);
       descriptor.pendingFinalize ||= { body: { allow_unanswered: false }, key: uid(), acknowledged: false };
-      save(task.spaceId, descriptor); view.pendingFinalize = descriptor.pendingFinalize;
+      save(task.spaceId, descriptor, task.assessmentId); view.pendingFinalize = descriptor.pendingFinalize;
       if (!descriptor.pendingFinalize.acknowledged) {
         const result = await api.finalizeAssessment(assessmentId, descriptor.pendingFinalize.body, { signal: task.signal, key: descriptor.pendingFinalize.key });
         descriptor.pendingFinalize = { ...descriptor.pendingFinalize, acknowledged: true, runId: result.run_id };
-        save(task.spaceId, descriptor);
+        save(task.spaceId, descriptor, task.assessmentId);
         if (!live(task.ticket)) return;
         view.pendingFinalize = descriptor.pendingFinalize;
       }
       try { await resumeFinalization(task, descriptor); }
-      catch (error) { throw new Error(`汇总请求已接收，但结果更新失败。请继续 / 刷新诊断恢复。${failureMessage(error)}`); }
+      catch (error) { throw new Error(`汇总请求已接收，但结果更新失败。请继续 / 刷新测评恢复。${failureMessage(error)}`); }
     });
   }
   async function resumeFinalization(task, descriptor) {
     if (descriptor.pendingFinalize?.runId) await api.waitRun(descriptor.pendingFinalize.runId, task.signal);
     if (live(task.ticket)) await refresh(task, descriptor.assessmentId);
+  }
+  async function resume(assessmentId) {
+    sync();
+    if (assessmentId && assessmentId !== view.assessmentId) selectRound(assessmentId);
+    return run('正在恢复同一轮测评…', async task => {
+      const descriptor = saved(task.spaceId, task.assessmentId);
+      // Always read the original aggregate first. A lost finalize response may
+      // already have completed it; a GET must never submit another command.
+      await refresh(task, task.assessmentId);
+      if (live(task.ticket) && view.assessmentStatus !== 'completed' && descriptor.pendingFinalize?.acknowledged)
+        await resumeFinalization(task, descriptor);
+    });
+  }
+  async function recover(filter = {}) {
+    selectRound(filter.assessmentId || '', filter);
+    return run('正在查找可继续的测评…', async task => {
+      if (filter.assessmentId) { await refresh(task, filter.assessmentId); return; }
+      if (!api.recoverableAssessments) {
+        const selected = envelope(task.spaceId).selected[context().routeKey || ''];
+        if (selected) { task.assessmentId = selected; restoreDescriptor(selected); await refresh(task, selected); }
+        return;
+      }
+      const response = await api.recoverableAssessments(task.spaceId,
+        { ...(filter.planId ? { plan_id: filter.planId } : {}), ...(filter.taskId ? { task_id: filter.taskId } : {}) }, { signal: task.signal });
+      if (!live(task.ticket)) return;
+      const rows = response.items || [];
+      if (!Array.isArray(rows) || rows.some(row => row.space_id !== task.spaceId
+          || filter.planId && row.plan_id !== filter.planId || filter.taskId && row.task_id !== filter.taskId))
+        throw new Error('可恢复测评的空间或任务归属不一致。');
+      view.recoverableAssessments = rows;
+      if (rows.length === 1) {
+        const id = rows[0].id || rows[0].assessment_id;
+        task.assessmentId = id; restoreDescriptor(id); await refresh(task, id);
+      }
+    });
   }
   async function report(field, label, request) {
     return run(label, async task => {
@@ -353,7 +571,8 @@ export function createLearningController({ api, context, changed = () => {}, com
     if (!pendingKeys.has(signature)) pendingKeys.set(signature, uid());
     return { signature, key: pendingKeys.get(signature) };
   }
-  return { sync, snapshot: () => sync(), start, create: start, answer, next, finalize, loadKnowledge,
+  return { sync, snapshot: () => sync(), start, create: start, draftAnswer, answer, next, finalize, loadKnowledge, recover, resume,
+    initializeError: error => { sync(); view.error = failureMessage(error); changed(); },
     resumeAdjustment: () => run('正在恢复自动调整规则任务…', async task => {
       const runId = view.adjustmentRunId || view.adjustment?.run_id;
       if (!runId) throw new Error('当前没有待恢复的调整任务。');
@@ -400,11 +619,13 @@ export function createLearningController({ api, context, changed = () => {}, com
       if (live(task.ticket)) { pendingKeys.delete(retry.signature); view.recommendationApplication = result; view.recommendationPreview = null; }
     }),
     configure: setup => {
-      sync(); view.setup = { ...view.setup, ...setup };
+      sync(); view.setupRevision++; view.setup = { ...view.setup, ...setup };
       const previous = storageRead(storage, SETUPS, {});
       storageWrite(storage, SETUPS, { ...(previous && typeof previous === 'object' ? previous : {}), [view.spaceId]: view.setup });
     },
-    resume: () => run('正在恢复同一轮诊断…', task => saved(task.spaceId).pendingFinalize?.acknowledged ? resumeFinalization(task, saved(task.spaceId)) : refresh(task, view.assessmentId)),
+    configureDefaults: (setup, revision) => {
+      sync(); if (view.setupRevision === revision) view.setup = { ...view.setup, ...setup };
+    },
     loadEvolution: () => report('evolution', '正在读取证据与复习时间…', task => api.evolution(task.spaceId, { signal: task.signal })),
     compare: body => {
       sync(); view.comparisonRequest = body;
@@ -431,13 +652,14 @@ export function createLearningController({ api, context, changed = () => {}, com
         await api.cancelRun(descriptor.runId);
         try { await api.waitRun(descriptor.runId, activeRequest.signal); }
         catch (error) { if (error.details?.runStatus !== 'cancelled') throw error; }
-        if (live(ticket)) await refresh({ ticket, spaceId, signal: activeRequest.signal }, descriptor.assessmentId);
+        if (live(ticket)) await refresh({ ticket, spaceId, assessmentId: descriptor.assessmentId, owner: { ...recoveryFilter }, signal: activeRequest.signal }, descriptor.assessmentId);
       } catch (error) { if (live(ticket) && error.name !== 'AbortError') view.error = failureMessage(error); }
       finally { if (live(ticket)) { view.busy = ''; changed(); } }
     },
     clear: () => { activeRequest?.abort(); generation++; identity = ''; pendingKeys.clear(); },
     forget: spaceId => {
       descriptors.delete(spaceId);
+      drafts.forget(spaceId);
       for (const key of [SAVED, SETUPS]) {
         const values = storageRead(storage, key, {});
         if (values && typeof values === 'object' && !Array.isArray(values)) {
@@ -461,41 +683,54 @@ const action = (label, name, disabled = false, primary = false) => `<button type
 const empty = text => `<p class="learning-empty">${text}</p>`;
 const metric = (label, value) => `<div><dt>${label}</dt><dd>${value}</dd></div>`;
 const reasons = { insufficient_evidence: '独立证据不足', weak_topic: '需要加强的主题', topic_coverage: '覆盖学习主题', investigate_prerequisite: '独立排查已确认前置知识', no_available_prerequisite_question: '题池缺少可用前置题', prerequisite_out_of_scope: '前置主题不在本次范围内', requires_independent_verification: '等待独立作答验证', probe_not_independent_verified: '辅助或未验证答案不能支持假设', trigger_not_independent_incorrect: '触发答案已不构成独立错误证据', independent_prerequisite_observation: '依据独立前置题观察', no_current_independent_evidence: '暂无当前有效独立证据', independent_failure: '独立作答有误，缩短间隔', first_independent_success: '首次独立答对', spaced_independent_success: '间隔足够的独立答对', unspaced_success_does_not_extend: '间隔不足，不延后复习', easy_or_unknown_three_day_cap: '简单或难度未知题采用保守间隔', hard_application_required_for_fourteen_days: '更长间隔需要困难应用题', missing_prerequisite: '缺少必要前置', prerequisite_out_of_scope: '前置主题不在范围内', excluded_prerequisite: '前置主题已排除', horizon_capacity: '窗口容量不足', weekly_capacity: '每周预算不足', daily_capacity: '每日容量不足', blocked_prerequisite: '前置主题受阻', deadline: '截止日期限制', insufficient_prior_independent_evidence: '历史独立证据不足' };
-const reason = value => esc(reasons[value] || value || '暂无');
+const reason = value => esc(reasons[value] || allocationReason(value) || '暂无');
 
-function diagnosticSection(space, state, disabled) {
+function diagnosticSection(space, state, disabled, plan, completion = {}) {
+  disabled ||= state.setupReady === false;
   const diagnostic = state.diagnostic, question = diagnostic?.current_question, done = diagnostic?.status === 'completed';
+  const roundLabel = assessmentKindLabel(state.assessment?.kind || (state.assessmentId ? null : state.setup?.kind));
   const standard = state.assessmentMode === 'standard' || diagnostic?.mode === 'standard';
   const status = state.assessmentStatus || diagnostic?.status;
   const failed = ['failed', 'cancelled'].includes(status);
-  const canStart = !state.assessmentId || terminal(status);
+  const canStart = (!state.assessmentId || terminal(status)) && !state.explicitSelection && !(state.recoverableAssessments?.length && !state.assessmentId);
   const knowledge = state.knowledge, setup = state.setup || { topic: '', count: '5', type: 'single_choice', kind: 'diagnostic' };
   const eligible = list(knowledge?.eligible).filter(topic => !Array.isArray(setup.topic_ids) || setup.topic_ids.includes(topic.id));
   const option = (value, label, selected) => `<option value="${esc(value)}" ${value === String(selected) ? 'selected' : ''}>${esc(label)}</option>`;
   const setupForm = canStart ? `<form id="learning-start-form" class="learning-setup"><fieldset ${disabled || !eligible.length ? 'disabled' : ''}><legend class="screenreader">测评设置</legend><div class="form-field"><label for="assessment-topic">知识主题</label><select id="assessment-topic" name="topic">${option('', `${Array.isArray(setup.topic_ids) ? '当前任务主题' : '当前范围全部主题'}（${eligible.length}）`, setup.topic)}${eligible.map(topic => option(topic.id, topic.name || topic.title || topic.id, setup.topic)).join('')}</select></div><div class="field-row learning-setup-row"><div class="form-field"><label for="assessment-kind">测评方式</label><select id="assessment-kind" name="kind">${[['diagnostic', '自适应诊断'], ['practice', '专项练习'], ['retest', '独立复测']].filter(([id]) => !Array.isArray(setup.allowed_kinds) || setup.allowed_kinds.includes(id)).map(([id, label]) => option(id, label, setup.kind)).join('')}</select></div><div class="form-field"><label for="assessment-type">题型</label><select id="assessment-type" name="type">${[['single_choice', '单项选择'], ['short_answer', '简答题'], ['mixed', '选择 + 简答']].map(([id, label]) => option(id, label, setup.type)).join('')}</select></div><div class="form-field"><label for="assessment-count">题目数量</label><select id="assessment-count" name="count">${[5,6,7,8,9,10].map(count => option(String(count), `${count} 道`, setup.count)).join('')}</select></div></div><div class="form-field"><label for="assessment-difficulty">题目难度</label><select id="assessment-difficulty" name="difficulty">${[['', '按服务默认'], ['foundation', '基础为主'], ['balanced', '难度均衡'], ['challenge', '挑战为主']].map(([id, label]) => option(id, label, setup.difficulty || '')).join('')}</select></div><button type="submit" class="button button-primary">${failed ? '重新生成题目' : '开始测评'}</button></fieldset></form>` : '';
   const scopeInfo = knowledge ? `<div class="learning-knowledge"><p>已连接 ${number(list(knowledge.space.bindings).length)} 份资料 · ${number(knowledge.topics.length)} 个知识主题 · 当前可测 ${number(knowledge.eligible.length)} 个</p><button type="button" class="text-link" data-action="edit-scope" ${disabled || !canStart ? 'disabled' : ''}>调整学习范围</button></div>` : `<p class="learning-empty">${disabled ? '正在连接知识主题…' : '请读取学习空间中已绑定的知识主题，再开始测评。'}</p>${action('读取知识主题', 'knowledge', disabled)}`;
-  let content = state.needsActivityCheck ? '<p class="notice" role="status">已有 15 分钟没有页面操作，请核对是否仍在阅读或思考。操作页面后提示会消失，作答不会自动暂停。</p>' : '';
+  const choices = list(state.recoverableAssessments).length > 1 ? `<section aria-label="可继续的测评"><h3>选择要继续的测评</h3><ul>${state.recoverableAssessments.map(item => `<li><a class="button button-secondary" data-action="learning-select" data-assessment="${esc(item.id || item.assessment_id)}" href="${spacePath(space.id, 'assessment', { assessment_id: item.id || item.assessment_id, plan: item.plan_id, task: item.task_id, session: item.learning_session_id })}">${esc(assessmentKindLabel(item.kind))} · 已答 ${number(item.progress?.answered)} / ${number(item.progress?.target)} · ${esc(item.id || item.assessment_id)}</a></li>`).join('')}</ul></section>` : '';
+  const initializeRetry = state.setupReady === false && !state.busy ? '<button type="button" class="button button-secondary" data-action="learning-initialize">重新读取测评与关联</button>' : '';
+  const creationNotice = state.creationState === 'unknown' ? '<p class="notice warning" role="status">上一轮创建结果尚未确认。再次开始会重试原请求与原设置；当前设置仅在确认未创建后用于新一轮。</p>' : '';
+  let content = '';
   if (diagnostic) {
-    content += `<p class="learning-progress" role="status">已回答 ${number(diagnostic.progress?.answered)} / 目标 ${number(diagnostic.progress?.target)} 题${standard ? ' · 按题目顺序作答' : ` · 策略 ${esc(diagnostic.policy_version)}`}</p>`;
+    content += `<p class="learning-progress" role="status">${esc(roundLabel)} · 已回答 ${number(diagnostic.progress?.answered)} / 目标 ${number(diagnostic.progress?.target)} 题${standard ? ' · 按题目顺序作答' : ` · 策略 ${esc(diagnostic.policy_version)}`}</p>`;
+    content += renderAssistanceReasons(state.assessment?.assistance_events);
     if (state.answerFeedback) {
       const feedback = state.answerFeedback, answered = feedback.question;
       const answerText = value => answered?.options?.find(option => option.id === value)?.text || value || '未提供';
       const verdict = ({correct:'回答正确',incorrect:'回答错误',unverified:'待核验'})[feedback.verdict] || '待核验';
       content += `<section class="learning-answer-feedback" role="region" aria-label="本题反馈"><h3 tabindex="-1" data-answer-feedback-heading>${esc(verdict)}</h3>${answered?.prompt ? `<div class="note-markdown">${renderNoteMarkdown(answered.prompt)}</div>` : ''}<p><strong>你的答案：</strong>${esc(answerText(feedback.answer))}</p>${feedback.correct_answer ? `<p><strong>${feedback.verdict === 'unverified' ? '参考答案' : '正确答案'}：</strong>${esc(answerText(feedback.correct_answer))}</p>` : ''}<h4>本题解析</h4><div class="note-markdown">${renderNoteMarkdown(feedback.explanation || feedback.feedback)}</div>${feedback.verdict === 'unverified' ? `<p class="subtle">${esc(feedback.feedback || '本题尚未得到可靠判分，不计入已确认掌握。')}</p>` : ''}<p class="subtle">原文依据：${[...new Set(list(feedback.source_refs).map(ref => ref.page ? `第 ${ref.page} 页` : ref.line_start ? `第 ${ref.line_start} 行` : '封存资料'))].map(esc).join('、')}</p>${action(question ? '下一题' : '查看本轮汇总', 'next', disabled, true)}</section>`;
     } else if (state.pendingAnswer?.acknowledged) {
-      content += '<p class="notice" role="status">答案已记录，正在等待更新题目。点击“继续 / 刷新诊断”恢复进度。</p>';
+      content += '<p class="notice" role="status">答案已记录，正在等待更新题目。点击“继续 / 刷新测评”恢复进度。</p>';
     } else if (question) {
       const topic = list(knowledge?.topics).find(item => item.id === question.topic_id || list(question.topic_ids).includes(item.id));
       if (topic) content += `<p class="learning-question-topic">知识主题：${esc(topic.name || topic.title || topic.id)}</p>`;
-      content += `<form id="learning-answer-form"><fieldset class="learning-options" aria-labelledby="diagnostic-question-label" ${disabled ? 'disabled' : ''}><legend id="diagnostic-question-label" class="screenreader">当前问题</legend><div class="note-markdown assessment-prompt">${renderNoteMarkdown(question.prompt)}</div>${question.type === 'single_choice' ? list(question.options).map((option, index) => `<div class="learning-option" data-action="learning-option-select" data-option-id="diagnostic-option-${index}"><input id="diagnostic-option-${index}" type="radio" name="answer" value="${esc(option.id)}" aria-labelledby="diagnostic-option-text-${index}" required ${state.pendingAnswer?.answer === option.id ? 'checked' : ''}><label for="diagnostic-option-${index}"><strong>${index + 1}.</strong><span class="screenreader">选择选项 ${index + 1}</span></label><div id="diagnostic-option-text-${index}" class="note-markdown assessment-option">${renderNoteMarkdown(option.text)}</div></div>`).join('') : '<label for="diagnostic-answer">你的回答</label><textarea id="diagnostic-answer" name="answer" maxlength="4000" required>' + esc(state.pendingAnswer?.answer || '') + '</textarea>'}</fieldset><button type="submit" class="button button-primary" ${disabled ? 'disabled' : ''}>${state.pendingAnswer ? '重试原答案' : '提交当前答案'}</button></form>`;
-    } else if (done) content += `<div class="notice" role="status">本轮诊断已完成。${number(list(state.result?.question_results).filter(r => r.verdict === 'correct').length)} 题正确；这不代表已经证明掌握。</div>${state.result?.notes?.chapter_id ? `<a class="button button-secondary" href="${notePath(space.id, state.result.notes.chapter_id)}">查看本次学习笔记</a>` : ''}`;
+      const draft = state.answerDraft;
+      const draftAnswer = draft?.questionId === question.id && draft.assessmentId === state.assessmentId && draft.answerRevision === answerRevision(question) ? draft.answer : '';
+      const answer = state.pendingAnswer?.answer ?? draftAnswer;
+      content += `<form id="learning-answer-form" data-answer-draft-key="${esc(state.answerDraftKey || '')}"><fieldset class="learning-options" aria-labelledby="diagnostic-question-label" ${disabled || state.pendingAnswer ? 'disabled' : ''}><legend id="diagnostic-question-label" class="screenreader">当前问题</legend><div class="note-markdown assessment-prompt">${renderNoteMarkdown(question.prompt)}</div>${question.type === 'single_choice' ? list(question.options).map((option, index) => `<div class="learning-option" data-action="learning-option-select" data-option-id="diagnostic-option-${index}"><input id="diagnostic-option-${index}" type="radio" name="answer" value="${esc(option.id)}" aria-labelledby="diagnostic-option-text-${index}" required ${answer === option.id ? 'checked' : ''}><label for="diagnostic-option-${index}"><strong>${index + 1}.</strong><span class="screenreader">选择选项 ${index + 1}</span></label><div id="diagnostic-option-text-${index}" class="note-markdown assessment-option">${renderNoteMarkdown(option.text)}</div></div>`).join('') : '<label for="diagnostic-answer">你的回答</label><textarea id="diagnostic-answer" name="answer" maxlength="4000" required>' + esc(answer) + '</textarea>'}</fieldset><button type="submit" class="button button-primary" ${disabled ? 'disabled' : ''}>${state.pendingAnswer ? '重试原答案' : '提交当前答案'}</button></form>`;
+    } else if (done) {
+      content += `<div class="notice" role="status">${esc(roundLabel)}已完成；本轮作答反馈已保存，掌握条件见下方。</div>${state.result?.notes?.chapter_id ? `<a class="button button-secondary" href="${notePath(space.id, state.result.notes.chapter_id)}">查看本次学习笔记</a>` : ''}`;
+      content += renderResultSummary(state.result) + renderMasteryGaps(state.result?.current_state?.items, knowledge?.topics);
+      content += renderAssessmentCompletion(space, state, plan, completion, disabled);
+    }
     else if (terminal(diagnostic.status)) content += `<div class="notice warning">本轮状态：${esc(({ failed: '生成失败', cancelled: '已取消', stale: '资料版本已变化' })[diagnostic.status] || diagnostic.status)}。请检查资料与连接后开始新一轮。</div>`;
     if (diagnostic.completion_reason === 'no_unseen_question_family') content += '<div class="notice warning">没有可用的新题族：已验证题池没有更多未使用题目。可以汇总现有回答，不会补造新题。</div>';
     if (done && state.adjustment) content += `<section class="notice"><h3>本次计划调整 · ${esc(({ queued: '排队中', pending: '等待中', running: '规则处理中', applied: '已应用', blocked: '受阻', reverted: '已撤回' })[state.adjustment.status] || state.adjustment.status)}</h3>${state.adjustment.reason ? `<p>${esc(state.adjustment.reason)}</p>` : ''}${state.adjustment.diff ? `<details><summary>查看调整差异</summary><pre>${esc(JSON.stringify(state.adjustment.diff, null, 2))}</pre></details>` : ''}<button class="button button-secondary" data-action="plan-adjustments">查看计划与调整差异</button>${state.adjustmentError ? `<p role="alert">${esc(state.adjustmentError)}</p><button class="button button-secondary" data-action="learning-adjustment-resume">恢复原调整任务</button>` : ''}</section>`;
     if (diagnostic.completion_reason === 'exposure_history_limit') content += '<div class="notice warning">历史记录超出在线检查上限，无法确认候选题的独立性，本轮停止出题。只汇总已有记录，不据此判定已经掌握。</div>';
     if (Number(diagnostic.runtime_excluded_family_count) > 0) content += `<p class="subtle">为避免使用其他测验已展示的题目，已跳过 ${number(diagnostic.runtime_excluded_family_count)} 类题族。</p>`;
-    if (!question && !state.answerFeedback && !terminal(diagnostic.status) && !state.pendingFinalize?.acknowledged) content += action('汇总诊断', 'finalize', disabled, true);
-    if (state.pendingFinalize?.acknowledged) content += '<p class="notice" role="status">汇总请求已接收，点击“继续 / 刷新诊断”恢复同一轮结果。</p>';
+    if (!question && !state.answerFeedback && !terminal(diagnostic.status) && !state.pendingFinalize?.acknowledged) content += action('提交整轮并查看解析', 'finalize', disabled, true);
+    if (state.pendingFinalize?.acknowledged) content += '<p class="notice" role="status">汇总请求已接收，点击“继续 / 刷新测评”恢复同一轮结果。</p>';
     if (list(diagnostic.decisions).length) content += `<details class="learning-details"><summary>查看逐题选择依据（${diagnostic.decisions.length} 步）</summary><ol>${diagnostic.decisions.map(d => `<li>第 ${number(d.step)} 步：${reason(d.reason)}<small>依据 ${number(list(d.evidence_ids).length)} 条历史证据 · ${number(list(d.attempt_ids).length)} 次当前作答</small></li>`).join('')}</ol></details>`;
     if (list(diagnostic.hypotheses).length) content += `<div class="learning-hypotheses"><h3>前置知识排查</h3>${diagnostic.hypotheses.map(h => `<p><span class="badge">${esc(({ pending: '待验证', supported: '存在缺口观察', not_supported: '本次未支持缺口', inconclusive: '证据不足' })[h.status] || h.status)}</span> ${reason(h.reason)}</p>`).join('')}<p class="subtle">前置关系与一次作答不能证明错误的因果关系。</p></div>`;
   } else if (failed) {
@@ -508,10 +743,10 @@ function diagnosticSection(space, state, disabled) {
   else if (status === 'generating') {
     const stage = { waiting: '等待出题', generating: '生成题目', validating: '验证题目', ready: '题目已就绪' }[state.assessmentStage] || '查询出题进度';
     const elapsed = state.generationStartedAt ? ` · 已等待 ${Math.max(0, Math.floor((Date.now() - state.generationStartedAt) / 1000))} 秒` : '';
-    content = `<p class="learning-progress" role="status" data-assessment-stage="${esc(state.assessmentStage || '')}">${stage}${elapsed}</p>${empty('点击“继续 / 刷新诊断”查询同一轮测评，无需重复开始。')}`;
+    content = `<p class="learning-progress" role="status" data-assessment-stage="${esc(state.assessmentStage || '')}">${stage}${elapsed}</p>${empty('点击“继续 / 刷新测评”查询同一轮测评，无需重复开始。')}`;
   }
-  else content = empty(state.assessmentId ? '当前标签页保存了一轮诊断，点击“继续 / 刷新诊断”恢复。' : '还没有开始诊断。依据当前学习范围逐题作答，独立回答用于排查。');
-  return `<section class="panel learning-panel" id="learning-diagnostic" aria-labelledby="diagnostic-title"><div class="learning-panel-heading"><div><h2 id="diagnostic-title">学习测评</h2><p>根据已绑定的资料生成题目，逐题作答并记录学习证据。</p></div></div>${scopeInfo}${setupForm}${state.assessmentId ? `<div class="learning-actions">${action('继续 / 刷新诊断', 'resume', disabled)}${status === 'completed' ? '<a class="button button-primary" href="#/manage/assessment-result/' + encodeURIComponent(state.assessmentId) + '">查看逐题结果与复核</a>' : ''}${status === 'generating' ? '<button type="button" class="button button-secondary" data-action="learning-cancel">取消本轮出题</button>' : ''}</div>` : ''}${content}</section>`;
+  else content = empty(state.assessmentId ? '当前标签页保存了一轮测评，点击继续恢复封存的测评。' : '还没有开始测评。依据当前学习范围逐题作答，独立回答用于排查。');
+  return `<section class="panel learning-panel" id="learning-diagnostic" aria-labelledby="diagnostic-title"><div class="learning-panel-heading"><div><h2 id="diagnostic-title">${state.assessmentId ? esc(roundLabel) : '学习测评'}</h2><p>根据已绑定的资料生成题目，逐题作答并记录学习证据。</p></div></div>${scopeInfo}${initializeRetry}${choices}${creationNotice}<p class="notice">专项练习逐题展示解析；诊断与独立复测提交整轮后统一展示解析。查看原文、讲解、笔记或助手帮助，会将相关活动测评题目标为辅助（包括其它标签页和共享来源空间）；辅助回答不作为独立掌握证据。</p><p class="subtle">简答题保存作答和参考反馈，当前不自动可靠判分，结果保留为待核验，暂不计自动得分。</p>${setupForm}${state.assessmentId ? `<div class="learning-actions">${action(`继续 / 刷新${roundLabel}`, 'resume', disabled)}${status === 'completed' ? '<a class="button button-primary" href="#/manage/assessment-result/' + encodeURIComponent(state.assessmentId) + '">查看逐题结果与复核</a>' : ''}${status === 'generating' ? '<button type="button" class="button button-secondary" data-action="learning-cancel">取消本轮出题</button>' : ''}</div>` : ''}<p class="notice" data-assessment-activity-check role="status" ${state.needsActivityCheck ? '' : 'hidden'}>已有 15 分钟没有页面操作，请核对是否仍在阅读或思考。操作页面后提示会消失，作答不会自动暂停。</p><p class="notice warning" data-assessment-activity-error role="status" ${state.activityError ? '' : 'hidden'}>${esc(state.activityError || '')}</p>${content}</section>`;
 }
 
 function evolutionSection(report, disabled) {
@@ -522,16 +757,15 @@ function evolutionSection(report, disabled) {
       current.mastery_score = null;
       current.independent_evidence_count = list(schedule.selected_evidence_ids).length;
     }
-    return `<article class="learning-topic"><h3>${esc(item.topic_name || item.topic_id)}</h3><dl class="learning-metrics">${metric('证据均值', number(current.mastery_score))}${metric('独立证据数', number(current.independent_evidence_count))}${metric('下次复习', time(schedule.next_review_at))}${metric('规则间隔', schedule.interval_days == null ? '暂无' : `${number(schedule.interval_days)} 天`)}</dl><p class="subtle">${schedule.due ? '已到复习时间' : '复习时间依据当前有效独立证据'} · ${list(schedule.reasons).map(reason).join('；') || '暂无有效独立证据'}</p>${schedule.due ? `<button type="button" class="button button-primary" data-action="review-topic" data-topic="${esc(item.topic_id)}" ${disabled ? 'disabled' : ''}>独立复测这个主题</button>` : ''}${curve.length ? `<details class="learning-details"><summary>查看掌握度变化（${curve.length} 个记录点）</summary><div class="learning-table-wrap"><table class="learning-table"><caption class="screenreader">实际作答时间与证据均值</caption><thead><tr><th scope="col">实际作答</th><th scope="col">当时可用均值</th><th scope="col">当前修订均值</th></tr></thead><tbody>${curve.map(point => `<tr><td>${time(point.observed_at)}</td><td>${number(point.observed_mastery_score)}</td><td>${number(point.mastery_score)}</td></tr>`).join('')}</tbody></table></div></details>` : empty('暂无有效曲线，不会填补虚构记录。')}${events.length ? `<details class="learning-details"><summary>作答、纠错与重置记录（${events.length} 条）</summary><ul>${events.map(event => `<li>${esc(({ observation: '原始作答', correction: '后续纠错', reset: '状态重置' })[event.type] || event.type)} · 记录于 ${time(event.recorded_at)}${event.observed_at ? `<small>作答于 ${time(event.observed_at)} · ${list(event.exclusion_reasons).map(reason).join('、') || '无显式排除标记'}</small>` : ''}</li>`).join('')}</ul></details>` : ''}</article>`;
+    return `<article class="learning-topic"><h3>${esc(item.topic_name || item.topic_id)}</h3><dl class="learning-metrics">${metric('证据均值', number(current.mastery_score))}${metric('独立证据数', number(current.independent_evidence_count))}${metric('下次复习', time(schedule.next_review_at))}${metric('规则间隔', schedule.interval_days == null ? '暂无' : `${number(schedule.interval_days)} 天`)}</dl>${renderMasteryGaps([current], [{id:item.topic_id,name:item.topic_name}])}<p class="subtle">${schedule.due ? '已到复习时间' : '复习时间依据当前有效独立证据'} · ${list(schedule.reasons).map(reason).join('；') || '暂无有效独立证据'}</p>${schedule.due ? `<button type="button" class="button button-primary" data-action="review-topic" data-topic="${esc(item.topic_id)}" ${disabled ? 'disabled' : ''}>独立复测这个主题</button>` : ''}${curve.length ? `<details class="learning-details"><summary>查看掌握度变化（${curve.length} 个记录点）</summary><div class="learning-table-wrap"><table class="learning-table"><caption class="screenreader">实际作答时间与证据均值</caption><thead><tr><th scope="col">实际作答</th><th scope="col">当时可用均值</th><th scope="col">当前修订均值</th></tr></thead><tbody>${curve.map(point => `<tr><td>${time(point.observed_at)}</td><td>${number(point.observed_mastery_score)}</td><td>${number(point.mastery_score)}</td></tr>`).join('')}</tbody></table></div></details>` : empty('暂无有效曲线，不会填补虚构记录。')}${events.length ? `<details class="learning-details"><summary>作答、纠错与重置记录（${events.length} 条）</summary><ul>${events.map(event => `<li>${esc(({ observation: '原始作答', correction: '后续纠错', reset: '状态重置' })[event.type] || event.type)} · 记录于 ${time(event.recorded_at)}${event.observed_at ? `<small>作答于 ${time(event.observed_at)} · ${list(event.exclusion_reasons).map(reason).join('、') || '无显式排除标记'}</small>` : ''}</li>`).join('')}</ul></details>` : ''}</article>`;
   }).join('');
   return `<section class="panel learning-panel" id="learning-evolution" aria-labelledby="evolution-title"><div class="learning-panel-heading"><span class="learning-step">02</span><div><h2 id="evolution-title">掌握度与复习</h2><p>区分实际作答、后来纠错和当前有效证据。</p></div></div>${action('读取演化与复习', 'evolution', disabled)}${content}${report?.truncated ? '<p class="notice warning">历史较多，本页仅显示服务返回的最近记录。</p>' : ''}<p class="learning-caveat">证据均值与充分度不是掌握概率；失效版本的历史均值不作为当前分数。辅助、重复题族及已撤销观察不能延后独立复习时钟。</p></section>`;
 }
 
 export function renderRouteTasks(tasks = []) {
   return `<ol class="learning-schedule">${tasks.map(task => {
-    const ctx = task.context || task, forecast = ctx.duration_forecast || {}, allocations = list(ctx.allocations);
-    const status = ({ scheduled: '已排程', partial: '跨次部分安排', waiting_capacity: '等待预算容量', blocked: '前置条件受阻', not_required: '无需安排' })[ctx.allocation_state || task.allocation_state] || '';
-    return `<li><strong>${esc(task.title || ctx.title || task.name || task.topic_id || task.id)}</strong><span>学习 ${number(forecast.study_minutes)} 分钟 · 作答 ${number(forecast.answer_minutes)} 分钟${status ? ' · ' + status : ''}</span>${allocations.map(a => `<small>${esc(a.date)} · ${a.phase === 'answer' ? '作答' : '学习'} ${number(a.minutes)} 分钟</small>`).join('')}${list(ctx.allocation_reasons || ctx.reason_codes || task.reason_codes).map(code => `<small>${esc(reason(code))}</small>`).join('')}</li>`;
+    const ctx = task.context || task, forecast = ctx.duration_forecast || {};
+    return `<li><strong>${esc(task.title || ctx.title || task.name || task.topic_id || task.id)}</strong><span>预计学习 ${number(forecast.study_minutes)} 分钟 · 作答 ${number(forecast.answer_minutes)} 分钟</span><small>${esc(allocationExplanation(task))}</small></li>`;
   }).join('')}</ol>`;
 }
 function comparisonSection(report, disabled, request, preview, application) {
@@ -539,10 +773,10 @@ function comparisonSection(report, disabled, request, preview, application) {
   const form = `<form id="learning-comparison-form" class="learning-comparison-form"><div class="field-row"><div class="form-field"><label for="learning-budgets">每日预算（分钟）</label><input id="learning-budgets" name="budgets" value="${esc((request?.budgets_minutes_per_day || [20, 40]).join(','))}" required ${disabled ? 'disabled' : ''} aria-describedby="learning-budget-help"><small id="learning-budget-help">2—5 档预算，用逗号分隔；每档 1—480 分钟。</small></div><div class="form-field"><label for="learning-horizon">比较窗口（天）</label><input id="learning-horizon" name="horizon" type="number" min="1" max="30" step="1" value="${esc(request?.horizon_days ?? 7)}" required ${disabled ? 'disabled' : ''}></div></div><button class="button button-secondary" type="submit" ${disabled ? 'disabled' : ''}>比较时间预算</button><p class="form-error" data-learning-error hidden role="alert"></p></form>`;
   const content = !report ? empty('相同学习快照下比较可行目标、暂缓主题与前置约束，不会替换正式计划。') : !scenarios.length ? empty('暂无可比较方案，请检查学习范围和可用知识主题。') : `<div class="learning-scenarios">${scenarios.map(scenario => {
     const summary = scenario.summary || {};
-    if (scenario.scenario_id) return `<article class="learning-scenario"><h3>每天 ${number(scenario.daily_minutes)} 分钟</h3><dl class="learning-metrics">${metric('完整路线', `${number(scenario.coverage_count)} / ${number(scenario.total_count)}`)}${metric('窗口外剩余', `${number(scenario.remaining_minutes)} 分钟`)}${metric('等待容量', number(scenario.waiting_count))}</dl>${renderRouteTasks(list(scenario.tasks))}<button type="button" class="button button-secondary" data-action="learning-schedule-preview" data-scenario="${esc(scenario.scenario_id)}" ${disabled || !scenario.can_apply ? 'disabled' : ''}>预览此排程</button>${!scenario.can_apply ? '<p class="subtle">当前快照或容量约束下不能应用。</p>' : ''}</article>`;
+    if (scenario.scenario_id) return `<article class="learning-scenario"><h3>每天 ${number(scenario.daily_minutes)} 分钟</h3><dl class="learning-metrics">${metric('完整路线', `${number(scenario.coverage_count)} / ${number(scenario.total_count)}`)}${metric('窗口外剩余', `${number(scenario.remaining_minutes)} 分钟`)}${metric('等待容量', number(scenario.waiting_count))}</dl>${renderScheduleSummary(scenario.summary)}${renderRouteTasks(list(scenario.tasks))}<button type="button" class="button button-secondary" data-action="learning-schedule-preview" data-scenario="${esc(scenario.scenario_id)}" ${disabled || !scenario.can_apply ? 'disabled' : ''}>预览此排程</button>${!scenario.can_apply ? '<p class="subtle">当前快照或容量约束下不能应用。</p>' : ''}</article>`;
     return `<article class="learning-scenario"><h3>每天 ${number(scenario.minutes_per_day)} 分钟</h3><dl class="learning-metrics">${metric('入选主题', number(summary.selected_topic_count))}${metric('主题覆盖', percent(summary.coverage_fraction))}${metric('估计用时', `${number(summary.estimated_minutes)} 分钟`)}${metric('到期 / 薄弱覆盖', `${number(summary.due_topics_covered)} / ${number(summary.weak_topics_covered)}`)}</dl>${list(scenario.schedule).length ? `<ol class="learning-schedule">${scenario.schedule.map(task => `<li><strong>${esc(task.name || task.topic_id)}</strong><span>${esc(task.scheduled_date)} · ${number(task.estimated_minutes)} 分钟</span></li>`).join('')}</ol>` : empty('当前约束下暂无可安排的任务。')}<details class="learning-details"><summary>暂缓 ${number(list(scenario.deferred).length)} · 受阻 ${number(list(scenario.blocked).length)}</summary>${[...list(scenario.blocked), ...list(scenario.deferred)].map(item => `<p>${esc(item.name || item.topic_id)}：${list(item.reason_codes).map(reason).join('、')}</p>`).join('') || '<p>没有受阻或暂缓主题。</p>'}</details></article>`;
   }).join('')}</div>`;
-  return `<section class="panel learning-panel" id="learning-comparison" aria-labelledby="comparison-title"><div class="learning-panel-heading"><span class="learning-step">03</span><div><h2 id="comparison-title">时间预算比较</h2><p>完整路线沿用知识顺序，预算决定跨次安排，阅读始终开放。</p></div></div>${form}${content}${preview ? `<section class="notice"><h3>确认排程预览 · 每天 ${number(preview.daily_minutes)} 分钟</h3>${renderRouteTasks(list(preview.tasks))}<p>采用时会检查计划版本与比较快照。已完成记录保留。</p><button type="button" class="button button-primary" data-action="learning-schedule-apply" ${disabled ? 'disabled' : ''}>确认采用此排程</button></section>` : ''}${application ? '<p class="notice">排程已应用。</p>' : ''}<p class="learning-caveat">这是确定性规则预览，不保证全局最优，也不承诺学习收益。</p></section>`;
+  return `<section class="panel learning-panel" id="learning-comparison" aria-labelledby="comparison-title"><div class="learning-panel-heading"><span class="learning-step">03</span><div><h2 id="comparison-title">时间预算比较</h2><p>完整路线沿用知识顺序，预算决定跨次安排，阅读始终开放。</p></div></div>${form}${content}${preview ? `<section class="notice"><h3>确认排程预览 · 每天 ${number(preview.daily_minutes)} 分钟</h3>${renderScheduleSummary(preview.summary)}${renderRouteTasks(list(preview.tasks))}<p>采用时会检查计划版本与比较快照。已完成记录保留。</p><button type="button" class="button button-primary" data-action="learning-schedule-apply" ${disabled ? 'disabled' : ''}>确认采用此排程</button></section>` : ''}${application ? '<p class="notice">排程已应用。</p>' : ''}<p class="learning-caveat">这是确定性规则预览，不保证全局最优，也不承诺学习收益。</p></section>`;
 }
 
 function replaySection(report, disabled, request = {}) {
@@ -557,13 +791,13 @@ function replaySection(report, disabled, request = {}) {
   return `<section class="panel learning-panel" id="learning-replay" aria-labelledby="replay-title"><div class="learning-panel-heading"><span class="learning-step">04</span><div><h2 id="replay-title">策略回放与评估</h2><p>还原当时可得证据，分开看选择、预测与复测。</p></div></div><form id="learning-replay-form"><fieldset class="workspace-fields" ${disabled ? 'disabled' : ''}><div class="workspace-filters"><div class="form-field"><label for="replay-from">开始时间（选填）</label><input type="datetime-local" id="replay-from" name="from" value="${esc(localTime(request.from_time))}"></div><div class="form-field"><label for="replay-to">结束时间（选填）</label><input type="datetime-local" id="replay-to" name="to" value="${esc(localTime(request.to_time))}"></div><div class="form-field"><label for="replay-limit">最多回放记录</label><input type="number" id="replay-limit" name="limit" min="1" max="1000" value="${esc(request.limit || 200)}" required></div><div class="form-field"><label for="replay-delay">最小复测间隔（小时）</label><input type="number" id="replay-delay" name="delay" min="24" max="8760" value="${esc(request.minimum_delay_hours || 24)}" required></div><button type="submit" class="button button-secondary">回放真实历史</button></div><p class="form-error" data-learning-error hidden role="alert"></p></fieldset></form>${content}<p class="learning-caveat">回放比较的是主题选择代理指标，不模拟题池覆盖和逐题前置排查。历史无法观测未执行策略的反事实结果；分数变化不是因果提升，也不是经校准的掌握概率。</p></section>`;
 }
 
-export function renderLearning({ space, state, spaceSelectHtml = '', section = 'diagnostic', embedded = false, hideNav = false }) {
+export function renderLearning({ space, state, plan, completion, spaceSelectHtml = '', section = 'diagnostic', embedded = false, hideNav = false }) {
   const heading = embedded ? '' : '<div class="page-heading"><div><h1>空间学习工具</h1><p>用真实证据，决定下一步怎样学。</p></div></div>';
   if (!space) return `${heading}<div class="empty-state"><h2>先选择一个学习空间</h2><p>导入资料并创建空间后，再开启测评与复习。</p><a href="#/spaces" class="button button-primary">查看学习空间</a></div>`;
   const disabled = Boolean(state.busy);
   const recommendation = state.recommendation;
   const recommendations = `<section class="panel learning-panel"><h2>依据当前证据的建议</h2><button class="button button-secondary" data-action="learning-recommend" ${disabled ? 'disabled' : ''}>检查策略建议</button>${recommendation ? `<p>${esc(typeof recommendation.explanation === 'string' ? recommendation.explanation : JSON.stringify(recommendation.explanation || {}))}</p><p>建议状态：${esc(recommendation.status || '待预览')}</p><details><summary>证据与缺失证据</summary><pre>${esc(JSON.stringify({ evidence: recommendation.evidence, missing_evidence: recommendation.missing_evidence }, null, 2))}</pre></details><button class="button button-secondary" data-action="learning-recommend-preview" ${disabled ? 'disabled' : ''}>预览建议变更</button>${state.recommendationPreview ? `<details open><summary>变更预览</summary><pre>${esc(JSON.stringify(state.recommendationPreview, null, 2))}</pre></details><button class="button button-primary" data-action="learning-recommend-apply" ${disabled ? 'disabled' : ''}>确认应用建议</button>` : ''}` : '<p class="subtle">数据不足时保留缺失证据说明，建议不代表最佳策略或因果增益。</p>'}${state.recommendationApplication ? '<p class="notice">建议已应用。</p>' : ''}</section>`;
-  const sections = { diagnostic: () => diagnosticSection(space, state, disabled), evolution: () => evolutionSection(state.evolution, disabled), comparison: () => comparisonSection(state.comparison, disabled, state.comparisonRequest, state.schedulePreview, state.scheduleApplication), replay: () => replaySection(state.replay, disabled, state.replayRequest) + recommendations };
+  const sections = { diagnostic: () => diagnosticSection(space, state, disabled, plan, completion), evolution: () => evolutionSection(state.evolution, disabled), comparison: () => comparisonSection(state.comparison, disabled, state.comparisonRequest, state.schedulePreview, state.scheduleApplication), replay: () => replaySection(state.replay, disabled, state.replayRequest) + recommendations };
   const selected = Object.hasOwn(sections, section) ? section : 'diagnostic';
   const nav = [['diagnostic', '学习测评'], ['evolution', '掌握与复习'], ['comparison', '预算比较'], ['replay', '策略回放']].map(([id, label]) => `<a href="#/learning/${id}" ${id === selected ? 'aria-current="page"' : ''} data-action="learning-section" data-section="${id}">${label}</a>`).join('');
   return `${heading}${embedded ? '' : `<div class="toolbar">${spaceSelectHtml}<span class="badge">${esc(space.name)} · 真实学习数据</span></div>`}${embedded || hideNav ? '' : `<nav class="learning-jumps" aria-label="空间学习工具">${nav}</nav>`}<div id="learning-feedback" aria-live="polite">${state.busy ? `<p class="notice" role="status">${esc(state.busy)}</p>` : ''}${state.error && (selected !== 'diagnostic' || state.error !== state.generationError?.message) ? `<p class="notice error" role="alert">${esc(state.error)}</p>` : ''}</div><div class="learning-sections" aria-busy="${disabled}">${sections[selected]()}${selected === 'evolution' ? '<div class="workspace-related"><a class="text-link" href="#/manage/learning-state/' + encodeURIComponent(space.id) + '">状态明细</a><a class="text-link" href="#/manage/evidence/' + encodeURIComponent(space.id) + '">学习证据</a><a class="text-link" href="#/manage/learning-reset/' + encodeURIComponent(space.id) + '">重置部分主题</a></div>' : ''}</div>`;

@@ -15,6 +15,13 @@ const notebookWithGeneratedChapter = () => ({
   readme_markdown: '# Python 入门\n\n| 章节 | 状态 |\n| --- | --- |\n| [1.1 3. 循环、range 与列表](1.1-3. 循环、range 与列表.md) | 进行中 |',
 });
 
+test('chapter distinguishes generated text from task confirmation and mastery conditions', () => {
+  const book = notebookWithGeneratedChapter();
+  const chapter = {...book.chapters[0], space_id:'s',blocks:[],generations:[],completion_conditions:{task_confirmed:false,all_topics_mastered:false,topics:[]}};
+  const html=notes.renderNotes({notebook:book,chapter});
+  assert.match(html,/笔记生成：已生成/);assert.match(html,/任务确认：尚未确认/);assert.match(html,/掌握条件：尚未满足/);
+});
+
 test('README links with Chinese filenames and spaces open the cloud chapter rather than a local file', () => {
   const html = notes.renderNotes({ notebook: notebookWithGeneratedChapter() });
   const readme = html.slice(html.indexOf('<summary>查看 README</summary>'));

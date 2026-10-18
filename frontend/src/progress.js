@@ -1,4 +1,13 @@
 import { esc } from './store.js';
+import { spacePath } from './workbench.js';
+
+function assessmentLink(assessment) {
+  if (!assessment.assessment_id) return '';
+  if (assessment.status === 'completed') return `<a class="text-link" href="#/manage/assessment-result/${encodeURIComponent(assessment.assessment_id)}">查看测评结果</a>`;
+  if (['generating', 'ready', 'in_progress'].includes(assessment.status) && assessment.space_id)
+    return `<a class="text-link" href="${spacePath(assessment.space_id, 'assessment', { assessment_id: assessment.assessment_id, plan: assessment.plan_id, task: assessment.task_id, session: assessment.learning_session_id })}">继续测评</a>`;
+  return '';
+}
 
 export function createProgressDock({ Observer = globalThis.IntersectionObserver, offset = 80 } = {}) {
   let observer, panel, dock, visible, generation = 0;
@@ -33,6 +42,33 @@ const taskStates = { completed: '已完成', pending: '待学习', active: '学�
 const labels = { ...taskStates, ready: '可学习', in_progress: '学习中', needs_replan: '需更新计划', superseded: '已有更新计划', stale: '需更新计划', archived: '已归档', finished: '已结束', paused: '已暂停', failed: '失败', cancelled: '已取消', generating: '正在出题', grading: '正在评分', diagnostic: '诊断测评', practice: '练习测评', retest: '复测', learn: '学习', review: '复习', correct: '正确', incorrect: '错误', unverified: '未验证', partial: '部分正确', invalid: '已作废' };
 const label = value => labels[value] || value || '未记录';
 const unavailablePlan = status => ['superseded', 'stale', 'archived', 'cancelled', 'failed'].includes(status);
+
+const allocationReasons = {
+  window_capacity: '近期窗口预算不足；剩余内容等待后续安排，仍可预览和阅读',
+  deadline_capacity: '截止日期内预算不足；可调整目标日期或预算，剩余内容仍可阅读',
+  prerequisite_capacity: '前置节点尚未安排完整，后续节点等待前置排期；资料仍可阅读',
+  prerequisite_deferred: '前置节点已延期，后续安排等待前置恢复',
+  user_deferred: '你已将此节点延期，延期结束后重新检查安排',
+  mastered_not_due: '当前已掌握且未到复习期，无需安排',
+};
+export const allocationReason = code => allocationReasons[code] || (code ? '暂未安排，请检查预算、窗口和前置安排' : '');
+export function allocationExplanation(task) {
+  const context = { ...task, ...task.context };
+  const status = ({ scheduled: '已按日期安排', partial: '部分已安排，仍有未安排内容', waiting_capacity: '等待可用预算', blocked: '等待前置安排', deferred: '已延期', not_required: '当前无需安排' })[context.allocation_state] || '';
+  const codes = [context.allocation_reason, ...rows(context.allocation_reasons || context.reason_codes)].filter(Boolean);
+  const dates = new Map();
+  for (const allocation of rows(context.allocations)) {
+    const phases = dates.get(allocation.date) || [];
+    phases.push(`${({ study: '学习', answer: '作答' })[allocation.phase] || '学习活动'} ${allocation.minutes} 分钟`);
+    dates.set(allocation.date, phases);
+  }
+  return [status, ...[...new Set(codes)].map(allocationReason), ...[...dates].map(([date, phases]) => `${date} · ${phases.join(' · ')}`)].filter(Boolean).join('；');
+}
+export function renderScheduleSummary(summary) {
+  if (!summary) return '<p class="subtle">当前暂无工作量预测；可调整预算并重新预览，暂不承诺具体安排。</p>';
+  const value = key => Number.isFinite(Number(summary[key])) ? Number(Number(summary[key]).toFixed(1)) : '待估计';
+  return `<div class="schedule-summary"><p>所选总工作量（估计） <strong>${value('selected_minutes')} 分钟</strong> · 窗口容量 <strong>${value('capacity_minutes')} 分钟</strong></p><p>已安排（估计） <strong>${value('allocated_minutes')} 分钟</strong> · 未安排（估计） <strong>${value('unallocated_minutes')} 分钟 / ${value('unallocated_count')} 个节点</strong></p><p class="subtle">这里统计所选范围尚需学习的内容；已完成、历史和当前无需复习的节点不重复占用预算。学习和作答共同占用预算；日期与阶段是预算预留，未定义具体时段。用时是预测，实际进度可能改变安排。普通节点作答按标准五道单选题估计；待来源核对节点不预留自动测评。超出容量的节点仍可预览和阅读。</p></div>`;
+}
 
 export function taskDisplay(task, index, { historical = false } = {}) {
   const original = taskName(task);
@@ -102,10 +138,8 @@ function nodeStrip(nodes, heading, { activeSession = null, historical = false } 
     const { ordinal, name, sourceLabel } = taskDisplay(node, index, { historical });
     const forecast = node.duration_forecast || node.context?.duration_forecast;
     const minutes = finite(node.estimated_minutes) && Number(node.estimated_minutes) >= 0 ? ` · 预计 ${Number(node.estimated_minutes)} 分钟` : '';
-    const allocations = rows(node.allocations || node.context?.allocations);
-    const allocationState = node.allocation_state || node.context?.allocation_state;
     const splitTime = forecast ? `学习 ${Number(Number(forecast.study_minutes || 0).toFixed(1))} · 作答 ${Number(Number(forecast.answer_minutes || 0).toFixed(1))} 分钟` : '';
-    const scheduling = allocationState === 'not_required' ? '当前无需安排' : ['waiting_capacity', 'blocked', 'partial'].includes(allocationState) ? node.allocation_reason || node.context?.allocation_reason || '等待可用预算' : allocations.length > 1 ? `分 ${allocations.length} 个时段安排` : '';
+    const scheduling = allocationExplanation(node);
     const accessible = `${ordinal}. ${name}，${status}${minutes}${node.historical ? '，历史任务' : ''}`;
     const connector = index ? `<span class="progress-connector ${nodes[index - 1].status === 'completed' && node.status === 'completed' ? 'completed' : 'pending'}" aria-hidden="true"></span>` : '';
     const glyph = state === 'completed' ? '<svg class="progress-check" viewBox="0 0 20 20" aria-hidden="true"><path d="m5 10 3 3 7-7" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>' : state === 'skipped' ? '<span aria-hidden="true">−</span>' : state === 'deferred' ? '<span aria-hidden="true">↷</span>' : '<span class="progress-hollow" aria-hidden="true"></span>';
@@ -116,10 +150,12 @@ function nodeStrip(nodes, heading, { activeSession = null, historical = false } 
 const countText = nodes => `已完成 ${nodes.filter(node => node.status === 'completed').length} / ${nodes.length}`;
 const timestamp = value => !present(value) ? '未记录' : `<time${Number.isFinite(Date.parse(value)) ? ` datetime="${esc(value)}"` : ''}>${esc(String(value).replace('T', ' ').replace(/Z$/, ' UTC'))}</time>`;
 
-export function renderProgress(progress, { currentPlan = null, compact = false, expandedRounds = [], showHeading = true, historyOnly = false, activeSession = null } = {}) {
+export function renderProgress(progress, { currentPlan = null, compact = false, expandedRounds = [], showHeading = true, historyOnly = false, activeSession = null, status = currentPlan || currentRound(progress) ? 'ready' : progress ? 'ready_empty' : 'not_loaded' } = {}) {
+  if (!currentPlan && !(progress?.rounds || []).length && status !== 'ready_empty') return `<div class="learning-node-progress${compact ? ' compact' : ''}"><p class="subtle" role="status">${status === 'error' ? '学习进度读取失败，请重试。' : '正在读取学习进度…'}</p></div>`;
   const current = currentRound(progress, currentPlan);
   const currentNodes = currentProgressNodes(progress, currentPlan);
-  let html = `<div class="learning-node-progress${compact ? ' compact' : ''}">${historyOnly ? '' : `<section class="progress-current" data-progress-view="current" aria-label="当前计划进度">${showHeading ? `<div class="progress-heading"><h3>当前计划</h3>${current ? `<span>${esc(countText(currentNodes))}</span>` : ''}</div>` : ''}${current ? nodeStrip(currentNodes, '当前计划', { activeSession }) : '<p class="progress-empty">尚未生成当前计划，暂无学习节点</p>'}</section>`}`;
+  const budget = currentPlan?.config?.schedule_mode === 'budget_rolling' ? renderScheduleSummary(currentPlan.config.schedule_summary) + '<div class="learning-actions"><button type="button" class="text-link" data-action="new-plan">延长窗口 / 调整预算</button><button type="button" class="text-link" data-action="edit-scope">缩小学习范围</button></div>' : '';
+  let html = `<div class="learning-node-progress${compact ? ' compact' : ''}">${historyOnly ? '' : `<section class="progress-current" data-progress-view="current" aria-label="当前计划进度">${showHeading ? `<div class="progress-heading"><h3>当前计划</h3>${current ? `<span>${esc(countText(currentNodes))}</span>` : ''}</div>` : ''}${budget}${current ? nodeStrip(currentNodes, '当前计划', { activeSession }) : '<p class="progress-empty">尚未生成当前计划，暂无学习节点</p>'}</section>`}`;
   if (!compact) {
     const rounds = chronologicalRounds(progress).filter(round => !historyOnly || round.plan_id !== current?.plan_id);
     const expanded = new Set(rows(expandedRounds));
@@ -174,7 +210,8 @@ export function renderLearningRecord(record, { busy = false, error = '' } = {}) 
   const historical = record.historical || task.historical || task.context?.historical;
   const executable = current && !historical && !unavailablePlan(planStatus) && present(planId) && present(taskId);
   const canStart = executable && (!present(planStatus) || ['ready', 'active'].includes(planStatus)) && ['pending', 'in_progress', 'active'].includes(task.status);
-  const canAssess = executable && (task.status === 'completed' || planStatus !== 'needs_replan' && ['pending', 'in_progress', 'active'].includes(task.status));
+  const sourceReview = [...rows(record.topics), ...rows(task.context?.topics)].some(topic => topic.is_assessable === false || topic.automatic_questions === false);
+  const canAssess = !sourceReview && executable && (task.status === 'completed' || planStatus !== 'needs_replan' && ['pending', 'in_progress', 'active'].includes(task.status));
   const minutes = task.estimated_minutes ?? task.minutes;
   const sessions = rows(record.sessions).filter(Boolean);
   const matching = sessions.filter(session => session.plan_id === planId && session.task_id === taskId).map((session, index) => ({ session, index })).sort((a, b) => {
@@ -184,9 +221,9 @@ export function renderLearningRecord(record, { busy = false, error = '' } = {}) 
   const latestSession = [...matching].reverse().find(session => session.status === 'active') || matching[matching.length - 1];
   const sessionId = latestSession?.session_id || latestSession?.id;
   const route = present(planId) && present(taskId) ? `${id(planId)}/${id(taskId)}` : '';
-  const actions = `${route ? `<a class="button button-secondary" href="#/manage/task/${route}">查看任务记录</a>` : ''}${canStart || latestSession?.status === 'active' ? `<a class="button button-primary" href="#/manage/session/${route}">${latestSession?.status === 'active' ? '继续学习会话' : '开始学习会话'}</a>` : ''}${canAssess ? `<button type="button" class="button button-secondary" data-action="task-assessment" data-plan="${esc(planId)}" data-task="${esc(taskId)}" data-space="${esc(record.space_id)}" data-kind="${task.status === 'completed' ? 'retest' : 'practice'}"${present(sessionId) ? ` data-session="${esc(sessionId)}"` : ''}>开始关联测评</button>` : ''}`;
+  const actions = `${sourceReview ? '<p class="notice">本节点需核对来源，暂不自动测评；可继续阅读、保存会话并查看任务记录。</p>' : ''}${route ? `<a class="button button-secondary" href="#/manage/task/${route}">查看任务记录</a>` : ''}${canStart || latestSession?.status === 'active' ? `<a class="button button-primary" href="#/manage/session/${route}">${latestSession?.status === 'active' ? '继续学习会话' : '开始学习会话'}</a>` : ''}${canAssess ? `<button type="button" class="button button-secondary" data-action="task-assessment" data-plan="${esc(planId)}" data-task="${esc(taskId)}" data-space="${esc(record.space_id)}" data-kind="${task.status === 'completed' ? 'retest' : 'practice'}"${present(sessionId) ? ` data-session="${esc(sessionId)}"` : ''}>开始关联测评</button>` : ''}`;
   return `<div class="learning-record"><header class="record-heading"><h2>${esc(taskName(task))}</h2><p>${esc(label(task.status))}${finite(minutes) && Number(minutes) >= 0 ? ` · 预计 ${Number(minutes)} 分钟` : ' · 预计时长未记录'}${!current || unavailablePlan(planStatus) || historical ? ' · 历史记录' : ''}</p></header><div class="record-actions">${actions}</div><section class="record-section" aria-label="学习笔记"><h3>学习笔记</h3><p class="record-note">${esc(task.note || '未记录学习笔记')}</p>${record.note?.chapter_id ? `<a class="text-link" href="#/space/${id(record.space_id)}/notes?chapter=${id(record.note.chapter_id)}">查看自动学习笔记</a>` : ''}</section><section class="record-section" aria-label="学习会话"><h3>学习会话</h3><p class="record-elapsed">累计起止间隔（包含暂停）：<strong>${esc(elapsedText(record.total_elapsed_seconds))}</strong></p>${sessions.length ? `<ol class="record-sessions">${sessions.map((session, index) => {
     const same = session.plan_id === planId && session.task_id === taskId;
     return `<li><div class="record-row-heading"><strong>会话 ${index + 1}</strong><span>${esc(session.paused ? '已暂停' : label(session.status))}</span></div><dl class="record-times"><div><dt>开始</dt><dd>${timestamp(session.started_at)}</dd></div><div><dt>结束</dt><dd>${timestamp(session.finished_at)}</dd></div><div><dt>起止间隔（包含暂停）</dt><dd>${esc(elapsedText(session.elapsed_seconds))}</dd></div></dl>${canStart && same && session.status === 'active' ? `<a class="text-link" href="#/manage/session/${route}">继续此会话</a>` : ''}</li>`;
-  }).join('')}</ol>` : '<p class="record-empty">未记录学习会话</p>'}</section><section class="record-section" aria-label="关联测评"><h3>关联测评</h3>${rows(record.assessments).length ? `<ol class="record-assessments">${rows(record.assessments).filter(Boolean).map(assessment => `<li><div class="record-row-heading"><strong>${esc(label(assessment.kind))}</strong><span>${esc(label(assessment.status))}</span></div><p>${timestamp(assessment.created_at)}${present(assessment.learning_session_id) ? ` · 关联会话 ${esc(assessment.learning_session_id)}` : ' · 会话未关联'}</p>${assessmentResult(assessment.result)}${present(assessment.assessment_id) ? `<a class="text-link" href="#/manage/assessment-result/${id(assessment.assessment_id)}">查看测评结果</a>` : ''}</li>`).join('')}</ol>` : '<p class="record-empty">未关联测评</p>'}</section><section class="record-section" aria-label="学习主题与来源"><h3>学习主题与来源</h3>${rows(record.topics).length ? `<ul class="record-topics">${rows(record.topics).filter(Boolean).map(topicRecord).join('')}</ul>` : '<p class="record-empty">主题与来源未记录</p>'}</section></div>`;
+  }).join('')}</ol>` : '<p class="record-empty">未记录学习会话</p>'}</section><section class="record-section" aria-label="关联测评"><h3>关联测评</h3>${rows(record.assessments).length ? `<ol class="record-assessments">${rows(record.assessments).filter(Boolean).map(assessment => `<li><div class="record-row-heading"><strong>${esc(label(assessment.kind))}</strong><span>${esc(label(assessment.status))}</span></div><p>${timestamp(assessment.created_at)}${present(assessment.learning_session_id) ? ` · 关联会话 ${esc(assessment.learning_session_id)}` : ' · 会话未关联'}</p>${assessmentResult(assessment.result)}${assessmentLink(assessment)}</li>`).join('')}</ol>` : '<p class="record-empty">未关联测评</p>'}</section><section class="record-section" aria-label="学习主题与来源"><h3>学习主题与来源</h3>${rows(record.topics).length ? `<ul class="record-topics">${rows(record.topics).filter(Boolean).map(topicRecord).join('')}</ul>` : '<p class="record-empty">主题与来源未记录</p>'}</section></div>`;
 }

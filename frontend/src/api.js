@@ -82,26 +82,33 @@ export function createApi(getToken) {
     } while (cursor);
     return items;
   }
+  const bindingQuery = binding => ({ version_id: binding.material_version_id,
+    graph_revision_id: binding.graph_revision_id, graph_version: binding.graph_version,
+    legacy_snapshot: binding.graph_revision_id == null ? true : undefined });
+  function assertBinding(result, binding) {
+    if (result.material_id !== binding.material_id || result.version_id !== binding.material_version_id
+        || (binding.graph_version != null && result.graph_version !== binding.graph_version)
+        || (binding.graph_revision_id != null ? result.graph_revision_id !== binding.graph_revision_id
+          : binding.graph_version !== 1 || result.graph_revision_id !== null)) {
+      throw new ApiError('知识版本与学习空间绑定不一致，请先在学习空间确认知识更新。', 409, 'STALE_KNOWLEDGE');
+    }
+  }
   async function topics(space, options = {}) {
     const results = await Promise.all((space.bindings || []).map(async b => {
-      const result = await request(`/materials/${id(b.material_id)}/topics?version_id=${id(b.material_version_id)}`, options);
-      if (result.material_id !== b.material_id || result.version_id !== b.material_version_id
-          || (b.graph_version != null && result.graph_version !== b.graph_version)) {
-        throw new ApiError('知识版本与学习空间绑定不一致，请先在学习空间确认知识更新。', 409, 'STALE_KNOWLEDGE');
-      }
+      const result = await request(query(`/materials/${id(b.material_id)}/topics`, bindingQuery(b)), options);
+      assertBinding(result, b);
       if (!Array.isArray(result.items)) throw new ApiError('知识主题返回格式不正确。');
       return result;
     }));
     return results.flatMap(result => result.items || []);
   }
-  async function graph(space) {
+  async function graph(space, options = {}) {
     const nodes = new Map();
     const edges = new Map();
     const projections = await Promise.all((space.bindings || []).map(async binding => {
-      const data = await materialGraph({ id: binding.material_id, current_version_id: binding.material_version_id });
-      if (data.graph_version !== binding.graph_version || data.material_version_id !== binding.material_version_id) {
-        throw new ApiError('图谱版本与空间绑定的快照不同，请确认知识版本后重试。');
-      }
+      const data = await request(query(`/materials/${id(binding.material_id)}/graph`, { ...bindingQuery(binding), include_sources: true }), options);
+      assertBinding(data, binding);
+      if (!Array.isArray(data.nodes) || !Array.isArray(data.edges)) throw new ApiError('资料知识图谱返回格式不正确。');
       return data;
     }));
     for (const data of projections) {
@@ -115,7 +122,7 @@ export function createApi(getToken) {
     const result = await request(query(`/materials/${id(material.id)}/graph`, { version_id: versionId, include_sources: true }), options);
     if (!Array.isArray(result.nodes) || !Array.isArray(result.edges)) throw new ApiError('资料知识图谱返回格式不正确。');
     return { nodes: result.nodes, edges: result.edges, sources: result.sources || [], graph_version: result.graph_version,
-      material_id: result.material_id, material_version_id: result.version_id };
+      graph_revision_id: result.graph_revision_id, material_id: result.material_id, material_version_id: result.version_id };
   }
   async function waitRun(runId, signal, onProgress = () => {}) {
     const start = Date.now();
@@ -203,12 +210,14 @@ export function createApi(getToken) {
     sessionActivity: (sessionId, body, options = {}) => request(`/sessions/${id(sessionId)}/activity`, { ...options, method: 'POST', body }),
     assessmentActivity: (assessmentId, body, options = {}) => request(`/assessments/${id(assessmentId)}/activity`, { ...options, method: 'POST', body }),
     applySchedule: (planId, body, options = {}) => request(`/plans/${id(planId)}/schedule`, { ...options, method: 'PATCH', body, key: options.key || crypto.randomUUID() }),
+    previewPlan: (spaceId, body, options = {}) => request(`/learning-spaces/${id(spaceId)}/plan-preview`, { ...options, method: 'POST', body }),
     planAdjustments: (planId, options = {}) => request(`/plans/${id(planId)}/adjustments`, options),
     refreshPlan: (planId, body, options = {}) => request(`/plans/${id(planId)}/refresh`, { ...options, method: 'POST', body }),
     revertAdjustment: (adjustmentId, body, options = {}) => request(`/plan-adjustments/${id(adjustmentId)}/revert`, { ...options, method: 'POST', body }),
     recommendPolicy: (spaceId, body = {}, options = {}) => request(`/learning-spaces/${id(spaceId)}/policy-recommendations`, { ...options, method: 'POST', body }),
     applyPolicyRecommendation: (recommendationId, body, options = {}) => request(`/policy-recommendations/${id(recommendationId)}/apply`, { ...options, method: 'POST', body }),
     createAssessment: (spaceId, body, options = {}) => request(`/learning-spaces/${id(spaceId)}/assessments`, { ...options, method: 'POST', body }),
+    recoverableAssessments: (spaceId, filters = {}, options = {}) => request(query(`/learning-spaces/${id(spaceId)}/assessments`, filters), options),
     assessment: (assessmentId, options = {}) => request(`/assessments/${id(assessmentId)}`, options),
     diagnostic: (assessmentId, options = {}) => request(`/assessments/${id(assessmentId)}/diagnostic`, options),
     recordAttempt: (assessmentId, body, options = {}) => request(`/assessments/${id(assessmentId)}/attempts`, { ...options, method: 'POST', body }),
@@ -223,7 +232,7 @@ export function createApi(getToken) {
     createSpace: body => request('/learning-spaces', { method: 'POST', body }),
     setSpaceStatus: (space, status, options = {}) => request(`/learning-spaces/${id(space.id)}`, { ...options, method: 'PATCH', body: { status, expected_version: space.space_version } }),
     deleteSpace: (space, options = {}) => request(`/learning-spaces/${id(space.id)}`, { ...options, method: 'DELETE', body: { confirm: true, expected_version: space.space_version } }),
-    setScope: (space, topicIds, excluded = [], includePrerequisites = true, options = {}) => request(`/learning-spaces/${id(space.id)}/scope`, { ...options, method: 'POST', body: { topic_ids: topicIds, excluded_topic_ids: excluded, include_prerequisites: includePrerequisites, expected_version: space.space_version } }),
+    setScope: (space, topicIds, excluded = [], includePrerequisites = true, options = {}) => request(`/learning-spaces/${id(space.id)}/scope`, { ...options, method: 'POST', body: { topic_ids: topicIds, excluded_topic_ids: excluded, include_prerequisites: includePrerequisites, expected_version: space.space_version, scope_mode: options.scopeMode || 'custom' } }),
     upload: file => { const body = new FormData(); body.set('file', file); body.set('auto_ingest', 'true'); return request('/materials', { method: 'POST', body, timeout: 60000 }); },
     material: (value, spaceId) => request(`/materials/${id(value)}${spaceId ? '?space_id=' + id(spaceId) : ''}`),
     materialVersions: value => list(`/materials/${id(value)}/versions`),
@@ -236,7 +245,8 @@ export function createApi(getToken) {
     workbench: (spaceId, options = {}) => request(`/learning-spaces/${id(spaceId)}/workbench`, options),
     progress: (spaceId, params = {}, options = {}) => request(query(`/learning-spaces/${id(spaceId)}/progress`, params), options),
     learningRecord: (planId, taskId, options = {}) => request(`/plans/${id(planId)}/tasks/${id(taskId)}/learning-record`, options),
-    completeTask: (plan, task) => request(`/plans/${id(plan.id || plan.plan_id)}/tasks/${id(task.id)}`, { method: 'PATCH', body: { status: 'completed', expected_plan_version: plan.version } }),
+    completeTask: (plan, task, options = {}) => request(`/plans/${id(plan.id || plan.plan_id)}/tasks/${id(task.id)}`, { ...options, method: 'PATCH', body: { status: 'completed', expected_plan_version: plan.version } }),
+    undoTaskCompletion: (planId, taskId, body, options = {}) => request(`/plans/${id(planId)}/tasks/${id(taskId)}/undo-completion`, { ...options, method: 'POST', body }),
     sendMessage: (spaceId, message, sessionId, materialIds = []) => sendAdaptiveMessage(spaceId, { message, stream: true, ...(sessionId ? { session_id: sessionId } : {}), ...(materialIds.length ? { material_ids: materialIds } : {}) }),
     updateMaterial: (materialId, body, options = {}) => request(`/materials/${id(materialId)}`, { ...options, method: 'PATCH', body }),
     deleteMaterial: (materialId, body, options = {}) => request(`/materials/${id(materialId)}`, { ...options, method: 'DELETE', body }),
@@ -246,6 +256,8 @@ export function createApi(getToken) {
       return request(`/materials/${id(materialId)}/versions`, { ...options, method: 'POST', body, timeout: 60000 });
     },
     ingest: (materialId, body, options = {}) => request(`/materials/${id(materialId)}/ingest`, { ...options, method: 'POST', body }),
+    retry: (materialId, body, options = {}) => request(`/materials/${id(materialId)}/retry`, { ...options, method: 'POST', body }),
+    reparse: (materialId, body, options = {}) => request(`/materials/${id(materialId)}/reparse`, { ...options, method: 'POST', body }),
     reconcile: (materialId, body, options = {}) => request(`/materials/${id(materialId)}/reconcile`, { ...options, method: 'POST', body }),
     updateSpace: (spaceId, body, options = {}) => request(`/learning-spaces/${id(spaceId)}`, { ...options, method: 'PATCH', body }),
     profile: (spaceId, options = {}) => request(`/learning-spaces/${id(spaceId)}/profile`, options),
@@ -269,6 +281,7 @@ export function createApi(getToken) {
     reportQuestion: (assessmentId, body, options = {}) => request(`/assessments/${id(assessmentId)}/question-reviews`, { ...options, method: 'POST', body }),
     resolveQuestion: (assessmentId, reviewId, body, options = {}) => request(`/assessments/${id(assessmentId)}/question-reviews/${id(reviewId)}/resolve`, { ...options, method: 'POST', body }),
     updateTask: (planId, taskId, body, options = {}) => request(`/plans/${id(planId)}/tasks/${id(taskId)}`, { ...options, method: 'PATCH', body }),
+    taskCompletionStatus: (planId, taskId, body, options = {}) => request(`/plans/${id(planId)}/tasks/${id(taskId)}/completion-status`, { ...options, method: 'POST', body }),
     startSession: (planId, body, options = {}) => request(`/plans/${id(planId)}/sessions`, { ...options, method: 'POST', body }),
     sessionEvent: (sessionId, body, options = {}) => request(`/sessions/${id(sessionId)}/events`, { ...options, method: 'POST', body }),
     finishSession: (sessionId, options = {}) => request(`/sessions/${id(sessionId)}/finish`, { ...options, method: 'POST', body: {} }),

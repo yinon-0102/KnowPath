@@ -27,6 +27,6 @@ test('missing study module replaces initial loading with recovery and reload act
 test('successful module loading leaves the page for normal initialization', async () => {
   const imports = [], env = startup(async name => { imports.push(name); return { name }; });
   const modules = await env.load();
-  assert.equal(modules.length, 12); assert.ok(imports.includes('./study.js')); assert.ok(imports.includes('./plan-order.js')); assert.ok(imports.includes('./home-view.js'));
+  assert.equal(modules.length, 13); assert.ok(imports.includes('./study.js')); assert.ok(imports.includes('./plan-order.js')); assert.ok(imports.includes('./home-view.js')); assert.ok(imports.includes('./scope-picker.js'));
   assert.match(env.main.innerHTML, /正在打开/);
 });

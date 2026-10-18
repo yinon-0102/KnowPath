@@ -1,6 +1,52 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import vm from 'node:vm';
 import { buildGraphIndex, graphSlice, graphTitle, graphRelation } from '../src/store.js';
+
+test('unit detail shows source-grounded objectives scope and automation role', () => {
+  const app = readFileSync(new URL('../src/app.js', import.meta.url), 'utf8');
+  const source = app.slice(app.indexOf('function graphDetail()'), app.indexOf('\nfunction graphExplorer()'));
+  const node = { id: 'u', name: '条件概率', content_role: 'introduction', is_learnable: true, is_assessable: true,
+    scope_summary: '限制事件空间并检查分母。', learning_objectives: ['解释分母非零条件'], source_refs: [] };
+  const context = vm.createContext({ state: { graphSelected: 'u' }, graphModel: () => ({ byId: new Map([['u', node]]), adjacent: new Map() }),
+    graphTitle, esc: String, icon: () => '', button: () => '', data: () => ({ materials: [] }) });
+  vm.runInContext(source, context);
+  const html = context.graphDetail();
+  assert.match(html, /章节导言/);
+  assert.match(html, /限制事件空间并检查分母/);
+  assert.match(html, /解释分母非零条件/);
+});
+
+test('space materials renders loading and failed graph state with a retry action', () => {
+  const app = readFileSync(new URL('../src/app.js', import.meta.url), 'utf8');
+  const source = app.slice(app.indexOf('function spaceMaterialsPanel('), app.indexOf('\nfunction spaceSettingsPanel('));
+  const state = { graphSpace: 's', graph: null, graphLoading: true, graphError: '' };
+  const context = vm.createContext({ state, manageLink: () => '', icon: () => '', esc: String,
+    button: (label, action) => `<button data-action="${action}">${label}</button>`, notice: String,
+    graphPage: () => state.graphLoading ? '<div role="status">正在加载知识图谱</div>' : `<div role="alert">${state.graphError}</div>` });
+  vm.runInContext(source, context);
+  assert.match(context.spaceMaterialsPanel({ id: 's' }, [], []), /正在加载知识图谱/);
+  state.graphLoading = false; state.graphError = '快照不可用';
+  const failed = context.spaceMaterialsPanel({ id: 's' }, [], []);
+  assert.match(failed, /快照不可用/);
+  assert.match(failed, /data-action="space-graph"/);
+});
+
+test('failed graph request announces its error without rendering the empty knowledge state', () => {
+  const app = readFileSync(new URL('../src/app.js', import.meta.url), 'utf8');
+  const source = app.slice(app.indexOf('function graphPage('), app.indexOf('\nfunction weekStrip('));
+  const state = { graphSpace: 's', graphError: '绑定快照读取失败', graphLoading: false,
+    graphUiKey: 'live:space:s:1', graphSelected: '', graphInitialized: false };
+  const context = vm.createContext({ state, graphContext: () => ({ type: 'space', id: 's', space: { space_version: 1 } }),
+    graphModel: () => ({ nodes: [], byId: new Map() }), empty: () => '<div>EMPTY_KNOWLEDGE</div>',
+    notice: text => `<p class="notice">${text}</p>`, esc: String, link: () => '' });
+  vm.runInContext(source, context);
+  const html = context.graphPage({ embedded: true });
+  assert.match(html, /role="alert"/);
+  assert.match(html, /绑定快照读取失败/);
+  assert.doesNotMatch(html, /EMPTY_KNOWLEDGE/);
+});
 
 test('large supplied document hierarchies remain fully reachable without dense views or a 100-node cutoff', () => {
   const nodes = [{ id: 'root', name: '法律原文（包含很长的公布与修订说明）' }, ...Array.from({ length: 503 }, (_, i) => ({ id: 'n' + i, name: '第' + (i + 1) + '条 完整的学习内容', parent_id: 'root' }))];

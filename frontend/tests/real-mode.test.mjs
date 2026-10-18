@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import vm from 'node:vm';
-import { storageRead, storageWrite, TOKEN_KEY } from '../src/store.js';
+import { storageRead, storageWrite, TOKEN_KEY, mergeSpaceList } from '../src/store.js';
 
 const entries = await Promise.all([
   ['app', readFile(new URL('../src/app.js', import.meta.url), 'utf8')],
@@ -30,7 +30,7 @@ function bootstrap({ savedToken = '', auth, dataFailure } = {}) {
   const requests = [], saved = new Map(), renderings = [];
   const session = { getItem: key => saved.get(key), setItem: (key, value) => saved.set(key, value) };
   const context = vm.createContext({
-    token: savedToken, session, storageRead, storageWrite, TOKEN_KEY, AbortSignal,
+    token: savedToken, session, storageRead, storageWrite, TOKEN_KEY, AbortSignal, mergeSpaceList,
     state: { mode: 'live', loading: false, error: '', dataRefreshId: 0, selected: '', live: { spaces: [], materials: [], tasks: [] } },
     render: () => renderings.push(context.state.loading ? 'loading' : context.state.error ? 'error' : 'data'),
     fetch: async (url, options) => {
@@ -114,7 +114,7 @@ test('a failed backend connection retains empty data and reports its error', asy
 });
 
 test('complete application startup renders authenticated material data without reading local examples', async t => {
-  const modules = await Promise.all(['icons', 'api', 'learning', 'workspace', 'workspace-view', 'progress', 'workbench', 'store', 'notes', 'study', 'plan-order', 'home-view'].map(name => import(`../src/${name}.js`)));
+  const modules = await Promise.all(['icons', 'api', 'learning', 'workspace', 'workspace-view', 'progress', 'workbench', 'store', 'notes', 'study', 'plan-order', 'home-view', 'scope-picker'].map(name => import(`../src/${name}.js`)));
   const elements = Object.fromEntries(['main', 'header', 'footer', 'modal', 'toast'].map(id => [id, { innerHTML: '', open: false, addEventListener() {}, focus() {} }]));
   const document = { querySelector: selector => elements[selector.replace(/^#/, '')] || null, addEventListener() {} };
   const entries = new Map(), calls = [];

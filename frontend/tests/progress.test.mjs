@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { renderRouteTasks } from '../src/learning.js';
 
 let component = {};
 try { component = await import('../src/progress.js'); } catch (error) { if (error.code !== 'ERR_MODULE_NOT_FOUND') throw error; }
@@ -10,11 +11,29 @@ const progress = nodes => ({ space_id: 's1', rounds: [{ plan_id: 'p1', created_a
 const section = (html, view) => html.split(`data-progress-view="${view}"`)[1]?.split('</section>')[0] || '';
 const record = (extra = {}) => ({ space_id: 's1', plan_id: 'p1', task_id: 't1', node_id: 'n1', task: { id: 't1', title: '线性变换', status: 'pending', estimated_minutes: 25 }, topics: [], sessions: [], assessments: [], total_elapsed_seconds: null, ...extra });
 
+test('source review records keep reading and saved results without offering new blocked assessments', () => {
+  const html=renderLearningRecord(record({current:true,plan_status:'ready',topics:[{name:'图表',is_assessable:false}],assessments:[{assessment_id:'saved',status:'completed'}]}));
+  assert.doesNotMatch(html,/data-action="task-assessment"/);
+  assert.match(html,/需核对来源/);
+  assert.match(html,/开始学习会话/);
+  assert.match(html,/assessment-result\/saved/);
+  assert.match(html,/查看任务记录/);
+});
+
+test('unfinished record assessment links resume using its own frozen owner', () => {
+ const html = renderLearningRecord(record({ assessments: [
+  { assessment_id: 'a', status: 'in_progress', space_id: 's1', plan_id: 'old-p', task_id: 'old-t', learning_session_id: 'ss' },
+  { assessment_id: 'c', status: 'completed' }, { assessment_id: 'failed', status: 'failed' },
+ ] }));
+ assert.match(html, /继续测评/); assert.match(html, /assessment_id=a/); assert.match(html, /plan=old-p/); assert.match(html, /task=old-t/);
+ assert.match(html, /#\/manage\/assessment-result\/c/); assert.doesNotMatch(html, /assessment-result\/a|assessment-result\/failed/);
+});
+
 test('rolling nodes show separate forecasts and capacity reason without blocking reading', () => {
   const data = progress([node('a', 'pending', 1, { context: { duration_forecast: { study_minutes: 15, answer_minutes: 10 }, allocation_state: 'partial', allocation_reason: '<script>窗口容量不足</script>', allocations: [{ date: '2026-10-12', minutes: 15 }] } })]);
   const html = renderProgress(data, { compact: true });
   assert.match(html, /学习 15 · 作答 10 分钟/);
-  assert.match(html, /&lt;script&gt;窗口容量不足&lt;\/script&gt;/);
+  assert.match(html, /暂未安排，请检查预算、窗口和前置安排/);
   assert.doesNotMatch(html, /<script>/);
   assert.doesNotMatch(html, /data-node="node-a"[^>]+ disabled/);
 });
@@ -86,6 +105,17 @@ test('progress escapes titles, status and identifiers and has an honest empty st
   assert.match(html, /&quot; onclick=&quot;bad/);
   assert.match(renderProgress({ rounds: [], completed_count: 0, total_count: 0 }), /暂无学习节点/);
   assert.doesNotMatch(renderProgress({ rounds: [] }), /已完成 \d/);
+});
+
+test('unloaded, loading and failed progress never claim the space has no plan', () => {
+  for (const status of ['not_loaded', 'loading', 'error']) {
+    for (const data of [null, { rounds: [], completed_count: 0, total_count: 0 }]) {
+      const html = renderProgress(data, { status });
+      assert.doesNotMatch(html, /尚未生成|暂无学习节点|已完成 0 \/ 0/);
+      assert.match(html, status === 'error' ? /读取失败|重试/ : /正在读取/);
+    }
+  }
+  assert.match(renderProgress(null, { status: 'ready_empty' }), /尚未生成/);
 });
 
 test('empty record renders no invented session, duration or association', () => {
@@ -249,4 +279,15 @@ test('active session remains finishable when its plan needs replanning', () => {
   assert.match(html, /继续学习会话/);
   assert.match(html, /href="#\/manage\/session\/p1\/t1"/);
   assert.doesNotMatch(html, /data-action="task-assessment"/);
+});
+test('all route entries explain capacity, deferral and dated phases without internal codes', () => {
+  for (const code of ['window_capacity', 'deadline_capacity', 'prerequisite_capacity', 'prerequisite_deferred', 'user_deferred', 'future_internal_reason']) {
+    const item = node('a', 'pending', 1);
+    item.context = { allocation_state: 'partial', allocation_reason: code, allocations: [{date: '2026-10-18', phase: 'study', minutes: 10}, {date: '2026-10-18', phase: 'answer', minutes: 5}] };
+    for (const html of [renderProgress(progress([item]), {compact: true}), renderRouteTasks([item])]) {
+      assert.doesNotMatch(html, new RegExp(code + '|个时段'));
+      assert.match(html, /2026-10-18.*学习.*10.*作答.*5/s);
+      assert.match(html, /预算|截止|前置|延期|暂未安排/);
+    }
+  }
 });

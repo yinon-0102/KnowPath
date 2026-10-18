@@ -175,3 +175,12 @@ test('material refresh scheduler polls pending imports and stops after readiness
   assert.equal(refreshes, 1);
   assert.equal(context.state.materialRefreshTimer, null);
 });
+
+test('parsed ready materials still poll graph preparation and stop on terminal failure', () => {
+  const scheduler = app.slice(app.indexOf('const pendingMaterialStatuses'), app.indexOf('async function refreshData'));
+  const context = vm.createContext({ state: { live: { materials: [] } } });
+  vm.runInContext(scheduler, context);
+  assert.equal(context.hasPendingMaterials([{ status: 'ready', lifecycle: { stage: 'preparing' } }]), true);
+  assert.equal(context.hasPendingMaterials([{ status: 'processing', lifecycle: { stage: 'failed' } }]), false);
+  assert.equal(context.hasPendingMaterials([{ status: 'uploaded', lifecycle: { stage: 'received', run_id: null } }]), false);
+});

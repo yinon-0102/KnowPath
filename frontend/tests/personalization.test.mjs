@@ -3,6 +3,23 @@ import assert from 'node:assert/strict';
 import { createLearningController, renderLearning } from '../src/learning.js';
 const memory = () => { const m = new Map(); return { getItem: k => m.get(k), setItem: (k,v) => m.set(k,v) }; };
 const context = () => ({ spaceId: 's', active: true });
+
+for (const policy of ['after_each_answer', 'after_round']) test(`leaving ${policy} ends the bound phase after the first answer`, async () => {
+  const events = [], storage = memory(); let answered = false;
+  storage.setItem('knowpath-learning-assessments-v1', JSON.stringify({ s: { assessmentId: 'a' } }));
+  const q = { id: 'q1', type: 'single_choice', options: [{ id: 'yes' }] };
+  const c = createLearningController({ context, storage, api: {
+    assessment: async () => ({ id: 'a', space_id: 's', status: 'in_progress', feedback_policy: policy, question_count: 2,
+      questions: [q, { ...q, id: 'q2' }], answers: answered ? [{ question_id: 'q1' }] : [],
+      question_feedback: answered && policy === 'after_each_answer' ? [{ question_id: 'q1', verdict: 'correct' }] : [] }),
+    assessmentActivity: async (id, body) => { events.push({ id, ...body }); return {}; },
+    recordAttempt: async () => { answered = true; return { question_feedback: policy === 'after_each_answer' ? [{ question_id: 'q1', verdict: 'correct' }] : [] }; }
+  } });
+  await c.resume(); await c.answer('yes'); c.dispose(); await Promise.resolve();
+  const shown = events.filter(e => e.event === 'shown'), ended = events.filter(e => e.event === 'assessment_end');
+  assert.ok(ended.length > 0, 'the phase has an explicit end after submitting its question');
+  assert.ok(shown.every(e => e.phase_id && ended.some(end => end.id === e.id && end.phase_id === e.phase_id)));
+});
 test('resumed question reports shown and attempts never send browser elapsed', async () => {
   const events = [], attempts = [];
   const storage = memory(); storage.setItem('knowpath-learning-assessments-v1', JSON.stringify({ s: { assessmentId: 'a', assessmentStatus: 'in_progress' } }));

@@ -2,6 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import vm from 'node:vm';
 import { readFile } from 'node:fs/promises';
+import { nextLearningStep } from '../src/workbench.js';
+import { mergeSpaceList } from '../src/store.js';
 const app = await readFile(new URL('../src/app.js', import.meta.url), 'utf8');
 const extract = (from, to) => app.slice(app.indexOf(from), app.indexOf(to, app.indexOf(from)));
 
@@ -16,7 +18,7 @@ test('failed chat submission retains composer and does not invent a sent user me
 
 test('reconnect keeps an active reader mounted while refreshing authoritative data and route', async () => {
   const reader = { scrollTop: 240, iframe: {}, draft: '继续解释' }, states = [], calls = [];
-  const context = vm.createContext({ token: 'local', session: {}, TOKEN_KEY: 'token', storageWrite() {}, AbortSignal,
+  const context = vm.createContext({ token: 'local', session: {}, TOKEN_KEY: 'token', storageWrite() {}, AbortSignal, mergeSpaceList,
     $: selector => selector === '.study-workspace' ? reader : null,
     state: { live: { spaces: [{ id: 's' }], materials: [] }, selected: 's', dataRefreshId: 0 },
     render() { states.push(context.state.loading); if (context.state.loading) reader.iframe = null; },
@@ -31,11 +33,11 @@ test('reconnect keeps an active reader mounted while refreshing authoritative da
 });
 
 test('reconnect refresh of changed bound versions reloads learning context', async () => {
-  const fresh = { id: 's', scope_version: 1, bindings: [{ material_id: 'm', material_version_id: 'new' }] };
+  const fresh = { id: 's', scope_version: 1, topic_ids: ['topic'], bindings: [{ material_id: 'm', material_version_id: 'new' }] };
   let options;
   const context = vm.createContext({ location: { hash: '#/space/s/study' }, route: () => ({ name: 'space', section: 'study', query: {} }), currentSpace: () => fresh,
-    state: { chatCapabilityError: '' }, data: () => ({ materials: [] }),
-    workbench: { snapshot: () => ({ data: { current_plan: { id: 'p' } } }) },
+    state: { chatCapabilityError: '' }, data: () => ({ materials: [] }), nextLearningStep,
+    workbench: { load: async () => {}, snapshot: () => ({ data: { current_plan: { id: 'p', status: 'ready', tasks: [{ id: 't', status: 'pending' }] } } }) },
     study: { snapshot: () => ({ space: { ...fresh, bindings: [{ material_id: 'm', material_version_id: 'old' }] }, mode: 'original', refs: [] }), load: async (_, value) => { options = value; } } });
   vm.runInContext(extract('async function loadStudy(', '\nfunction updateStudy('), context);
   await context.loadStudy(); assert.equal(options.refresh, true);

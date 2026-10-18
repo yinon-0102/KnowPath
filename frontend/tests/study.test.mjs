@@ -14,6 +14,36 @@ test('PDF learning boundaries use frozen topic names and all referenced pages', 
  const html=study.renderStudy({space,plan,task:plan.tasks[0],topics:[{name:'第一章 总则 · 第一—六条'}],refs:[{...ref,page:1},{...ref,page:2}],lessons:[]});
  assert.match(html,/本节点学习范围/);assert.match(html,/第一章 总则 · 第一—六条/);assert.match(html,/第 1—2 页/);
 });
+test('study preserves source grounded objectives and bounded scope in both reading modes', () => {
+  for (const mode of ['original', 'explanation']) {
+    const html = study.renderStudy({space,plan,task:plan.tasks[0],mode,topics:[{name:'条件概率',content_role:'introduction',scope_summary:'给定事件后限制样本空间。',learning_objectives:['检查条件事件的概率非零。','说明 <事件> 的范围。'],extraction:{review_required:true}}],refs:[],lessons:[]});
+    assert.match(html,/给定事件后限制样本空间。/);
+    assert.match(html,/检查条件事件的概率非零。/);
+    assert.match(html,/说明 &lt;事件&gt; 的范围。/);
+    assert.match(html,/章节导言/);
+    assert.match(html,/需要核对来源/);
+  }
+});
+test('study identifies instructional and review roles while legacy topics stay compatible', () => {
+  for (const [content_role, label] of [['instruction','学习单元'],['review','复习单元']]) {
+    const html=study.renderStudy({space,plan,task:plan.tasks[0],topics:[{name:'边界',content_role,scope_summary:'检查观测条件。'}],refs:[],lessons:[]});
+    assert.ok(html.includes(label));
+  }
+  const legacy=study.renderStudy({space,plan,task:plan.tasks[0],topics:[{name:'旧主题'}],refs:[],lessons:[]});
+  assert.ok(!legacy.includes('study-unit-boundary'));
+});
+test('review required units remain readable and save sessions without offering blocked assessment', () => {
+  for (const session of [undefined,{id:'session',task_id:'a',status:'active'}]) {
+    const html=study.renderStudy({space,plan,task:plan.tasks[0],session,topics:[{name:'图表',is_assessable:false,automatic_questions:false,extraction:{review_required:true},source_refs:[ref]}],refs:[ref],lessons:[]});
+    assert.ok(!html.includes('data-study-action="assess"'));
+    assert.ok(!html.includes('data-study-action="finish-assess"'));
+    assert.match(html,/需核对来源/);
+    assert.match(html,/可继续阅读/);
+    assert.match(html,/上传修正版本/);
+    assert.match(html,/记录任务完成情况/);
+    if(session) assert.match(html,/data-study-action="finish"/);
+  }
+});
 const api = overrides => ({ learningRecord: async (_, task) => ({ space_id: 's', task: plan.tasks.find(t => t.id === task), topics: plan.tasks.find(t => t.id === task).context.topics, sessions: [] }),
   studyLessons: async () => ({ items: [] }), source: async () => ({ text: '真实原文', page: 3 }), materialFile: async () => new Response('%PDF-1.7', { headers: { 'Content-Type': 'application/pdf' } }), ...overrides });
 
@@ -46,6 +76,22 @@ test('opening a node is preview and never starts a learning session', async () =
   const c = study.createStudyController({ api: api({ startSession: async () => { starts++; } }), storage: memory() });
   await c.load({ space, plan });
   assert.equal(c.snapshot().task.id, 'a'); assert.equal(c.snapshot().mode, 'original'); assert.equal(starts, 0);
+});
+
+test('generic continuation ignores a saved completed node but explicit history remains readable', async () => {
+  const storage = memory(); storage.setItem('knowpath-study-selection:s', JSON.stringify('na'));
+  const updated = { ...plan, tasks: [{ ...plan.tasks[0], status: 'completed' }, plan.tasks[1]] };
+  const c = study.createStudyController({ api: api(), storage });
+  await c.load({ space, plan: updated }); assert.equal(c.snapshot().task.id, 'b');
+  await c.load({ space, plan: updated, taskId: 'a' }); assert.equal(c.snapshot().task.id, 'a'); c.dispose();
+});
+
+test('processed rounds show summary instead of reopening the first completed node', async () => {
+  const c = study.createStudyController({ api: api(), storage: memory() });
+  const completed = { ...plan, tasks: plan.tasks.map(task => ({ ...task, status: 'completed' })) };
+  await c.load({ space, plan: completed });
+  assert.equal(c.snapshot().task, undefined);
+  assert.match(study.renderStudy(c.snapshot()), /本轮总结/); c.dispose();
 });
 test('active session chooses its node and prevents starting a second node', async () => {
   let starts = 0;
@@ -92,6 +138,54 @@ test('finishing saves session but does not mark task mastered or completed', asy
   const c = study.createStudyController({ api: api({ finishSession: async () => { finishes++; return { status: 'finished', session_id: 'x', elapsed_seconds: 10 }; }, updateTask: async () => { updates++; } }), storage: memory() });
   await c.load({ space, plan, activeSession: { session_id: 'x', task_id: 'a', plan_id: 'p', status: 'active' } });
   await c.finish(); assert.equal(finishes, 1); assert.equal(updates, 0); assert.equal(c.snapshot().task.status, 'pending');
+});
+for (const code of ['TIMEOUT', 'NETWORK']) test(`finishing confirms the same session after ${code} without finishing a different node`, async () => {
+  const calls = [];
+  const c = study.createStudyController({ api: api({ finishSession: async id => {
+    calls.push(id);
+    if (calls.length === 1) throw Object.assign(new Error('result unknown'), { code });
+    return { status: 'finished', session_id: id, elapsed_seconds: 10 };
+  } }), storage: memory() });
+  await c.load({ space, plan, activeSession: { session_id: 'x', task_id: 'a', plan_id: 'p', status: 'active' } });
+  await c.finish();
+  assert.deepEqual(calls, ['x', 'x']);
+  assert.equal(c.snapshot().session.status, 'finished');
+  assert.equal(c.snapshot().activeSession, null);
+  assert.equal(c.snapshot().task.status, 'pending');
+});
+test('finish confirmation never retries a business rejection', async () => {
+  let calls = 0;
+  const c = study.createStudyController({ api: api({ finishSession: async () => {
+    calls++; throw Object.assign(new Error('archived'), { code: 'SPACE_ARCHIVED' });
+  } }), storage: memory() });
+  await c.load({ space, plan, activeSession: { session_id: 'x', task_id: 'a', plan_id: 'p', status: 'active' } });
+  await assert.rejects(c.finish(), /archived/);assert.equal(calls, 1);
+});
+test('finish confirmation rejects a different session and preserves unconfirmed state', async () => {
+  const c = study.createStudyController({ api: api({ finishSession: async () => ({ status: 'finished', session_id: 'other' }) }), storage: memory() });
+  await c.load({ space, plan, activeSession: { session_id: 'x', task_id: 'a', plan_id: 'p', status: 'active' } });
+  await assert.rejects(c.finish(), /尚未确认/); assert.equal(c.snapshot().session.status, 'active'); c.dispose();
+});
+test('a late finish confirmation cannot overwrite a newly selected node session', async () => {
+  let resolve;
+  const c = study.createStudyController({ api: api({ finishSession: () => new Promise(done => { resolve = done; }) }), storage: memory() });
+  await c.load({ space, plan, activeSession: { session_id: 'x', task_id: 'a', plan_id: 'p', status: 'active' } });
+  const pending = c.finish();
+  await c.load({ space, plan, taskId: 'b', activeSession: { session_id: 'y', task_id: 'b', plan_id: 'p', status: 'active' } });
+  resolve({ status: 'finished', session_id: 'x' }); await pending;
+  assert.equal(c.snapshot().session.session_id, 'y'); assert.equal(c.snapshot().session.status, 'active'); c.dispose();
+});
+test('two ambiguous finish failures do not claim the session was saved', async () => {
+  let calls = 0;
+  const c = study.createStudyController({ api: api({ finishSession: async () => { calls++; throw Object.assign(new Error('result unknown'), { code: 'TIMEOUT' }); } }), storage: memory() });
+  await c.load({ space, plan, activeSession: { session_id: 'x', task_id: 'a', plan_id: 'p', status: 'active' } });
+  await assert.rejects(c.finish(), /result unknown/); assert.equal(calls, 2); assert.equal(c.snapshot().session.status, 'active'); c.dispose();
+});
+test('refresh failure after a confirmed finish does not repeat the finish command', async () => {
+  let calls = 0;
+  const c = study.createStudyController({ api: api({ finishSession: async id => { calls++; return { status: 'finished', session_id: id }; } }), storage: memory(), committed: async () => { throw Object.assign(new Error('refresh failed'), { code: 'TIMEOUT' }); } });
+  await c.load({ space, plan, activeSession: { session_id: 'x', task_id: 'a', plan_id: 'p', status: 'active' } });
+  await assert.rejects(c.finish(), /refresh failed/); assert.equal(calls, 1); assert.equal(c.snapshot().session.status, 'finished'); c.dispose();
 });
 test('study view escapes titles, safe Markdown and exposes actual empty states', () => {
   const html = study.renderStudy({ space, plan, task: { ...plan.tasks[0], title: '<script>x</script>' }, topics: [], refs: [], mode: 'explanation', lessons: [], style: 'plain', instructions: '', messages: [] });
@@ -256,4 +350,12 @@ test('stopping while question submission is pending cancels the acknowledged run
   await c.load({ space, plan }); c.snapshot().lesson = { id: 'l', status: 'completed' };
   const ask = c.ask('问题'); await c.cancelChat(); resolve({ run_id: 'r', session_id: 'chat' });
   await assert.rejects(ask, error => error.name === 'AbortError'); assert.equal(cancelled, 'r'); assert.equal(c.snapshot().pendingChat, null); c.dispose();
+});
+
+test('completed study node exposes task undo management and keeps history read only', () => {
+  const task = {...plan.tasks[0],status:'completed'};
+  const html=study.renderStudy({space,plan,task,topics:[],refs:[],lessons:[]});
+  assert.match(html,/撤销本次任务完成/); assert.match(html,/#\/manage\/task\/p\/a/);
+  const history=study.renderStudy({space,plan,task,current:false,topics:[],refs:[],lessons:[]});
+  assert.doesNotMatch(history,/撤销本次任务完成/);
 });

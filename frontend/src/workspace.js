@@ -1,4 +1,6 @@
+import { createScopeSaver, scopePayload } from './scope-picker.js';
 import { storageRead, storageWrite, uid, validateFile } from './store.js';
+import { createTaskCompletionController } from './workbench.js';
 
 export const workspacePath = (page, ...ids) => '#/manage/' + [page, ...ids].map(encodeURIComponent).join('/');
 export function workspaceRoute(value) {
@@ -96,12 +98,20 @@ const JOURNAL = 'knowpath-workspace-commands-v1', SESSIONS = 'knowpath-study-ses
 // A command keeps its body, key and response across a timeout or page reload.
 // Retrying a queued command polls its original run instead of submitting again.
 export function createWorkspaceController({ api, context, changed = () => {}, committed = async () => {}, storage, savePdf = async () => {}, openSource = async () => {}, download = () => {}, navigate = () => {} }) {
+  const saveScope = createScopeSaver({ api, storage });
   let generation = 0, view = { key: '', route: {}, data: null, busy: '', error: '', notice: '', editRevision: 0, filters: {} }, loading;
   let pending = storageRead(storage, JOURNAL, {});
   if (!pending || typeof pending !== 'object' || Array.isArray(pending)) pending = {};
   const savePending = () => storageWrite(storage, JOURNAL, pending);
   const sessionMap = () => storageRead(storage, SESSIONS, {});
   const correctionMap = () => storageRead(storage, CORRECTIONS, {});
+  const completionTarget = (route, data) => ({ spaceId: data.space.id, planId: route.id, taskId: route.item, expectedPlanVersion: data.plan.version, source: 'manual' });
+  const completion = createTaskCompletionController({ api, storage, refreshed: async (plan, target) => {
+    sync();
+    if (view.route.page !== 'task' || view.route.id !== target.planId || view.route.item !== target.taskId || view.data?.space?.id !== target.spaceId) return;
+    const task = plan.tasks?.find(item => item.id === target.taskId);
+    if (task) { installData(view.route, { ...view.data, plan, task }); view.editRevision++; }
+  } });
   function sync() {
     // Keep existing pending-operation journal keys so updates can resume an
     // already accepted backend command instead of submitting it again.
@@ -113,9 +123,31 @@ export function createWorkspaceController({ api, context, changed = () => {}, co
     view.pendingRun = Object.entries(pending).find(([slot, entry]) => {
       try { return JSON.parse(slot)[0] === view.key && entry.response?.run_id; } catch { return false; }
     })?.[1]?.response?.run_id || '';
+    view.taskCompletion = view.route.page === 'task' && view.data?.plan && view.data?.space
+      ? completion.snapshot(completionTarget(view.route, view.data)) : null;
+    const undo = pending[JSON.stringify([view.key, 'undo-completion'])];
+    if (view.route.page === 'task' && undo) view.taskUndo = { open: true, pending: undo.body };
     return view;
   }
   const active = ticket => { sync(); return ticket === generation; };
+  function invalidateSpace(spaceId) {
+    if (view.data?.space?.id && view.data.space.id !== spaceId) return;
+    // Space lifecycle writes invalidate independent task/space projections.
+    // Retire reads already in flight; durable command bodies/keys stay intact.
+    generation++; loading = null;
+    view = { ...view, data: null, busy: '', error: '', notice: '', taskUndo: null,
+      refreshError: null, editRevision: view.editRevision + 1 };
+  }
+  function installData(route, data) {
+    if (route.page === 'space-scope' && view.data?.space?.id === data.space?.id
+        && Number(data.space.space_version || 0) < Number(view.data.space.space_version || 0)) throw new Error('学习范围返回旧空间版本，请重试刷新。');
+    if (route.page === 'task') {
+      if ((data.plan?.id || data.plan?.plan_id) !== route.id || data.task?.id !== route.item
+        || data.plan?.space_id !== data.space?.id || view.data?.space && data.space?.id !== view.data.space.id) throw new Error('任务详情与当前计划或空间不一致，请重试刷新。');
+      if (Number(data.plan?.version || 0) < Number(view.data?.plan?.version || 0)) throw new Error('任务详情返回旧计划版本，请重试刷新。');
+    }
+    view.data = data;
+  }
   async function read(route, filters = {}) {
     const { page, id, item } = route;
     if (page === 'health') return { health: await api.health() };
@@ -167,6 +199,7 @@ export function createWorkspaceController({ api, context, changed = () => {}, co
     if (page === 'knowledge-changes') result.history = await api.changes(id, filters);
     if (['learning-state', 'learning-reset', 'evidence', 'space-scope'].includes(page)) {
       result.topics = await api.topics(space);
+      if (page === 'space-scope') result.materials = await api.materials();
       if (page === 'evidence') result.evidence = await api.evidence(id, filters);
       else if (page !== 'space-scope') result.state = await api.learningState(id, { ...filters, include_evidence: true });
     }
@@ -177,6 +210,11 @@ export function createWorkspaceController({ api, context, changed = () => {}, co
         if (result.diff.status === 'published') {
           result.correctionPublished = true;
           const all = correctionMap(); delete all[id]; storageWrite(storage, CORRECTIONS, all);
+        } else if (result.correction.restarting && ['failed', 'superseded'].includes(result.diff.status)) {
+          result.correctionHistory = result.correction;
+          result.correctionDraft = result.correction.body;
+          result.correction = null;
+          result.graph = await api.graph(space);
         }
       } else result.graph = await api.graph(space);
     }
@@ -187,7 +225,7 @@ export function createWorkspaceController({ api, context, changed = () => {}, co
     const ticket = generation, route = view.route, filters = { ...view.filters };
     view.busy = '正在读取…'; view.error = ''; changed();
     loading = read(route, filters);
-    try { const data = await loading; if (active(ticket)) { view.data = data; view.editRevision++; } }
+    try { const data = await loading; if (active(ticket)) { installData(route, data); delete view.refreshError; if (view.taskUndo?.requiresRefresh) view.taskUndo = {}; view.editRevision++; } }
     catch (error) { if (active(ticket)) view.error = error.message; }
     finally { if (active(ticket)) { loading = null; view.busy = ''; changed(); } }
   }
@@ -213,18 +251,44 @@ export function createWorkspaceController({ api, context, changed = () => {}, co
   async function run(label, work) {
     sync(); if (view.busy || !view.data) return;
     const ticket = generation, route = { ...view.route }, data = view.data, key = view.key;
-    view.busy = label; view.error = ''; view.notice = ''; changed();
-    try { await work({ ticket, route, data, key }); }
+    view.busy = label; view.error = ''; view.notice = ''; delete view.refreshError; changed();
+    try { await work({ ticket, route, data, key, navigationVersion: context().navigationVersion, filters: { ...view.filters } }); }
     catch (error) { if (active(ticket)) view.error = error.message || '操作未完成，请重试。'; }
     finally { if (active(ticket)) { view.busy = ''; changed(); } }
   }
-  async function finish(task, message, { reread = true } = {}) {
+  function commitScope(route, data, result) {
+    const spaceId = data?.space?.id || data?.assessment?.space_id;
+    const material = route.page.startsWith('material');
+    const resources = route.page === 'task' ? ['workbench', 'progress', 'plan']
+      : material ? ['materials', 'spaces', 'workbench', 'materialGraph']
+      : ['space-name', 'space-profile'].includes(route.page) ? ['spaces', 'workbench']
+      : ['space-scope', 'knowledge-updates'].includes(route.page) ? ['spaces', 'workbench', 'progress', 'plan', 'topics', 'graph', 'knowledge']
+      : ['workbench', 'progress', 'plan'];
+    return { spaceId, spaceIds: spaceId ? [spaceId] : arr(data?.affected).map(space => space.id), resources,
+      ...(route.page === 'task' ? { planId: route.id, planVersion: result?.plan_version,
+        ...(result?.completion_receipt ? { completionReceipt: result } : {}) } : {}) };
+  }
+  async function finish(task, message, { reread = true, result } = {}) {
     // Commit success is independent of whether a later list refresh succeeds.
     if (active(task.ticket)) { view.notice = message; view.editRevision++; }
-    try {
-      await committed(task.route, task.data);
-      if (reread) { const data = await read(task.route, view.filters); if (active(task.ticket)) view.data = data; }
-    } catch (error) { if (active(task.ticket)) view.error = `操作已完成，但刷新失败：${error.message} 请刷新查看最新状态。`; }
+    const failures = [];
+    try { await committed(task.route, task.data, { ...commitScope(task.route, task.data, result), navigationVersion: task.navigationVersion }); }
+    catch (error) { failures.push(error.message); }
+    if (reread) {
+      try {
+        const data = await read(task.route, task.filters);
+        if (active(task.ticket)) {
+          installData(task.route, data);
+          // committed() can render the old form before this read resolves.
+          // Give the newly installed server state its own DOM preservation key.
+          view.editRevision++;
+        }
+      } catch (error) { failures.push(error.message); }
+    }
+    if (active(task.ticket) && failures.length) {
+      view.refreshError = { spaceId: task.data?.space?.id };
+      view.error = `操作已完成，但刷新失败：${failures.join('；')} 请刷新查看最新状态。`;
+    }
   }
   async function submit(values) {
     return run('正在提交，请稍候…', async task => {
@@ -260,11 +324,12 @@ export function createWorkspaceController({ api, context, changed = () => {}, co
         }
         await finish(task, '新版本已上传，解析在后台进行。解析完成后请审核知识结构。' + pdfWarning);
         if (active(task.ticket)) { view.data.uploaded = response; }
-      } else if (page === 'material-ingest' || page === 'material-reconcile') {
+      } else if (['material-ingest', 'material-reparse', 'material-retry', 'material-reconcile'].includes(page)) {
         const version = data.versions.find(v => v.id === values.get('version_id'));
         if (!version) throw new Error('请选择一个资料版本。');
         const body = { version_id: version.id, ...(page === 'material-reconcile' ? { expected_graph_version: data.diff.base_graph_version } : {}) };
-        await command(page, body, options => page === 'material-ingest' ? api.ingest(id, body, options) : api.reconcile(id, body, options));
+        const method = page === 'material-reconcile' ? 'reconcile' : page === 'material-retry' ? 'retry' : 'reparse';
+        await command(page, body, options => api[method](id, body, options));
         await finish(task, '处理完成。请进入知识结构审核检查本次变更。');
       } else if (page === 'material-graph') {
         confirmed(values);
@@ -295,11 +360,9 @@ export function createWorkspaceController({ api, context, changed = () => {}, co
         }
         await command(page, body, options => api.updateProfile(id, body, options)); await finish(task, '学习目标与偏好已保存。需要时可在空间内重新安排任务。');
       } else if (page === 'space-scope') {
-        const included = values.getAll('topic_ids'), excluded = values.getAll('excluded_topic_ids');
-        if (!included.length) throw new Error('请选择至少一个学习主题。');
-        if (included.some(id => excluded.includes(id))) throw new Error('同一个主题不能同时纳入和排除。');
-        const body = { included, excluded, prerequisites: values.get('prerequisites') === 'on', version: data.space.space_version };
-        await command(page, body, options => api.setScope(data.space, included, excluded, body.prerequisites, options)); await finish(task, '学习范围已保存，请检查相关计划是否需要重新安排。');
+        const result = await saveScope(data.space, () => scopePayload(values));
+        if (result.space_version >= data.space.space_version) Object.assign(data.space, result);
+        await finish(task, result.recovered_scope_command ? '已确认上次提交的学习范围。本次新选择尚未保存，可重新调整。' : '学习范围已保存，请检查相关计划是否需要重新安排。');
       } else if (page === 'knowledge-updates') {
         confirmed(values);
         const body = { bindings: updatedBindings(data.updates, values.getAll('materials')), expected_space_version: data.space.space_version };
@@ -323,10 +386,62 @@ export function createWorkspaceController({ api, context, changed = () => {}, co
         const body = resolutionPayload(values, review, data.reviews.review_version);
         await command(page, body, options => api.resolveQuestion(id, item, body, options)); await finish(task, '题目处理已完成，结果和学习证据已更新。');
       } else if (page === 'task') {
-        const body = taskPayload(values, data.plan);
-        await command(page, body, options => api.updateTask(id, item, body, options)); await finish(task, '任务安排已保存。');
+        if (values.get('operation') === 'undo_completion') {
+          confirmed(values);
+          const undo = view.taskUndo;
+          if (!undo?.open) throw new Error('请先核对原完成事件，再次打开撤销确认。');
+          const body = undo.pending || { expected_plan_version: undo.expected_plan_version,
+            completion_event_id: undo.completion_event_id, reason: reason() };
+          let result;
+          try { result = await command('undo-completion', body, options => api.undoTaskCompletion(id, item, { ...body }, options), { wait: false }); }
+          catch (error) {
+            if (error.status === 409) {
+              if (active(task.ticket)) view.taskUndo = {};
+              try {
+                const latest = await read(task.route, task.filters);
+                if (active(task.ticket)) { installData(task.route, latest); view.editRevision++; }
+              } catch {
+                if (active(task.ticket)) view.taskUndo = { requiresRefresh: true };
+                throw new Error('撤销未执行，刷新失败。请刷新原任务，核对后再次确认撤销。');
+              }
+              throw new Error('计划或原完成事件已变化。请核对刷新后的任务，再次打开并确认撤销。');
+            }
+            if (error.status >= 400 && error.status < 500 && ![408, 429].includes(error.status) && active(task.ticket)) view.taskUndo = {};
+            throw error;
+          }
+          if (active(task.ticket)) {
+            view.taskUndo = {};
+            if (result?.id === item && result.plan_version >= view.data.plan.version) {
+              const savedTask = { ...view.data.task, ...result };
+              view.data = { ...view.data, task: savedTask, plan: { ...view.data.plan, version: result.plan_version,
+                tasks: view.data.plan.tasks.map(row => row.id === item ? savedTask : row) } };
+            }
+          }
+          completion.acknowledgeUndo(completionTarget(task.route, data), result.plan_version);
+          const version = Math.max(result.plan_version, data.plan.version);
+          await finish(task, result.plan_version < version ? '已确认原撤销请求，当前任务以最新记录为准。'
+            : '已撤销本次任务完成，可以重新开始学习。原学习记录、测评与掌握证据已保留。', { result: { ...result, plan_version: version } });
+          return;
+        }
+        if (view.taskUndo?.pending) throw new Error('原撤销结果未知，请先重试原撤销。');
+        const target = completionTarget(task.route, data), entry = completion.snapshot(target);
+        let result;
+        if ((entry.pending || entry.needsConfirmation) && values.get('status') !== 'completed') throw new Error('原完成确认尚待核对，请先恢复原任务的完成确认。');
+        if (values.get('status') === 'completed') {
+          result = await completion.complete({ ...target, note: values.get('note')?.trim(), reason: values.get('reason')?.trim() });
+        } else {
+          const body = taskPayload(values, data.plan);
+          result = await command(page, body, options => api.updateTask(id, item, body, options));
+        }
+        if (active(task.ticket) && result?.id === item && Number.isInteger(result.plan_version) && result.plan_version >= view.data.plan.version) {
+          const savedTask = { ...view.data.task, ...result };
+          view.data = { ...view.data, task: savedTask, plan: { ...view.data.plan, version: result.plan_version, tasks: view.data.plan.tasks.map(row => row.id === item ? savedTask : row) } };
+          view.editRevision++; changed();
+        }
+        await finish(task, '任务安排已保存。', { result, reread: !result?.completion_receipt });
       } else if (page === 'knowledge-correct') {
         if (data.correction) {
+          if (['failed', 'superseded'].includes(data.diff.status)) throw new Error('这个纠错候选不能再次确认，请核对状态后重新提交纠错。');
           confirmed(values); const correction = data.correction;
           const body = { expected_graph_version: data.diff.base_graph_version, reason: reason() };
           await command('confirm-correction', body, options => api.confirmCorrection(id, correction.correction_id, body, options));
@@ -340,7 +455,9 @@ export function createWorkspaceController({ api, context, changed = () => {}, co
           const response = await command(page, body, options => api.createCorrection(id, body, options), { wait: false });
           if (!response.correction_id || !response.candidate_revision_id) throw new Error('未收到有效的纠错候选，请刷新检查。');
           const ref = target.source_refs.find(ref => ref.chunk_id === body.source_ref);
-          const descriptor = { ...response, materialId: ref.material_id, body };
+          const previous = data.correctionHistory;
+          const descriptor = { ...response, materialId: ref.material_id, body,
+            ...(previous ? { history: [...arr(previous.history), { ...previous, history: undefined, restarting: undefined, terminalStatus: data.diff.status }] } : {}) };
           storageWrite(storage, CORRECTIONS, { ...correctionMap(), [id]: descriptor });
           await finish(task, '已创建纠错候选。请核对变更后确认发布。');
         }
@@ -356,19 +473,46 @@ export function createWorkspaceController({ api, context, changed = () => {}, co
   }
   async function action(name, value) {
     if (name === 'reload') return load(true);
+    if (name === 'undo-open' || name === 'undo-cancel') {
+      sync();
+      if (view.busy || view.taskUndo?.pending) return;
+      if (name === 'undo-cancel') view.taskUndo = {};
+      else {
+        if (view.taskUndo?.requiresRefresh) { view.error = '请先刷新原任务，核对最新完成事件后再次确认撤销。'; changed(); return; }
+        const { task, plan, space } = view.data || {};
+        if (view.route.page !== 'task' || space?.status === 'archived' || plan?.status !== 'ready'
+          || task?.status !== 'completed' || task.historical || task.context?.historical || !task.context?.completion?.event_id) return;
+        view.taskUndo = { open: true, expected_plan_version: plan.version, completion_event_id: task.context.completion.event_id };
+      }
+      view.error = ''; view.editRevision++; changed(); return;
+    }
+    if (name === 'refresh-committed') {
+      sync();
+      if (view.busy || !view.refreshError || view.refreshError.spaceId !== value || view.data?.space?.id !== value) return;
+      const ticket = generation, route = { ...view.route }, filters = { ...view.filters }, refreshError = view.refreshError;
+      view.busy = '正在刷新已保存的记录…'; changed();
+      try {
+        const data = await read(route, filters);
+        if (active(ticket) && view.refreshError === refreshError) {
+          installData(route, data); view.error = ''; delete view.refreshError; view.editRevision++;
+        }
+      } catch (error) { if (active(ticket) && view.refreshError === refreshError) view.error = `操作已完成，但刷新失败：${error.message} 请刷新查看最新状态。`; }
+      finally { if (active(ticket)) { view.busy = ''; changed(); } }
+      return;
+    }
     if (name === 'poll-command') {
       sync(); if (view.busy || !view.pendingRun) return;
-      const ticket = generation, key = view.key, route = { ...view.route }, runId = view.pendingRun;
+      const ticket = generation, key = view.key, route = { ...view.route }, runId = view.pendingRun, content = view.data;
       view.busy = '正在核对原任务的处理结果…'; view.error = ''; changed();
       try {
         await api.waitRun(runId);
         for (const [slot, entry] of Object.entries(pending)) if (entry.response?.run_id === runId && JSON.parse(slot)[0] === key) delete pending[slot];
-        savePending(); await committed(route, view.data);
+        savePending(); await committed(route, content, commitScope(route, content));
         if (route.page === 'material-delete') { if (active(ticket)) navigate('#/materials'); }
         else {
           if (route.page === 'knowledge-correct') { const all = correctionMap(); delete all[route.id]; storageWrite(storage, CORRECTIONS, all); }
           const data = await read(route);
-          if (active(ticket)) { view.data = data; view.editRevision++; view.notice = '后台任务已确认完成。'; }
+          if (active(ticket)) { installData(route, data); view.editRevision++; view.notice = '后台任务已确认完成。'; }
         }
       } catch (error) {
         if (['failed', 'cancelled'].includes(error.details?.runStatus)) {
@@ -382,7 +526,24 @@ export function createWorkspaceController({ api, context, changed = () => {}, co
     return run('正在处理…', async task => {
       const command = (...args) => executeCommand(task.key, ...args);
       const { page, id, item } = task.route, data = task.data;
-      if (name === 'more') {
+      if (name === 'restart-correction' && page === 'knowledge-correct') {
+        const latest = await read(task.route);
+        if (!latest.correction || !['failed', 'superseded'].includes(latest.diff.status)) throw new Error('纠错状态已变化，请刷新核对。');
+        // Keep the terminal candidate and its user's content until a new
+        // candidate is actually accepted. Restarting itself sends no command.
+        const descriptor = { ...latest.correction, restarting: true };
+        const graph = await api.graph(latest.space);
+        storageWrite(storage, CORRECTIONS, { ...correctionMap(), [id]: descriptor });
+        for (const slot of Object.keys(pending)) {
+          const [origin, operation] = JSON.parse(slot);
+          if (origin === task.key && operation === 'confirm-correction') delete pending[slot];
+        }
+        savePending();
+        if (active(task.ticket)) {
+          installData(task.route, { ...latest, correction: null, correctionHistory: descriptor, correctionDraft: descriptor.body, graph });
+          view.editRevision++; view.notice = '已读取当前空间图谱。请重新核对目标、原文依据和更正内容，再生成新候选。';
+        }
+      } else if (name === 'more') {
         const field = page === 'evidence' ? 'evidence' : 'history', previous = data[field];
         if (!previous?.next_cursor) return;
         const result = await (field === 'evidence' ? api.evidence(id, { ...view.filters, cursor: previous.next_cursor }) : api.changes(id, { cursor: previous.next_cursor }));
@@ -434,5 +595,5 @@ export function createWorkspaceController({ api, context, changed = () => {}, co
       }
     });
   }
-  return { sync, snapshot: () => sync(), load, submit, filter, action };
+  return { sync, snapshot: () => sync(), load, submit, filter, action, invalidateSpace };
 }

@@ -3,7 +3,7 @@ async function loadFrontendModules() {
     return await Promise.all([
       import('./icons.js'), import('./api.js'), import('./learning.js'), import('./workspace.js'),
       import('./workspace-view.js'), import('./progress.js'), import('./study.js'), import('./notes.js'),
-      import('./workbench.js'), import('./store.js'), import('./plan-order.js'), import('./home-view.js'),
+      import('./workbench.js'), import('./store.js'), import('./plan-order.js'), import('./home-view.js'), import('./scope-picker.js'),
     ]);
   } catch (error) {
     const main = document.getElementById('main');
@@ -18,16 +18,17 @@ async function loadFrontendModules() {
 const [
   { icon, logo },
   { createApi, changeSpace },
-  { createLearningController, renderLearning, comparisonPayload },
+  { createLearningController, renderLearning, comparisonPayload, assessmentTaskCompletion, renderAssessmentCompletion, renderCompletionRecovery },
   { createWorkspaceController, workspacePath, workspaceFamily, workspaceRoute, workspaceSection, dateRange },
   { renderWorkspace, updateWorkspaceConditions, correctionFields, workspaceTitles },
-  { renderProgress, renderLearningRecord, currentProgressNodes, createProgressDock, nodeSessionState, taskDisplay },
+  { renderProgress, renderLearningRecord, currentProgressNodes, createProgressDock, nodeSessionState, taskDisplay, renderScheduleSummary },
   { createStudyController, renderStudy, renderStudyReader, studyPath, renderAnswerMetadata },
   { createNotesController, renderNotes, renderNoteMarkdown },
-  { isLearningRoute, parseRoute, spacePath, routeState, nextLearningStep, taskAssessmentContext, createWorkbenchController, publishedMaterialIds },
-  { TOKEN_KEY, esc, dateText, sizeText, storageRead, storageWrite, validateFile, materialIds, removeSpaceData, graphTitle, buildGraphIndex, graphSlice, createPdfLibrary, pdfKey, validatePdf, sourcePage, pdfLocation },
+  { isLearningRoute, parseRoute, spacePath, routeState, nextLearningStep, taskAssessmentContext, createWorkbenchController, createTaskCompletionController, renderRoundSummary, publishedMaterialIds },
+  { TOKEN_KEY, esc, dateText, sizeText, storageRead, storageWrite, validateFile, materialIds, removeSpaceData, graphTitle, buildGraphIndex, graphSlice, createPdfLibrary, pdfKey, validatePdf, sourcePage, pdfLocation, mergeSpaceProjection, mergeSpaceList },
   { createPlanOrderController, renderPlanOrder, selectAssessmentOption, assessmentStageText },
   { currentSpaceMaterialIds, sortHomeMaterials, homePlanState, notebookSummary },
+  { renderScopePicker, updateScopePicker, scopePayload, createScopeSaver },
 ] = await loadFrontendModules();
 
 const $ = (selector, root = document) => root.querySelector(selector);
@@ -38,7 +39,9 @@ try { session = window.sessionStorage; } catch { session = { getItem() {}, setIt
 let token = storageRead(session, TOKEN_KEY, '');
 const api = createApi(() => token);
 const planOrder = createPlanOrderController({ api });
+const saveScope = createScopeSaver({ api, storage: session });
 let assessmentTicker;
+let assessmentAnswerFocus = null;
 const pdfLibrary = createPdfLibrary();
 const pdfUrls = new Set();
 let sourceReader = null;
@@ -51,12 +54,14 @@ const state = {
   graphQuery: '', graphPage: 0, graphScope: 'overview', graphRelation: 'all', graphHistory: [], graphUiKey: '', graphInitialized: false,
   spaceTab: 'overview', spaceTabSpace: '', learningSection: 'diagnostic',
   topics: new Map(), plans: new Map(), planLoading: false, planError: '',
-  workbenchSection: 'overview', progressScrollKey: '', assessmentContext: null, assistantContext: null, recordFocus: null,
+  workbenchSection: 'overview', progressScrollKey: '', assessmentContext: null, assessmentReadyRoute: '', assessmentInitializationEpoch: 0, assistantContext: null, recordFocus: null,
   messages: new Map(), chats: new Map(), chatMaterials: new Map(), pendingJob: null, sending: false, chatController: null,
   timerRemaining: 25 * 60, timerEnd: null, timerInterval: null, timerDuration: 25,
   materialRefreshTimer: null, dataRefreshId: 0, homeNotebook: null,
 };
 const routes = [ ['overview', '学习首页'], ['spaces', '学习空间'], ['notes', '学习笔记'], ['materials', '资料库'] ];
+const importStageLabels = { received: '文件已接收', parsing: '解析中', preparing: '索引与图谱准备中', pending_review: '待确认发布', learnable: '可学习', failed: '处理失败' };
+const materialStatusText = m => m.lifecycle ? (importStageLabels[m.lifecycle.stage] || m.lifecycle.stage) + (m.lifecycle.published_available && m.lifecycle.stage !== 'learnable' ? ' · 已发布版本仍可学习' : '') : statusLabels[m.status] || m.status;
 const statusLabels = { ready: '已就绪', uploaded: '待解析', processing: '解析中', needs_review: '待审核', failed: '解析失败', archived: '已归档', active: '学习中', draft: '待选择范围' };
 const taskLabels = { learn: '学习', learning: '学习', review: '复习', practice: '练习', assessment: '测评', retest: '复测' };
 const data = () => state.live;
@@ -69,22 +74,60 @@ const study = createStudyController({ api, storage: session, changed: updateStud
 const notes = createNotesController({ api, changed: () => { if (route().name === 'notes' || route().name === 'space' && route().section === 'notes') render(); } });
 const workbench = createWorkbenchController({ api, changed: id => {
   const entry = workbench.snapshot(id);
+  const handoff = typeof completionContinuations === 'undefined' ? null : completionContinuations.get(id);
+  if (handoff && !entry.stale && !entry.error && entry.data?.current_plan?.id === handoff.current_plan?.id && entry.data.current_plan.version >= handoff.current_plan.version) completionContinuations.delete(id);
   if (entry.data?.current_plan) state.plans.set(id, entry.data.current_plan);
   else if (entry.data) state.plans.delete(id);
-  if (route().name === 'overview' || route().name === 'space' && route().id === id) render();
+  if (route().name === 'manage' && workspace.snapshot().data?.space?.id === id && !entry.busy && !entry.stale && !entry.error) void workspace.action('refresh-committed', id);
+  if (route().name === 'overview' || route().name === 'space' && route().id === id || route().name === 'manage' && workspace.snapshot().data?.space?.id === id) render();
 } });
+const taskCompletion = createTaskCompletionController({ api, storage: session,
+  changed: () => { if (isLearningRoute(route()) || route().name === 'manage' || route().name === 'space') render(); },
+  refreshed: async plan => { state.plans.set(plan.space_id, plan); },
+});
+const completionContinuations = new Map();
 const learning = createLearningController({ api, storage: session,
-  context: () => ({ spaceId: currentSpace()?.id || '', space: currentSpace(), assessmentContext: state.assessmentContext, active: (route().name === 'learning' || route().name === 'space' && (state.spaceTab === 'assessment' || route().query?.view === 'budget')) && !state.loading && !state.error }),
+  prepareCreation: prepareAssessmentCreation,
+  context: () => ({ spaceId: currentSpace()?.id || '', space: currentSpace(), assessmentContext: state.assessmentContext,
+    routeKey: location.hash, assessmentId: route().query?.assessment_id || route().query?.assessment || '',
+    setupReady: route().name !== 'space' || route().section !== 'assessment' || state.assessmentReadyRoute === location.hash,
+    active: (route().name === 'learning' || route().name === 'space' && (state.spaceTab === 'assessment' || route().query?.view === 'budget')) && !state.loading && !state.error }),
   changed: () => { if (isLearningRoute(route())) render(); },
+  activityChanged: updateAssessmentActivity,
   committed: async spaceId => { workbench.invalidate(spaceId); await workbench.load(spaceId); },
 });
 const workspace = createWorkspaceController({ api, storage: session,
-  context: () => ({ route: route().name === 'manage' ? route().id : '' }),
+  context: () => ({ route: route().name === 'manage' ? route().id : '', navigationVersion: typeof routeVersion === 'undefined' ? null : routeVersion }),
   changed: () => { if (route().name === 'manage') { const spaceId = workspace.snapshot().data?.space?.id; if (spaceId && byId(spaceId)) state.selected = spaceId; render(); } },
-  committed: async (target, content) => {
-    state.graphSpace = ''; state.graph = null; state.topics.clear(); state.plans.clear(); workbench.invalidate(); learning.clear();
-    const [spaces, materials] = await Promise.all([api.spaces(), api.materials()]);
-    state.live = { spaces, materials, tasks: [] }; if (!byId(state.selected)) state.selected = spaces[0]?.id || ''; scheduleMaterialRefresh();
+  committed: async (target, content, change) => {
+    if (change.completionReceipt) {
+      const receipt = change.completionReceipt, row = taskCompletion.list(content.space.id).find(row => row.target.planId === target.id && row.target.taskId === target.item);
+      await continueAfterTaskConfirmation(content.space.id, { receipt, target: row?.target }, workspacePath('task', target.id, target.item), change.navigationVersion ?? null);
+      return;
+    }
+    const ids = [...new Set(change.spaceIds || (change.spaceId ? [change.spaceId] : []))], resources = new Set(change.resources);
+    const acknowledged = content?.space, known = acknowledged && byId(acknowledged.id);
+    if (known && ids.includes(known.id)) Object.assign(known, mergeSpaceProjection(known, acknowledged));
+    if (resources.has('workbench')) for (const id of ids) workbench.invalidate(id, change);
+    if (resources.has('topics')) for (const id of ids) state.topics.delete(id);
+    if (resources.has('graph') && ids.includes(state.graphSpace) || resources.has('materialGraph') && state.graphMaterial === target.id) {
+      state.graphSpace = ''; state.graphMaterial = ''; state.graph = null; state.graphUiKey = '';
+    }
+    if (resources.has('knowledge') && ids.includes(learning.snapshot().spaceId)) learning.clear();
+    const needsLists = resources.has('spaces') || resources.has('materials');
+    const requestId = needsLists ? ++state.dataRefreshId : state.dataRefreshId;
+    const lists = needsLists ? Promise.all([
+      resources.has('spaces') ? api.spaces() : Promise.resolve(state.live.spaces),
+      resources.has('materials') ? api.materials() : Promise.resolve(state.live.materials),
+    ]).then(([spaces, materials]) => {
+      if (requestId !== state.dataRefreshId) return;
+      state.live = { ...state.live, spaces: mergeSpaceList(state.live.spaces, spaces), materials };
+      if (!byId(state.selected)) state.selected = spaces[0]?.id || '';
+      if (resources.has('materials')) { state.publishedMaterials = null; scheduleMaterialRefresh(); }
+    }) : Promise.resolve();
+    await Promise.all([lists, resources.has('workbench') ? Promise.all(ids.map(id => workbench.load(id))) : Promise.resolve()]);
+    const failed = ids.map(id => workbench.snapshot(id)).find(entry => entry.error || entry.stale);
+    if (resources.has('workbench') && failed) throw new Error(failed.error || '学习路线尚未刷新，请重试。');
   },
   savePdf: async (file, materialId, versionId) => {
     const hash = await validatePdf(file);
@@ -117,7 +160,7 @@ const link = (label, href, cls = 'text-link', glyph = 'chevron') => `<a class="$
 const button = (label, action, cls = 'button button-primary', glyph = '', attrs = '') => `<button type="button" class="${cls}" data-action="${action}" ${attrs}>${glyph ? icon(glyph) : ''}${label}</button>`;
 const empty = (title, description, action = '', glyph = 'book') => `<div class="empty-state">${icon(glyph)}<h2>${esc(title)}</h2><p>${esc(description)}</p>${action}</div>`;
 const notice = (text, style = '') => `<div class="notice ${style}">${icon('help')}<span>${text}</span></div>`;
-let toastTimeout, renderVersion = 0, modalVersion = 0;
+let toastTimeout, renderVersion = 0, modalVersion = 0, routeVersion = 0, scopePlanReturn = null;
 
 function toast(message, error = false) {
   const element = $('#toast'); element.textContent = message; element.className = `toast${error ? ' error' : ''}`; element.hidden = false;
@@ -131,7 +174,7 @@ function openModal(title, body, className = '') {
   const focusTarget = $('input:not([type=checkbox]), textarea, select', modal);
   if (focusTarget) focusTarget.focus();
 }
-function closeModal() { modalVersion++; modal.close(); if (state.recordFocus?.isConnected) { state.recordFocus.setAttribute?.('aria-expanded', 'false'); state.recordFocus.focus({ preventScroll: true }); } state.recordFocus = null; }
+function closeModal() { scopePlanReturn = null; modalVersion++; modal.close(); if (state.recordFocus?.isConnected) { state.recordFocus.setAttribute?.('aria-expanded', 'false'); state.recordFocus.focus({ preventScroll: true }); } state.recordFocus = null; }
 function showError(error, root = modal) {
   const box = $('[data-form-error]', root);
   if (box) { box.textContent = error.message || String(error); box.hidden = false; }
@@ -214,7 +257,8 @@ async function submitSpaceChange(form) {
   }
   const target = state.live;
   if (action === 'delete') { removeSpaceData(target, space.id); forgetSpace(space.id); }
-  else { const existing = target.spaces.find(s => s.id === space.id); if (existing) Object.assign(existing, result); }
+  else { const existing = target.spaces.find(s => s.id === space.id); if (existing) Object.assign(existing, mergeSpaceProjection(existing, result)); }
+  workspace.invalidateSpace(space.id);
   if (!byId(state.selected) || action === 'archive' && state.selected === space.id) {
     state.selected = target.spaces.find(s => s.status !== 'archived')?.id || target.spaces[0]?.id || '';
     storageWrite(session, 'knowpath-selected-live', state.selected);
@@ -222,6 +266,7 @@ async function submitSpaceChange(form) {
   if (modal.open && modalVersion === version) closeModal();
   if (action === 'delete' && route().name === 'space' && route().id === space.id) go('spaces');
   else render();
+  if (action !== 'delete' && route().name === 'manage') await workspace.load();
   toast(action === 'delete' ? '学习空间已删除，资料库中的原始资料已保留。' : action === 'archive' ? '空间已归档，可在“已归档”中查看或恢复。' : '空间已恢复，可在“学习中”继续学习。');
 }
 function spaceCard(space, i) {
@@ -291,7 +336,7 @@ function normalizeType(material) { const type = String(material.type || material
 function materialResults() {
   const materials = data().materials.filter(m => (state.materialFilter === 'all' || normalizeType(m) === state.materialFilter) && m.name.toLowerCase().includes(state.query.toLowerCase()));
   if (!materials.length) return empty('还没有找到资料', state.query ? '试试其他文件名，或者清空筛选条件。' : '你的教材、笔记和灵感，都可以从这里开始。', button('选择文件', 'upload', 'button button-primary', 'upload'), 'file');
-  return `<div class="material-list"><div class="material-head"><span>资料名称</span><span>状态</span><span class="material-size">文件大小</span><span class="material-date">导入日期</span><span class="material-action">操作</span></div>${materials.map(m => `<div class="material-row"><button class="material-name" data-action="view-material" data-id="${esc(m.id)}"><span class="file-icon ${normalizeType(m)}"><span class="file-type">${normalizeType(m).toUpperCase()}</span></span><span title="${esc(m.name)}">${esc(m.name)}</span></button><span class="material-status"><span class="status-tag ${m.status !== 'ready' ? 'pending' : ''}">${statusLabels[m.status] || esc(m.status)}</span></span><span class="material-size">${sizeText(m.size_bytes)}</span><span class="material-date">${dateText(m.created_at)}</span><span class="material-action">${button('知识结构', 'material-graph', 'text-link', '', `data-id="${esc(m.id)}"`)}${button('查看', 'view-material', 'text-link', '', `data-id="${esc(m.id)}"`)}${manageLink('审核发布', 'material-graph', m.id) + manageLink('管理', 'material', m.id) + manageLink('删除', 'material-delete', m.id, null, 'text-link danger-link')}</span></div>`).join('')}</div>`;
+  return `<div class="material-list"><div class="material-head"><span>资料名称</span><span>状态</span><span class="material-size">文件大小</span><span class="material-date">导入日期</span><span class="material-action">操作</span></div>${materials.map(m => `<div class="material-row"><button class="material-name" data-action="view-material" data-id="${esc(m.id)}"><span class="file-icon ${normalizeType(m)}"><span class="file-type">${normalizeType(m).toUpperCase()}</span></span><span title="${esc(m.name)}">${esc(m.name)}</span></button><span class="material-status"><span class="status-tag ${m.status !== 'ready' ? 'pending' : ''}">${esc(materialStatusText(m))}</span>${m.lifecycle?.parser_upgrade_available ? '<small>已有解析版本 · 可用新版解析器</small>' + manageLink('重新解析并审核', 'material-reparse', m.id) : ''}${m.lifecycle?.parse_manifest?.complete === false ? '<small>部分页面待核对</small>' : ''}</span><span class="material-size">${sizeText(m.size_bytes)}</span><span class="material-date">${dateText(m.created_at)}</span><span class="material-action">${button('知识内容预览', 'material-graph', 'text-link', '', `data-id="${esc(m.id)}"`)}${button('查看', 'view-material', 'text-link', '', `data-id="${esc(m.id)}"`)}${manageLink('审核发布', 'material-graph', m.id) + manageLink('管理', 'material', m.id) + manageLink('删除', 'material-delete', m.id, null, 'text-link danger-link')}</span></div>`).join('')}</div>`;
 }
 function materialsPage() {
   if (route().name === 'material-graph') {
@@ -338,11 +383,14 @@ function graphDetail() {
   const index = graphModel(), node = index.byId.get(state.graphSelected);
   if (!node) return `<div class="graph-detail-placeholder">${icon('graph')}<h2>从一个主题开始</h2><p>点击左侧主题，查看完整内容、资料来源和它的直接关联。</p><p>也可以搜索标题或关键词，在全部 ${index.nodes.length} 个知识点中定位。</p></div>`;
   const title = graphTitle(node), refs = node.source_refs || [];
-  const description = node.description || '这个主题暂时没有单独的说明，可以查看资料来源。';
-  return `<div class="graph-detail-heading"><span class="badge">主题详情</span></div>
+  const description = node.scope_summary || node.description || '这个主题暂时没有单独的说明，可以查看资料来源。';
+  const role = { container: '章节容器', introduction: '章节导言', instruction: '学习单元', review: '复习单元', optional_summary: '可选总结与综合练习', front_matter: '封面与目录', footer: '页眉页脚', reference: '参考来源' }[node.content_role] || '主题详情';
+  return `<div class="graph-detail-heading"><span class="badge">${esc(role)}</span></div>
     <h2 class="graph-readable-title" title="${esc(title)}">${esc(title)}</h2>
     ${title.length > 42 ? '<details class="graph-full-text"><summary>阅读完整标题</summary><p>' + esc(title) + '</p></details>' : ''}
     <p class="graph-readable-description">${esc(description)}</p>
+    ${Array.isArray(node.learning_objectives) && node.learning_objectives.length ? '<h3>学习目标</h3><ul>' + node.learning_objectives.map(goal => '<li>' + esc(goal) + '</li>').join('') + '</ul>' : ''}
+    ${'is_learnable' in node ? '<p class="subtle">' + (node.is_learnable ? '可安排学习任务' : '默认不安排学习任务') + (node.is_assessable === false ? ' · 不自动出题' : '') + (node.extraction?.review_required ? ' · 需要核对来源' : '') + '</p>' : ''}
     ${description.length > 160 ? '<details class="graph-full-text"><summary>展开完整说明</summary><p>' + esc(description) + '</p></details>' : ''}
     <dl class="graph-facts"><div><dt>主题状态</dt><dd>${({ mastered: '已掌握', learning: '学习中', new: '待探索', active: '有效主题', pending: '待确认' })[node.status] || '待探索'}</dd></div><div><dt>直接关联</dt><dd>${index.adjacent.get(node.id)?.size || 0} 个主题</dd></div></dl>
     <div class="graph-source-heading">资料来源 <span>${refs.length}</span></div>
@@ -411,14 +459,14 @@ function graphPage({ embedded = false, materialLibrary = false } = {}) {
   }
   if (state.graphSelected && index.nodes.length && !index.byId.has(state.graphSelected)) state.graphSelected = '';
   const toolbar = embedded ? '' : `<div class="toolbar graph-space-toolbar">${materialLibrary ? `<span class="badge">当前资料：${esc(material?.name || '资料')}</span>` : graphContextPicker(context)}<div class="workspace-links">${materialLibrary ? link('返回资料库', '#/materials') : context.type === 'space' ? manageLink('知识更新', 'knowledge-updates', context.space.id) + manageLink('知识纠错', 'knowledge-correct', context.space.id) + manageLink('变更记录', 'knowledge-changes', context.space.id) : manageLink('管理资料', 'material', material.id)}${button('重新加载', 'reload-graph', 'button button-secondary', 'refresh')}</div></div>`;
-  const content = state.graphLoading ? '<div class="skeleton" role="status" aria-label="正在加载知识图谱"></div>' : index.nodes.length ? `
+  const content = state.graphError ? `<div role="alert">${notice(esc(state.graphError), 'error')}</div>` : state.graphLoading ? '<div class="skeleton" role="status" aria-label="正在加载知识图谱"></div>' : index.nodes.length ? `
     <div class="graph-browser-controls"><div class="graph-browse-buttons">${button('返回上层', 'graph-back', 'button button-secondary', '', state.graphHistory.length ? '' : 'disabled')}${button('主题总览', 'graph-overview', 'button button-secondary', '', 'aria-pressed="' + (!state.graphSelected && !state.graphQuery && state.graphScope === 'overview') + '"')}${button('全部知识', 'graph-all', 'button button-secondary', '', 'aria-pressed="' + (!state.graphSelected && !state.graphQuery && state.graphScope === 'all') + '"')}</div><label class="search-field graph-search">${icon('search')}<input type="search" data-input="graph-search" placeholder="搜索全部 ${index.nodes.length} 个知识点" aria-label="搜索全部知识点" value="${esc(state.graphQuery)}"></label></div>
     <div id="graph-explorer">${graphExplorer()}</div>
     <p class="graph-browser-note">共 ${index.nodes.length} 个知识点 · ${index.edges.length} 条关系。节点过多时分页浏览，完整标题和原文可在详情中查看。</p>
-  ` : material && ['uploaded', 'processing'].includes(material.status)
+  ` : material && materialPending(material)
     ? empty('正在生成知识图谱', '资料已上传，后台正在解析内容。页面会自动刷新，完成后即可查看主题和关系。', button('重新检查', 'reload-graph', 'button button-soft', 'refresh'), 'graph')
     : empty('当前资料还没有可展示的知识点', '请检查资料解析与图谱发布状态；如果刚完成上传，稍等片刻后重新检查。', link('前往资料库', '#/materials', 'button button-soft'), 'graph');
-  return heading + toolbar + (state.graphError ? notice(esc(state.graphError), 'error') : '') + content;
+  return heading + toolbar + content;
 }
 
 function weekStrip() {
@@ -438,11 +486,12 @@ function planPage({ embedded = false } = {}) {
   const heading = embedded ? '' : pageHeading('学习安排', '按自己的节奏，积累看得见的进步。', button('安排学习', 'new-plan', 'button button-primary', 'plus'));
   if (!space) return heading + empty('学习，从一个小目标开始', '先创建学习空间，再为它安排学习任务。', button('新建空间', 'new-space', 'button button-primary', 'plus'), 'calendar');
   if (route().query?.view === 'budget') return `<nav class="workbench-subnav">${link('返回学习计划', spacePath(space.id, 'plan'))}</nav>${renderLearning({ space, state: learning.snapshot(), section: 'comparison', embedded: true, hideNav: true })}`;
+  const entry = workbench.snapshot(space.id);
+  if (!plan && entry.status !== 'ready_empty') return heading + (entry.error ? notice(esc(entry.error), 'error') + button('重试进度读取', 'workbench-retry', 'button button-secondary') : '<div class="skeleton" role="status" aria-label="正在加载学习任务"></div>');
   const controls = embedded
     ? `<div class="space-panel-toolbar"><span class="subtle">${completed} / ${tasks.length} 项已完成</span><div class="workspace-links">${link('预算比较', spacePath(space.id, 'plan', { view: 'budget' }))}${plan ? button('调整记录', 'plan-adjustments', 'button button-secondary') + button('调整顺序', 'order-open', 'button button-secondary') : ''}${button(plan ? '重新规划' : '生成学习任务', 'new-plan', 'button button-primary', 'plus')}</div></div>`
     : `<div class="toolbar">${spaceSelect()}<span class="subtle">${completed} / ${tasks.length} 项已完成</span></div>`;
-  const entry = workbench.snapshot(space.id);
-  const standaloneRoute = embedded ? '' : `<section class="panel workbench-plan-progress">${renderProgress(progressForSpace(space), { currentPlan: plan, compact: true, activeSession: workbench.snapshot(space.id).data?.active_session })}</section>`;
+  const standaloneRoute = embedded ? '' : `<section class="panel workbench-plan-progress">${renderProgress(progressForSpace(space), { currentPlan: plan, status: entry.status, compact: true, activeSession: entry.data?.active_session })}</section>`;
   return `${heading}${controls}${entry.error ? notice(esc(entry.error), 'error') + button('重试', 'workbench-retry', 'button button-secondary') : ''}${plan?.status === 'needs_replan' ? notice('计划依据的知识或学习状态已变化，请先重新规划。', 'warning') : ''}${state.planError ? notice(esc(state.planError), 'error') : ''}${planNote}${standaloneRoute}<div class="plan-layout"><div>${entry.busy && !entry.data || state.planLoading ? '<div class="skeleton" role="status" aria-label="正在加载学习任务"></div>' : tasks.length ? `<section class="panel plan-list"><div class="panel-title"><div><h2>本轮学习任务</h2><p class="subtle">选择任务开始学习，也可查看记录或调整安排。</p></div><span class="badge">${tasks.length} 个节点</span></div>${tasks.map(taskRow).join('')}</section>` : empty('先生成一组学习任务', '学习范围确定后，按照主题和掌握状态生成下一步。', button('生成学习任务', 'new-plan', 'button button-primary', 'calendar'), 'calendar')}</div>${focusCard()}</div>`;
 }
 function chatMessages() {
@@ -455,7 +504,7 @@ function assistantPage({ embedded = false } = {}) {
   const pending = state.pendingJob?.spaceId === currentSpace().id;
   const assistantCtx = state.assistantContext?.space_id === currentSpace().id ? state.assistantContext : null;
   const background = `<div class="workbench-assistant-context"><span>当前空间：${esc(currentSpace().name)} · ${materialIds(currentSpace()).length} 份资料</span>${assistantCtx ? link('返回本次学习', assistantCtx.returnTo || workspacePath('session', assistantCtx.planId, assistantCtx.taskId)) + button('自由提问', 'clear-assistant-context', 'text-link') : ''}</div>`;
-  return `${heading}${background}${state.chatCapabilityError ? notice(esc(state.chatCapabilityError), 'error') : ''}<div class="assistant-shell">${embedded ? '' : `<div class="toolbar">${spaceSelect()}<span class="badge">自动选择回答依据</span></div>`}<div class="assistant-intro"><div class="assistant-mark">${icon('spark')}</div><h2>今天，想弄懂什么？</h2><p>不必一次问得完美。从一个小小的好奇开始。</p><div class="suggestions">${['帮我梳理这份资料的重点', '如何理解这个知识点？', '接下来可以学习什么？'].map(text => `<button class="suggestion" data-action="suggestion" data-text="${esc(text)}">${text}</button>`).join('')}</div></div><div class="chat-messages" id="chat-messages" aria-live="polite" aria-relevant="additions">${chatMessages()}</div><div id="chat-status" class="notice" role="status" ${!state.sending && !pending ? 'hidden' : ''}>${state.sending ? '正在判断回答依据并生成回答…' : '上次回答尚未接收完成，可继续接收同一个任务。'}</div>${'<details class="workspace-chat-filter"><summary>限定本次问答的资料（默认全部）</summary>' + data().materials.filter(m => materialIds(currentSpace()).includes(m.id)).map(m => '<label class="check-label"><input type="checkbox" data-chat-material value="' + esc(m.id) + '" ' + ((state.chatMaterials.get(currentSpace().id) || []).includes(m.id) ? 'checked' : '') + (state.sending ? ' disabled' : '') + '>' + esc(m.name) + '</label>').join('') + '</details>'}<form id="chat-form" class="chat-form"><label class="screenreader" for="question">输入你的学习问题</label><textarea id="question" name="question" rows="2" maxlength="8000" placeholder="例如：能用直观的方式解释一下线性变换吗？" required ${state.sending || state.chatCapabilityError ? 'disabled' : ''}></textarea><div class="chat-form-bottom"><span>资料问题附来源，模型补充有标记<br>Enter 发送 · Shift + Enter 换行</span>${state.sending ? button('停止', 'stop-chat', 'button button-secondary', 'pause') : pending ? button('继续接收', 'resume-chat', 'button button-primary', 'refresh') : '<button type="submit" class="button button-primary">发送问题' + icon('arrow') + '</button>'}</div></form><p class="chat-footnote">模型回答可能存在偏差，请结合原始资料核对。</p></div>`;
+  return `${heading}${background}${state.chatCapabilityError ? notice(esc(state.chatCapabilityError), 'error') : ''}<div class="assistant-shell">${embedded ? '' : `<div class="toolbar">${spaceSelect()}<span class="badge">自动选择回答依据</span></div>`}<div class="assistant-intro"><div class="assistant-mark">${icon('spark')}</div><h2>今天，想弄懂什么？</h2><p>不必一次问得完美。从一个小小的好奇开始。</p><div class="suggestions">${['帮我梳理这份资料的重点', '如何理解这个知识点？', '接下来可以学习什么？'].map(text => `<button class="suggestion" data-action="suggestion" data-text="${esc(text)}">${text}</button>`).join('')}</div></div><div class="chat-messages" id="chat-messages" aria-live="polite" aria-relevant="additions">${chatMessages()}</div><div id="chat-status" class="notice" role="status" ${!state.sending && !pending ? 'hidden' : ''}>${state.sending ? '正在判断回答依据并生成回答…' : '上次回答尚未接收完成，可继续接收同一个任务。'}</div>${'<details class="workspace-chat-filter"><summary>限定本次问答的资料（默认全部）</summary>' + data().materials.filter(m => materialIds(currentSpace()).includes(m.id)).map(m => '<label class="check-label"><input type="checkbox" data-chat-material value="' + esc(m.id) + '" ' + ((state.chatMaterials.get(currentSpace().id) || []).includes(m.id) ? 'checked' : '') + (state.sending ? ' disabled' : '') + '>' + esc(m.name) + '</label>').join('') + '</details>'}<p class="subtle">活动测评期间接收相关帮助会留下辅助记录，相关题目不计为独立掌握证据；其它标签页和共享来源空间同样适用。</p><form id="chat-form" class="chat-form"><label class="screenreader" for="question">输入你的学习问题</label><textarea id="question" name="question" rows="2" maxlength="8000" placeholder="例如：能用直观的方式解释一下线性变换吗？" required ${state.sending || state.chatCapabilityError ? 'disabled' : ''}></textarea><div class="chat-form-bottom"><span>资料问题附来源，模型补充有标记<br>Enter 发送 · Shift + Enter 换行</span>${state.sending ? button('停止', 'stop-chat', 'button button-secondary', 'pause') : pending ? button('继续接收', 'resume-chat', 'button button-primary', 'refresh') : '<button type="submit" class="button button-primary">发送问题' + icon('arrow') + '</button>'}</div></form><p class="chat-footnote">模型回答可能存在偏差，请结合原始资料核对。</p></div>`;
 }
 function spaceTabButton(tab, label, glyph = '') {
   const active = state.workbenchSection === tab || tab === 'assessment' && state.workbenchSection === 'review';
@@ -464,15 +513,16 @@ function spaceTabButton(tab, label, glyph = '') {
 function progressForSpace(space) { return workbench.snapshot(space.id).progress; }
 function nextActionHtml(space) {
   const entry = workbench.snapshot(space.id);
-  if (entry.busy && !entry.data) return '<p class="subtle" role="status">正在读取学习进度…</p>';
+  if (!entry.data && !entry.error && entry.status !== 'ready_empty') return '<p class="subtle" role="status">正在读取学习进度…</p>';
   if (entry.error && !entry.data) return notice(esc(entry.error), 'error') + button('重试进度读取', 'workbench-retry', 'button button-secondary');
   const step = nextLearningStep(space, entry.data || {}, entry.review?.items || []);
   let action;
   if (step.kind === 'session') action = manageLink(step.label, 'session', step.session.plan_id, step.session.task_id, 'button button-primary');
   else if (step.kind === 'task') action = manageLink(step.label, 'session', step.plan.id || step.plan.plan_id, step.task.id, 'button button-primary');
+  else if (step.kind === 'assessment') action = link(step.label, spacePath(space.id, 'assessment', { plan: step.assessment.plan_id, task: step.assessment.task_id, assessment_id: step.assessment.assessment_id || step.assessment.id }), 'button button-primary');
   else if (step.kind === 'archived') action = button(step.label, 'restore-space', 'button button-primary', 'refresh', `data-id="${esc(space.id)}"`);
   else if (['plan', 'replan'].includes(step.kind)) action = button(step.label, 'new-plan', 'button button-primary', 'calendar');
-  else action = link(step.label, spacePath(space.id, step.kind === 'scope' ? 'materials' : 'review'), 'button button-primary');
+  else action = link(step.label, spacePath(space.id, step.kind === 'scope' ? 'materials' : step.kind === 'summary' ? 'summary' : 'review'), 'button button-primary');
   return `<p class="subtle">${esc(step.description)}</p><div class="space-overview-actions">${action}${link('学习计划', spacePath(space.id, 'plan'))}</div>`;
 }
 function spaceOverviewPanel(space, materials, topics) {
@@ -482,24 +532,25 @@ function spaceOverviewPanel(space, materials, topics) {
 }
 function spaceShell(space, body, section = state.workbenchSection) {
   state.selected = space.id; state.workbenchSection = section;
-  return `<a class="text-link back-link" href="#/spaces">返回学习空间</a>${pageHeading(esc(space.name), '阅读原文、理解讲解，沿着节点继续学习。', `<div class="space-detail-actions">${link('空间设置', spacePath(space.id, 'settings'), 'button button-secondary', 'settings')}${link('高级分析', spacePath(space.id, 'analysis'), 'text-link')}</div>`)}${studyProgressPanel(space)}<nav class="space-tabs" aria-label="空间学习功能">${spaceTabButton('study', '学习', 'book')}${spaceTabButton('plan', '学习计划', 'calendar')}${spaceTabButton('materials', '资料与范围', 'file')}${spaceTabButton('assessment', '测评与复习', 'check')}${spaceTabButton('notes', '学习笔记', 'book')}</nav><div class="space-tab-content">${body}</div>`;
+  return `<a class="text-link back-link" href="#/spaces">返回学习空间</a>${pageHeading(esc(space.name), '阅读原文、理解讲解，沿着节点继续学习。', `<div class="space-detail-actions">${link('空间设置', spacePath(space.id, 'settings'), 'button button-secondary', 'settings')}${link('高级分析', spacePath(space.id, 'analysis'), 'text-link')}</div>`)}<div data-completion-recovery>${renderCompletionRecovery(taskCompletion.list(space.id))}</div>${studyProgressPanel(space)}<nav class="space-tabs" aria-label="空间学习功能">${spaceTabButton('study', '学习', 'book')}${spaceTabButton('plan', '学习计划', 'calendar')}${spaceTabButton('materials', '资料与范围', 'file')}${spaceTabButton('assessment', '测评与复习', 'check')}${spaceTabButton('notes', '学习笔记', 'book')}</nav><div class="space-tab-content">${body}</div>`;
 }
 function studyProgressPanel(space) {
-  const entry = workbench.snapshot(space.id), plan = entry.data?.current_plan;
+  const entry = workbench.snapshot(space.id), plan = entry.data?.current_plan || state.plans.get(space.id);
   const view = study.snapshot(), progress = progressForSpace(space);
   const selected = view.space?.id === space.id ? view.nodeId : null;
   const decorated = progress ? { ...progress, rounds: (progress.rounds || []).map(round => ({ ...round, nodes: (round.nodes || []).map(node => ({ ...node, selected: node.node_id === selected })) })) } : progress;
   const nodes = currentProgressNodes(decorated, plan), task = view.space?.id === space.id ? view.task : null;
   const completed = nodes.filter(n => n.status === 'completed').length, percent = nodes.length ? Math.round(completed / nodes.length * 100) : 0;
-  const count = `${completed} / ${nodes.length} 项已完成`;
-  return `<section class="panel study-progress" data-study-progress><div class="study-progress-full"><div class="study-route-heading"><div><h2>学习路线</h2><p>按节点循序学习 · 点击打开学习内容</p></div>${plan ? button('调整顺序', 'order-open', 'text-link') : ''}<div class="study-route-total"><strong>${percent}%</strong><span>${count}</span></div></div><div class="study-route-meter" role="progressbar" aria-label="本轮任务完成进度" aria-valuemin="0" aria-valuemax="${nodes.length || 1}" aria-valuenow="${completed}"><span style="width:${percent}%"></span></div>${entry.error ? notice(esc(entry.error), 'error') : ''}${renderProgress(decorated, { currentPlan: plan, compact: true, showHeading: false, activeSession: view.space?.id === space.id ? view.activeSession : entry.data?.active_session })}<details class="study-progress-history"><summary>历史轮次与累计记录</summary>${renderProgress(decorated, { currentPlan: plan, historyOnly: true })}</details></div></section><aside class="panel study-progress-dock" data-study-progress-dock aria-label="当前学习节点" aria-hidden="true" inert><div class="study-progress-compact"><strong>${esc(task ? taskDisplay(task).title : '当前学习路线')}</strong><span>${count}</span><button type="button" class="text-link" data-action="study-expand-progress" aria-expanded="false">展开节点</button></div></aside>`;
+  const count = nodes.length ? `${completed} / ${nodes.length} 项已完成` : entry.status === 'ready_empty' ? '尚未生成学习计划' : entry.status === 'error' ? '学习路线读取失败' : '正在读取学习路线…';
+  const refreshState = entry.error ? notice(esc(`学习路线刷新失败：${entry.error}${entry.data ? ' 正在显示最近成功读取的进度。' : ''}`), 'error') + button('重试进度读取', 'workbench-retry', 'button button-secondary') : entry.busy ? '<p class="subtle" role="status">正在刷新学习路线…</p>' : '';
+  return `<section class="panel study-progress" data-study-progress data-progress-status="${esc(entry.status || 'not_loaded')}"><div class="study-progress-full"><div class="study-route-heading"><div><h2>学习路线</h2><p>按节点循序学习 · 点击打开学习内容</p></div>${plan ? button('调整顺序', 'order-open', 'text-link') : ''}<div class="study-route-total"><strong>${nodes.length ? percent + '%' : '—'}</strong><span>${count}</span></div></div><div class="study-route-meter" role="progressbar" aria-label="本轮任务完成进度" aria-valuemin="0" aria-valuemax="${nodes.length || 1}" aria-valuenow="${completed}"${nodes.length ? '' : ' hidden'}><span style="width:${percent}%"></span></div>${refreshState}${renderProgress(decorated, { currentPlan: plan, status: entry.status, compact: true, showHeading: false, activeSession: view.space?.id === space.id ? view.activeSession : entry.data?.active_session })}<details class="study-progress-history"><summary>历史轮次与累计记录</summary>${renderProgress(decorated, { currentPlan: plan, status: entry.status, historyOnly: true })}</details></div></section><aside class="panel study-progress-dock" data-study-progress-dock aria-label="当前学习节点" aria-hidden="true" inert><div class="study-progress-compact"><strong>${esc(task ? taskDisplay(task).title : '当前学习路线')}</strong><span>${count}</span><button type="button" class="text-link" data-action="study-expand-progress" aria-expanded="false">展开节点</button></div></aside>`;
 }
 function spaceMaterialsPanel(space, materials, topics) {
   const tools = manageLink('资料更新', 'knowledge-updates', space.id) + manageLink('知识纠错', 'knowledge-correct', space.id) + manageLink('变更记录', 'knowledge-changes', space.id);
   return `<section class="panel"><div class="panel-title"><div><h2>空间资料</h2><p class="subtle">学习使用空间绑定的知识版本。</p></div><div class="workspace-links">${tools}</div></div>${materials.map(m => {
     const binding = (space.bindings || []).find(b => b.material_id === m.id);
     return `<div class="list-item">${icon('file')}<span>${esc(m.name)}${binding ? `<small class="subtle"> · 知识版本 ${Number(binding.graph_version)}</small>` : ''}</span>${button('阅读', 'space-material-source', 'text-link', '', `data-id="${esc(m.id)}"`)}${manageLink('管理资料', 'material', m.id)}</div>`;
-  }).join('')}</section><section class="panel space-summary-panel"><div class="panel-title"><div><h2>学习范围</h2><p class="subtle">选择主题和必要的前置知识。</p></div>${button('调整范围', 'edit-scope', 'button button-primary', 'settings')}</div><div class="topic-list">${(topics || []).filter(t => (space.topic_ids || []).includes(t.id)).map(t => `<span class="topic-chip">${esc(t.title || t.name)}</span>`).join('') || '<p class="subtle">尚未选择主题。</p>'}</div><p class="subtle">${space.include_prerequisites === false ? '未自动纳入前置知识。' : '自动纳入必要的前置知识。'}</p>${(space.excluded_topic_ids || []).length ? '<p class="subtle">暂时排除：' + (topics || []).filter(t => space.excluded_topic_ids.includes(t.id)).map(t => esc(t.name || t.title)).join('、') + '</p>' : ''}${!space.topic_ids?.length ? notice('保存范围后可直接生成计划，初始测评可选。') : ''}</section><section class="panel space-summary-panel"><div class="panel-title"><h2>知识图谱</h2>${button('加载图谱', 'space-graph', 'button button-secondary', 'graph')}</div>${state.graphSpace === space.id && state.graph ? graphPage({ embedded: true }) : '<p class="subtle">查看知识之间的关系，并定位原文来源。</p>'}</section>`;
+  }).join('')}</section><section class="panel space-summary-panel"><div class="panel-title"><div><h2>学习范围</h2><p class="subtle">选择主题和必要的前置知识。</p></div>${button('调整范围', 'edit-scope', 'button button-primary', 'settings')}</div><div class="topic-list">${(topics || []).filter(t => (space.topic_ids || []).includes(t.id)).map(t => `<span class="topic-chip">${esc(t.title || t.name)}</span>`).join('') || '<p class="subtle">尚未选择主题。</p>'}</div><p class="subtle">${space.include_prerequisites === false ? '未自动纳入前置知识。' : '自动纳入必要的前置知识。'}</p>${(space.excluded_topic_ids || []).length ? '<p class="subtle">暂时排除：' + (topics || []).filter(t => space.excluded_topic_ids.includes(t.id)).map(t => esc(t.name || t.title)).join('、') + '</p>' : ''}${!space.topic_ids?.length ? notice('保存范围后可直接生成计划，初始测评可选。') : ''}</section><section class="panel space-summary-panel"><div class="panel-title"><h2>知识图谱</h2>${button('加载图谱', 'space-graph', 'button button-secondary', 'graph')}</div>${state.graphSpace === space.id && (state.graph || state.graphLoading || state.graphError) ? graphPage({ embedded: true }) : '<p class="subtle">查看知识之间的关系，并定位原文来源。</p>'}</section>`;
 }
 function spaceSettingsPanel(space) {
   return `<section class="panel"><h2>空间设置</h2><div class="workspace-related">${manageLink('修改名称', 'space-name', space.id) + manageLink('目标、时间与偏好', 'space-profile', space.id) + manageLink('导出记录', 'export', space.id) + manageLink('重置部分学习状态', 'learning-reset', space.id)}</div>${spaceActions(space)}</section>`;
@@ -514,21 +565,65 @@ function managedPage() {
   const space = view.data?.space;
   if (view.route.page === 'health') return renderWorkspace(view) + button('重新自动连接', 'reconnect', 'button button-secondary', 'refresh');
   if (!space) return renderWorkspace(view);
-  return spaceShell(space, renderWorkspace(view), workspaceSection(view.route.page));
+  const resultState = assessmentPageState();
+  const options = assessmentRenderOptions(space, resultState);
+  const completion = view.route.page === 'assessment-result' ? renderAssessmentCompletion(space, resultState, options.plan, options.completion) : '';
+  return spaceShell(space, renderWorkspace(view) + completion, workspaceSection(view.route.page));
+}
+function assessmentPageState() {
+  const view = workspace.snapshot();
+  return route().name === 'manage' && view.route.page === 'assessment-result' && view.data?.assessment
+    ? { assessmentId: view.route.id, assessment: view.data.assessment, diagnostic: { assessment_id: view.route.id, status: view.data.assessment.status } }
+    : learning.snapshot();
+}
+function assessmentRenderOptions(space, resultState = learning.snapshot()) {
+  const plan = state.plans.get(space.id);
+  const target = assessmentTaskCompletion(space, resultState, plan);
+  return { plan, completion: target ? taskCompletion.snapshot(target) : {} };
 }
 async function loadStudy(current = route(), { refresh = false } = {}) {
   const requestedHash = location.hash;
   const space = currentSpace(); if (!space) return;
+  const continuation = typeof completionContinuations === 'undefined' ? null : completionContinuations.get(space.id);
+  if (!refresh && continuation?.space_id === space.id && continuation.current_plan?.id === current.query?.plan && continuation.task_id === current.query?.task) {
+    // A handoff is valid for this navigation only. Future visits read live state.
+    completionContinuations.delete(space.id);
+    try {
+      await study.load({ space, plan: continuation.current_plan, activeSession: continuation.active_session, taskId: current.query.task, current: continuation.current !== false, materials: data().materials, capabilityError: state.chatCapabilityError });
+    } catch (error) {
+      if (continuation.completionTarget) taskCompletion.markNavigationPending(continuation.completionTarget, error);
+      throw error;
+    }
+    if (continuation.completionTarget) {
+      if (location.hash === requestedHash && currentSpace()?.id === space.id && study.snapshot().task?.id === current.query.task && !study.snapshot().error && !study.snapshot().busy) taskCompletion.acknowledgeNavigation(continuation.completionTarget);
+      else taskCompletion.markNavigationPending(continuation.completionTarget, study.snapshot().error);
+    }
+    if (location.hash === requestedHash && study.snapshot().mode === 'original' && study.snapshot().refs.length && !study.snapshot().reader && !study.snapshot().readerError) {
+      try { await study.readSource(); } catch { /* Reader retains retry. */ }
+    }
+    return;
+  }
+  await workbench.load(space.id, { force: refresh });
+  if (location.hash !== requestedHash || currentSpace()?.id !== space.id) return;
   const entry = workbench.snapshot(space.id);
+  if (!entry.data || entry.stale || entry.error) { render(); return; }
   let plan = entry.data?.current_plan;
   let currentPlan = true;
+  if (!current.query?.task && !current.query?.node && !current.query?.plan) {
+    const step = nextLearningStep(space, entry.data || {}, entry.review?.items || []);
+    if (step.kind === 'summary' || step.kind === 'replan') { location.replace(spacePath(space.id, step.kind === 'summary' ? 'summary' : 'plan')); return; }
+    if (step.kind === 'assessment') { location.replace(spacePath(space.id, 'assessment', { plan: step.assessment.plan_id, task: step.assessment.task_id, assessment_id: step.assessment.assessment_id || step.assessment.id })); return; }
+    if (step.kind === 'session' && step.session.plan_id !== plan?.id) {
+      location.replace(studyPath(space.id, step.session.task_id, step.session.plan_id)); return;
+    }
+  }
   if (current.query?.plan && current.query.plan !== plan?.id) {
     plan = await api.plan(current.query.plan); currentPlan = false;
     if (plan.space_id !== space.id || location.hash !== requestedHash) return;
   }
   const previousSpace = study.snapshot().space;
   const bindingsChanged = previousSpace?.id === space.id && JSON.stringify(previousSpace.bindings || []) !== JSON.stringify(space.bindings || []);
-  await study.load({ space, plan, activeSession: entry.data?.active_session, taskId: current.query?.task, nodeId: current.query?.node, current: currentPlan, materials: data().materials, capabilityError: state.chatCapabilityError }, { refresh: refresh || bindingsChanged });
+  await study.load({ space, plan, activeSession: entry.data?.active_session, taskId: current.query?.task, nodeId: current.query?.node, current: currentPlan, materials: data().materials, capabilityError: state.chatCapabilityError, roundSummary: entry.data?.round_summary }, { refresh: refresh || bindingsChanged });
   if (location.hash === requestedHash && study.snapshot().mode === 'original' && study.snapshot().refs.length && !study.snapshot().reader && !study.snapshot().readerError) {
     try { await study.readSource(); } catch { /* Reader exposes the exact error and retry. */ }
   }
@@ -720,13 +815,19 @@ function spacePage(spaceId) {
   const materials = data().materials.filter(m => materialIds(space).includes(m.id));
   const topics = state.topics.get(space.id);
   const tab = state.spaceTab;
-  const body = tab === 'study' || tab === 'overview' ? renderStudy(study.snapshot().space?.id === space.id ? study.snapshot() : { space, busy: true, plan: state.plans.get(space.id) })
+  const entry = workbench.snapshot(space.id);
+  const summaryHandoff = typeof completionContinuations === 'undefined' ? null : completionContinuations.get(space.id);
+  const body = state.workbenchSection === 'summary' ? renderRoundSummary(space, summaryHandoff?.kind === 'summary' ? summaryHandoff.round_summary : workbench.snapshot(space.id).data?.round_summary)
+    : tab === 'study' || tab === 'overview' ? study.snapshot().space?.id === space.id && study.snapshot().plan && (!route().query?.task || route().query.task === study.snapshot().task?.id) && (!route().query?.plan || route().query.plan === study.snapshot().plan?.id) ? renderStudy(study.snapshot())
+      : entry.status === 'ready_empty' ? renderStudy({ space })
+      : entry.error ? notice(esc(entry.error), 'error') + button('重试进度读取', 'workbench-retry', 'button button-secondary')
+      : '<div class="skeleton" role="status" aria-label="正在加载学习节点"></div>'
     : tab === 'notes' ? renderNotes(notes.snapshot())
     : tab === 'scope' ? spaceMaterialsPanel(space, materials, topics)
     : tab === 'tasks' ? planPage({ embedded: true })
       : tab === 'assistant' ? `<section class="panel embedded-assistant-panel"><div class="panel-title"><div><h2>学习助手</h2><p class="subtle">围绕当前空间的资料提问，回答会附带来源。</p></div></div>${assistantPage({ embedded: true })}</section>`
         : state.workbenchSection === 'settings' ? spaceSettingsPanel(space)
-          : `<div class="embedded-learning-panel">${state.workbenchSection !== 'analysis' ? `<nav class="workbench-subnav" aria-label="测评与复习">${link('测评练习', spacePath(space.id, 'assessment'))}${link('掌握与复习', spacePath(space.id, 'review'))}</nav>` : ''}${assessmentContextHtml(space)}${renderLearning({ space, state: learning.snapshot(), spaceSelectHtml: '', section: state.learningSection, embedded: true, hideNav: true })}</div>`;
+          : `<div class="embedded-learning-panel">${state.workbenchSection !== 'analysis' ? `<nav class="workbench-subnav" aria-label="测评与复习">${link('测评练习', spacePath(space.id, 'assessment'))}${link('掌握与复习', spacePath(space.id, 'review'))}</nav>` : ''}${assessmentContextHtml(space)}${renderLearning({ space, state: learning.snapshot(), ...assessmentRenderOptions(space), spaceSelectHtml: '', section: state.learningSection, embedded: true, hideNav: true })}</div>`;
   return spaceShell(space, body);
 }
 function openSpaceTab(tab, spaceId = currentSpace()?.id) {
@@ -751,6 +852,9 @@ function legacySpaceRedirect(current) {
   const tabs = { plan: 'tasks', assistant: 'assistant', learning: 'assessment' };
   const tab = tabs[current.name];
   if (!tab) return false;
+  // Initial render runs before backend data is available. Keep the requested
+  // route through loading/connection errors so a successful retry can resolve it.
+  if (state.loading || state.error) return false;
   const space = currentSpace();
   if (!space) { if (location.hash !== '#/spaces') location.hash = '#/spaces'; return true; }
   state.selected = space.id; state.spaceTab = tab; state.spaceTabSpace = space.id;
@@ -758,6 +862,32 @@ function legacySpaceRedirect(current) {
   const section = current.name === 'learning' ? ({ evolution: 'review', comparison: 'plan', replay: 'analysis' }[current.id] || 'assessment') : current.name === 'plan' ? 'plan' : 'assistant';
   const target = spacePath(space.id, section, current.id === 'comparison' ? { view: 'budget' } : {});
   if (location.hash !== target) location.hash = target;
+  return true;
+}
+function updateAssessmentActivity(view) {
+  const check = $('[data-assessment-activity-check]');
+  if (check) check.hidden = !view.needsActivityCheck;
+  const error = $('[data-assessment-activity-error]');
+  if (error) { error.textContent = view.activityError || ''; error.hidden = !view.activityError; }
+}
+function captureAssessmentAnswer(previous = null) {
+  const field = document.activeElement;
+  const form = field?.form;
+  if (form?.id !== 'learning-answer-form' || !form.dataset.answerDraftKey) {
+    const neutralFocus = !field || field === document.body || field === document.documentElement;
+    return neutralFocus && previous?.key === $('#learning-answer-form')?.dataset.answerDraftKey ? previous : null;
+  }
+  return { key: form.dataset.answerDraftKey, id: field.id, start: field.selectionStart, end: field.selectionEnd,
+    direction: field.selectionDirection, scrollTop: field.scrollTop };
+}
+function restoreAssessmentAnswer(saved) {
+  const form = $('#learning-answer-form');
+  if (!saved || form?.dataset.answerDraftKey !== saved.key) return false;
+  const field = [...form.elements].find(element => element.id === saved.id);
+  if (!field || field.matches(':disabled')) return false;
+  field.focus({ preventScroll: true });
+  if (Number.isInteger(saved.start) && field.setSelectionRange) field.setSelectionRange(saved.start, saved.end, saved.direction);
+  field.scrollTop = saved.scrollTop;
   return true;
 }
 function render() {
@@ -768,13 +898,12 @@ function render() {
   const sameStudyNode = studyView.space?.id === current.id && (!current.query?.task || current.query.task === studyView.task?.id) && (!current.query?.plan || current.query.plan === studyView.plan?.id);
   if ((state.preserveStudyRoute === location.hash || sameStudyNode) && current.name === 'space' && ['study', 'overview'].includes(current.section) && mountedMatches && mountedStudy) {
     header(); updateStudy();
+    const recovery = $('[data-completion-recovery]'); if (recovery && currentSpace()) recovery.innerHTML = renderCompletionRecovery(taskCompletion.list(currentSpace().id));
     const panel = $('[data-study-progress]'), dock = $('[data-study-progress-dock]');
     if (panel && dock && currentSpace()) {
       const holder = document.createElement('div'); holder.innerHTML = studyProgressPanel(currentSpace());
       const nextPanel = $('[data-study-progress]', holder);
-      const oldNodes = [...panel.querySelectorAll('[data-progress-view="current"] .progress-node')].map(n => n.dataset.node).join(',');
-      const nextNodes = [...nextPanel.querySelectorAll('[data-progress-view="current"] .progress-node')].map(n => n.dataset.node).join(',');
-      if (oldNodes !== nextNodes) {
+      if (panel.outerHTML !== nextPanel.outerHTML) {
         const scroll = $('.progress-scroll', panel)?.scrollLeft || 0;
         const historyOpen = $('.study-progress-history', panel)?.open;
         panel.replaceWith(nextPanel);
@@ -797,7 +926,9 @@ function render() {
     if (current.section === 'assessment' && !current.query?.task) state.assessmentContext = null;
     if (current.section === 'assistant' && !current.query?.session) state.assistantContext = null;
   }
-  learning.sync(); renderVersion++; header();
+  learning.sync();
+  assessmentAnswerFocus = captureAssessmentAnswer(assessmentAnswerFocus);
+  renderVersion++; header();
   const legacyGraph = current.name === 'graph' && !current.id;
   const legacySpace = ['plan', 'assistant', 'learning'].includes(current.name);
   if (legacyGraph) legacyMaterialRedirect();
@@ -808,7 +939,7 @@ function render() {
   const previousKey = previousWorkspace?.dataset.workspaceKey;
   const views = { overview, spaces: spacesPage, materials: materialsPage, 'material-graph': () => materialsPage(), graph: graphPage, plan: planPage, assistant: assistantPage, space: () => spacePage(current.id),
     manage: managedPage, notes: () => renderNotes(notes.snapshot()),
-    learning: () => renderLearning({ space: currentSpace(), state: learning.snapshot(), spaceSelectHtml: spaceSelect(), section: current.id || 'diagnostic' }) };
+    learning: () => renderLearning({ space: currentSpace(), state: learning.snapshot(), ...(currentSpace() ? assessmentRenderOptions(currentSpace()) : {}), spaceSelectHtml: spaceSelect(), section: current.id || 'diagnostic' }) };
   let content;
   if (state.loading) content = pageHeading('正在连接你的知识', '读取学习空间和资料，请稍候。') + '<div class="skeleton" role="status" aria-label="正在加载数据"></div>';
   else if (state.error && !(current.name === 'manage' && current.id === 'health')) content = pageHeading('让连接，重新发生。', '检查本地服务，然后继续你的学习。') + notice(esc(state.error), 'error') + empty('暂时无法读取学习数据', '请检查后端启动情况。你的学习数据仍保留在后端。', manageLink('查看服务状态', 'health', null) + ' ' + button('重试连接', 'reconnect', 'button button-primary', 'refresh'), 'connection');
@@ -816,6 +947,8 @@ function render() {
   const previousDocument = $('[data-study-document]');
   captureStudySidebarScroll();
   main.innerHTML = `<div class="container">${subbar()}${content}</div>`;
+  if (assessmentAnswerFocus?.key !== $('#learning-answer-form')?.dataset.answerDraftKey) assessmentAnswerFocus = null;
+  if (restoreAssessmentAnswer(assessmentAnswerFocus)) assessmentAnswerFocus = null;
   const nextDocument = $('[data-study-document]');
   if (previousDocument?.dataset.readerToken && previousDocument.dataset.readerToken === nextDocument?.dataset.readerToken) { previousDocument.hidden = nextDocument.hidden; nextDocument.replaceWith(previousDocument); }
   syncAssessmentTicker();
@@ -842,8 +975,13 @@ function render() {
   if (state.selected) storageWrite(session, 'knowpath-selected-live', state.selected);
 }
 const pendingMaterialStatuses = new Set(['uploaded', 'processing']);
+const pendingMaterialStages = new Set(['received', 'parsing', 'preparing']);
+function materialPending(material) {
+  if (material.lifecycle?.stage === 'received' && !material.lifecycle.run_id) return false;
+  return material.lifecycle ? pendingMaterialStages.has(material.lifecycle.stage) : pendingMaterialStatuses.has(material.status);
+}
 function hasPendingMaterials(materials = state.live.materials) {
-  return materials.some(material => pendingMaterialStatuses.has(material.status));
+  return materials.some(materialPending);
 }
 function clearMaterialRefresh() {
   if (state.materialRefreshTimer != null) {
@@ -899,7 +1037,7 @@ async function refreshData({ silent = false } = {}) {
   try {
     const [spaces, materials] = await Promise.all([api.spaces(), api.materials()]);
     if (requestId !== state.dataRefreshId) return;
-    state.live = { spaces, materials, tasks: [] }; state.publishedMaterials = null; workbench.invalidate();
+    state.live = { spaces: mergeSpaceList(state.live.spaces, spaces), materials, tasks: [] }; state.publishedMaterials = null; workbench.invalidate();
     state.error = '';
     if (!spaces.some(s => s.id === state.selected)) state.selected = spaces[0]?.id || '';
     scheduleMaterialRefresh();
@@ -913,9 +1051,30 @@ async function refreshData({ silent = false } = {}) {
   }
   if (!silent && requestId === state.dataRefreshId) await loadRoute();
 }
+async function prepareAssessmentCreation({ spaceId, signal }) {
+  const current = route(), requestHash = location.hash, space = currentSpace();
+  if (current.name !== 'space' || current.section !== 'assessment') return state.assessmentContext;
+  const query = current.query || {};
+  if (!query.plan && !query.task && !query.session) return null;
+  if (!query.plan || !query.task) throw new Error('关联测评需要明确的计划与任务。');
+  if (space?.id !== spaceId) throw new Error('测评关联与当前空间不一致。');
+  const plan = await api.plan(query.plan, { signal });
+  if (signal.aborted || location.hash !== requestHash || currentSpace()?.id !== spaceId)
+    throw Object.assign(new Error('测评创建页面已变化。'), { name: 'AbortError' });
+  const association = taskAssessmentContext(plan, query.task, { spaceId, sessionId: query.session });
+  state.assessmentContext = association;
+  return association;
+}
 async function loadRoute() {
   if (state.loading || (state.error && !(route().name === 'manage' && route().id === 'health'))) return;
   const current = route(), space = currentSpace(), requestHash = location.hash;
+  if (current.name === 'learning' && (!current.id || current.id === 'diagnostic') && space) {
+    state.assessmentReadyRoute = '';
+    location.replace(spacePath(space.id, 'assessment')); return;
+  }
+  const assessmentRoute = current.name === 'space' && current.section === 'assessment';
+  const assessmentEpoch = assessmentRoute ? state.assessmentInitializationEpoch = (state.assessmentInitializationEpoch || 0) + 1 : null;
+  if (!assessmentRoute || state.assessmentReadyRoute !== requestHash) state.assessmentReadyRoute = '';
   if (!(current.name === 'space' && ['study', 'overview'].includes(current.section))) study.dispose();
   if (current.name === 'notes' || current.name === 'space' && current.section === 'notes') {
     await notes.load(current);
@@ -927,8 +1086,19 @@ async function loadRoute() {
     return;
   }
   notes.dispose();
-  const routeValid = () => location.hash === requestHash && currentSpace()?.id === space?.id;
-  if ((current.name === 'space' || current.name === 'overview') && space) {
+  const routeValid = () => location.hash === requestHash && currentSpace()?.id === space?.id
+    && (!assessmentRoute || state.assessmentInitializationEpoch === assessmentEpoch);
+  const continuation = typeof completionContinuations === 'undefined' ? null : completionContinuations.get(space?.id);
+  if (current.name === 'space' && continuation?.kind && continuation.destination === requestHash && current.section !== 'study') {
+    void workbench.load(space.id).catch(() => {});
+    if (current.section === 'summary') { render(); return; }
+    completionContinuations.delete(space.id);
+    // Assessment initialization below is independent of cumulative projections.
+  }
+  if (current.name === 'space' && current.section === 'study' && continuation?.current_plan?.id === current.query?.plan && continuation?.task_id === current.query?.task) {
+    await loadStudy(current); return;
+  }
+  if ((current.name === 'space' || current.name === 'overview') && space && continuation?.destination !== requestHash) {
     await workbench.load(space.id);
     if (!routeValid()) return;
     if (current.name === 'overview') {
@@ -946,6 +1116,7 @@ async function loadRoute() {
   if (current.name === 'manage') {
     await workspace.load();
     const managed = workspace.snapshot();
+    if (managed.data?.space && location.hash === requestHash) { await workbench.load(managed.data.space.id, { force: managed.route.page === 'assessment-result' }); if (location.hash === requestHash) render(); }
     if (managed.route.page === 'session' && managed.data?.space && location.hash === requestHash) location.replace(studyPath(managed.data.space.id, managed.route.item, managed.route.id));
     return;
   }
@@ -956,7 +1127,7 @@ async function loadRoute() {
     let material = context.type === 'material' ? context.material : null;
     if (context.type === 'material' && state.graphMaterial !== context.id) state.graphMaterial = context.id;
     if (context.type === 'space' && state.graphSpace !== context.id) state.graphSpace = context.id;
-    if (material && material.status !== 'ready') {
+    if (material && materialPending(material)) {
       try {
         const detail = await api.material(material.id);
         if (detail.material) Object.assign(material, detail.material);
@@ -968,12 +1139,12 @@ async function loadRoute() {
     try {
       const result = context.type === 'material' ? await api.materialGraph(material) : await api.graph(context.space);
       if (graphContext()?.id === context.id) state.graph = result;
-      if (context.type === 'material' && !result.nodes.length && ['uploaded', 'processing'].includes(material.status)) {
+      if (context.type === 'material' && !result.nodes.length && materialPending(material)) {
         setTimeout(() => { if (['graph', 'material-graph'].includes(route().name) && graphContext()?.id === material.id) { state.graphUiKey = ''; void loadRoute(); } }, 3000);
       }
     } catch (error) {
       if (graphContext()?.id === context.id) {
-        const pending = Boolean(material && ['uploaded', 'processing'].includes(material.status));
+        const pending = Boolean(material && materialPending(material));
         state.graphError = pending ? '资料正在解析，知识图谱生成后会自动刷新。' : error.message;
         if (pending) setTimeout(() => { if (['graph', 'material-graph'].includes(route().name) && graphContext()?.id === material.id) { state.graphUiKey = ''; void loadRoute(); } }, 3000);
       }
@@ -982,14 +1153,29 @@ async function loadRoute() {
     return;
   }
   if (!space) return;
-  if (current.name === 'space' && current.section === 'assessment' && current.query?.task && current.query?.plan) {
+  if (current.name === 'space' && current.section === 'assessment' && state.assessmentReadyRoute !== requestHash) {
+    const setupRevision = learning.snapshot().setupRevision;
+    state.assessmentContext = null;
     try {
-      const plan = await api.plan(current.query.plan);
+      const query = current.query || {};
+      if (query.assessment_id && query.assessment && query.assessment_id !== query.assessment)
+        throw new Error('测评链接包含不一致的轮次标识。');
+      await learning.recover({ assessmentId: query.assessment_id || query.assessment || '',
+        planId: query.plan, taskId: query.task, learningSessionId: query.session });
       if (!routeValid()) return;
-      state.assessmentContext = taskAssessmentContext(plan, current.query.task, { spaceId: space.id, sessionId: current.query.session });
-      learning.configure({ kind: state.assessmentContext.kind, topic: '' }); render();
+      if (learning.snapshot().error) return;
+      if (!learning.snapshot().assessmentId && !learning.snapshot().recoverableAssessments?.length && (query.plan || query.task || query.session)) {
+        if (!query.plan || !query.task) throw new Error('关联测评需要明确的计划与任务。');
+        const plan = await api.plan(query.plan);
+        if (!routeValid()) return;
+        state.assessmentContext = taskAssessmentContext(plan, query.task, { spaceId: space.id, sessionId: query.session });
+        learning.configureDefaults({ kind: state.assessmentContext.kind, topic: '' }, setupRevision);
+      }
+      if (!learning.snapshot().knowledge) await learning.loadKnowledge();
+      if (!routeValid() || learning.snapshot().error || learning.snapshot().busy || !learning.snapshot().knowledge) return;
+      state.assessmentReadyRoute = requestHash; render();
     } catch (error) {
-      if (routeValid()) { state.assessmentContext = null; toast(error.message, true); location.hash = spacePath(space.id, 'plan'); }
+      if (routeValid()) { state.assessmentReadyRoute = ''; state.assessmentContext = null; learning.initializeError(error); }
       return;
     }
   }
@@ -1031,7 +1217,7 @@ function newSpaceModal() {
     });
     return;
   }
-  openModal('给学习，一个新空间', `<p class="modal-intro">先选资料和学习目标，创建后再在空间内选择范围并生成学习任务。</p>${!choices.length ? notice('需要至少一份已就绪的资料。资料还需完成图谱审核发布。', 'warning') : ''}<form id="new-space-form"><div class="form-field"><label for="space-name">空间名称</label><input id="space-name" name="name" maxlength="100" placeholder="例如：从零理解线性代数" required></div><div class="form-field"><label for="space-goal">你想达到什么目标？</label><textarea id="space-goal" name="goal" maxlength="1000" rows="2" placeholder="例如：能够直观理解矩阵与线性变换"></textarea></div><div class="field-row"><div class="form-field"><label for="space-weekly">每周学习时间（分钟，选填）</label><input id="space-weekly" name="weekly_minutes" type="number" min="15" max="2400" step="1"></div><div class="form-field"><label for="space-deadline">目标日期（选填）</label><input id="space-deadline" name="target_date" type="date"></div></div><fieldset class="form-field"><legend>选择学习资料（1—5 份）</legend><div class="material-choices">${choices.map(m => `<label class="check-label"><input type="checkbox" name="material_ids" value="${esc(m.id)}">${esc(m.name)}</label>`).join('') || (data().materials.length ? '<p class="subtle">已有资料尚未发布，请到资料库点击“审核发布”。</p>' : '<p class="subtle">先在资料库导入第一份资料。</p>')}</div></fieldset><div class="form-error" data-form-error hidden role="alert"></div><div class="form-actions">${button('取消', 'close-modal', 'button button-secondary')}<button class="button button-primary" type="submit" ${!choices.length ? 'disabled' : ''}>创建学习空间</button></div></form>${!choices.length ? link('前往资料库', '#/materials') : ''}`);
+  openModal('给学习，一个新空间', `<p class="modal-intro">先选资料和学习目标。新空间默认学习全部有效内容，创建后可直接生成任务，也可调整为自选章节。</p>${!choices.length ? notice('需要至少一份已就绪的资料。资料还需完成图谱审核发布。', 'warning') : ''}<form id="new-space-form"><div class="form-field"><label for="space-name">空间名称</label><input id="space-name" name="name" maxlength="100" placeholder="例如：从零理解线性代数" required></div><div class="form-field"><label for="space-goal">你想达到什么目标？</label><textarea id="space-goal" name="goal" maxlength="1000" rows="2" placeholder="例如：能够直观理解矩阵与线性变换"></textarea></div><div class="field-row"><div class="form-field"><label for="space-weekly">每周学习时间（分钟，选填）</label><input id="space-weekly" name="weekly_minutes" type="number" min="15" max="2400" step="1"></div><div class="form-field"><label for="space-deadline">目标日期（选填）</label><input id="space-deadline" name="target_date" type="date"></div></div><fieldset class="form-field"><legend>选择学习资料（1—5 份）</legend><div class="material-choices">${choices.map(m => `<label class="check-label"><input type="checkbox" name="material_ids" value="${esc(m.id)}">${esc(m.name)}</label>`).join('') || (data().materials.length ? '<p class="subtle">已有资料尚未发布，请到资料库点击“审核发布”。</p>' : '<p class="subtle">先在资料库导入第一份资料。</p>')}</div></fieldset><div class="form-error" data-form-error hidden role="alert"></div><div class="form-actions">${button('取消', 'close-modal', 'button button-secondary')}<button class="button button-primary" type="submit" ${!choices.length ? 'disabled' : ''}>创建学习空间</button></div></form>${!choices.length ? link('前往资料库', '#/materials') : ''}`);
 }
 async function createSpace(form) {
   const values = new FormData(form);
@@ -1043,7 +1229,7 @@ async function createSpace(form) {
   if (budget && (!Number.isInteger(Number(budget)) || Number(budget) < 15 || Number(budget) > 2400)) throw new Error('每周时间须为 15—2400 分钟。');
   const payload = { name, material_ids: ids, ...(goal ? { goal } : {}), ...(budget ? { weekly_minutes: Number(budget) } : {}), ...(deadline ? { target_date: deadline } : {}) };
   const space = await api.createSpace(payload); state.live.spaces.push(space);
-  state.selected = space.id; closeModal(); openSpaceTab('materials', space.id); toast('学习空间已创建，请先选择学习范围，再生成学习任务。');
+  state.selected = space.id; closeModal(); openSpaceTab('materials', space.id); toast('学习空间已创建，默认学习全部有效内容，可直接生成任务或调整为自选章节。');
 }
 async function uploadFiles(files) {
   if (!files?.length) return;
@@ -1066,7 +1252,7 @@ async function uploadFiles(files) {
     const progress = $('#upload-progress'); if (progress) progress.textContent = `已完成 ${completed} / ${selected.length} 份资料`;
   }
   if (errors.length) openModal('资料导入结果', `<p class="modal-intro">成功导入 ${completed} 份资料。以下文件需要处理后重试：</p>${errors.map(error => notice(esc(error), 'error')).join('')}<div class="form-actions">${button('知道了', 'close-modal', 'button button-primary')}</div>`);
-  else { closeModal(); toast('资料已上传，正在生成知识图谱。'); }
+  else { closeModal(); toast('资料已接收。可先预览知识内容，再审核发布并创建学习空间。'); }
   state.materialFilter = 'all'; state.query = '';
   go('materials');
 }
@@ -1076,14 +1262,81 @@ async function viewMaterial(materialId) {
   return openSourcePage({ material_id: material.id, material_version_id: material.current_version_id }, { materialView: true });
 }
 async function reviewMaterial(materialId) { closeModal(); location.hash = workspacePath('material-graph', materialId); }
-async function scopeModal({ returnToPlan = false } = {}) {
+function capturePlanDraft(form) {
+  if (!form) return null;
+  return { spaceId: form.dataset.space,
+    fields: [...form.querySelectorAll('input[name], select[name]')].map(field => ({name: field.name, value: field.value, checked: field.checked})),
+    materialOrder: [...form.querySelectorAll('[data-new-plan-material]')].map(row => row.dataset.newPlanMaterial) };
+}
+function restorePlanDraft(form, draft) {
+  if (!form || !draft || form.dataset.space !== draft.spaceId) return false;
+  for (const field of draft.fields) {
+    const control = form.elements[field.name];
+    if (!control) continue;
+    if (control.type === 'checkbox') control.checked = field.checked;
+    else control.value = field.value;
+  }
+  const rows = [...form.querySelectorAll('[data-new-plan-material]')];
+  if (rows.length > 1) {
+    const parent = rows[0].parentElement, byId = new Map(rows.map(row => [row.dataset.newPlanMaterial, row]));
+    for (const id of [...new Set([...draft.materialOrder, ...byId.keys()])]) if (byId.has(id)) parent.append(byId.get(id));
+  }
+  return true;
+}
+async function returnToPlanDraft(draft) {
+  if (currentSpace()?.id !== draft.spaceId) return;
+  openModal('返回计划设置', '<p role="status">正在读取最新学习范围与计划版本…</p>');
+  const ticket = modalVersion, live = () => ticket === modalVersion && modal.open && currentSpace()?.id === draft.spaceId;
+  const latest = await api.space(draft.spaceId);
+  if (!live()) return;
+  const space = byId(draft.spaceId); if (!space) return;
+  Object.assign(space, mergeSpaceProjection(space, latest));
+  workbench.invalidate(draft.spaceId); await workbench.load(draft.spaceId);
+  if (!live()) return;
+  const entry = workbench.snapshot(draft.spaceId);
+  if (entry.error || entry.stale || !entry.data) throw new Error(entry.error || '最新计划读取失败，请重试。');
+  planModal(draft);
+}
+async function cancelModal() {
+  const returning = scopePlanReturn?.modalVersion === modalVersion && currentSpace()?.id === scopePlanReturn.draft.spaceId ? scopePlanReturn.draft : null;
+  closeModal();
+  if (returning) await returnToPlanDraft(returning);
+}
+async function saveScopeForm(form) {
+  const space = byId(form.dataset.space), ticket = modalVersion;
+  const draft = scopePlanReturn?.modalVersion === ticket ? scopePlanReturn.draft : null;
+  const result = await saveScope(space, () => scopePayload(new FormData(form)));
+  Object.assign(space, mergeSpaceProjection(space, result));
+  const current = byId(space.id);
+  if (current && current !== space) Object.assign(current, mergeSpaceProjection(current, result));
+  state.plans.delete(space.id); workbench.invalidate(space.id);
+  if (!form.isConnected || ticket !== modalVersion || currentSpace()?.id !== space.id) return;
+  learning.clear();
+  const returnToPlan = form.dataset.returnPlan === 'true';
+  closeModal();
+  if (returnToPlan) {
+    toast('学习范围已保存，继续生成学习任务。');
+    await returnToPlanDraft(draft || {spaceId: space.id, fields: [], materialOrder: []});
+  } else {
+    render(); toast(result.recovered_scope_command ? '已确认上次提交的学习范围。本次新选择尚未保存，可重新调整。' : '学习范围已保存，记得重新生成相关学习任务。');
+    await loadRoute();
+  }
+}
+async function scopeModal({ returnToPlan = false, planDraft = null } = {}) {
   const space = currentSpace(); if (!space) return newSpaceModal();
+  const returning = planDraft?.spaceId === space.id ? { draft: planDraft } : null;
   openModal('选择这次的学习范围', '<div class="loading-block" role="status">正在读取知识主题…</div>');
+  scopePlanReturn = returning;
+  if (returning) returning.modalVersion = modalVersion;
   const version = modalVersion;
+  const latest = await api.space(space.id);
+  if (version !== modalVersion || !modal.open || currentSpace()?.id !== space.id) return;
+  Object.assign(space, mergeSpaceProjection(space, latest));
   const topics = await api.topics(space);
-  if (version !== modalVersion || !modal.open) return;
+  if (version !== modalVersion || !modal.open || currentSpace()?.id !== space.id) return;
   state.topics.set(space.id, topics);
-  openModal('选择这次的学习范围', `<p class="modal-intro">${returnToPlan ? '先选定至少一个知识主题，保存后会自动回到学习任务设置。' : '先专注于真正想弄懂的内容。你可以暂时排除前置主题，并决定是否自动纳入必要前置知识。'}</p><form id="scope-form" data-space="${esc(space.id)}" data-return-plan="${returnToPlan}"><div class="scope-picker-grid"><fieldset class="form-field scope-picker"><legend>纳入学习</legend><div class="material-choices" style="max-height:280px">${topics.map(t => `<label class="check-label"><input type="checkbox" name="topic_ids" value="${esc(t.id)}" ${space.topic_ids?.includes(t.id) ? 'checked' : ''}>${esc(t.title || t.name)}</label>`).join('') || notice('没有可选择的主题，请先检查资料的解析与发布状态。')}</div></fieldset><fieldset class="form-field scope-picker"><legend>暂时排除</legend><div class="material-choices" style="max-height:280px">${topics.map(t => `<label class="check-label"><input type="checkbox" name="excluded_topic_ids" value="${esc(t.id)}" ${space.excluded_topic_ids?.includes(t.id) ? 'checked' : ''}>${esc(t.title || t.name)}</label>`).join('') || '<p class="subtle">没有可排除的主题。</p>'}</div></fieldset></div><label class="check-label scope-prerequisite"><input type="checkbox" name="prerequisites" ${space.include_prerequisites !== false ? 'checked' : ''}>自动纳入必要的前置知识</label><div class="form-error" data-form-error hidden role="alert"></div><div class="form-actions">${button('取消', 'close-modal', 'button button-secondary')}<button type="submit" class="button button-primary" ${topics.length ? '' : 'disabled'}>保存学习范围</button></div></form>`);
+  openModal('选择这次的学习范围', `<form id="scope-form" data-space="${esc(space.id)}" data-return-plan="${returnToPlan}">${renderScopePicker(topics, space, data().materials)}<div class="form-error" data-form-error hidden role="alert"></div><div class="form-actions">${button('取消', 'close-modal', 'button button-secondary')}<button type="submit" class="button button-primary">保存学习范围</button></div></form>`);
+  if (returning) returning.modalVersion = modalVersion;
 }
 function planSetting(form, name, customName, min, max, label) {
   const select = form.elements[name];
@@ -1108,10 +1361,22 @@ function updatePlanPreview(form) {
   for (const [selector, enabled] of [['[data-plan-rolling]', rolling], ['[data-plan-fixed]', !rolling]]) {
     const fieldset = form.querySelector(selector); if (fieldset) { fieldset.hidden = !enabled; fieldset.disabled = !enabled; }
   }
+  const base = state.plans.get(form.dataset.space);
+  const signature = JSON.stringify([
+    ...['schedule_mode', 'daily_minutes', 'horizon_days', 'calendar_timezone', 'include_review', 'order_mode', 'session_count', 'session_count_custom', 'minutes_per_session', 'minutes_per_session_custom'].map(name => [form.elements[name]?.value, form.elements[name]?.checked]),
+    [...form.querySelectorAll('[data-new-plan-material]')].map(row => row.dataset.newPlanMaterial), base?.id || base?.plan_id, base?.version,
+  ]);
+  // A number input emits both input and a later blur change. Replacing its
+  // preview on that unchanged blur would detach the button being clicked.
+  if (form.previewSignature === signature) return;
+  form.previewSignature = signature;
+  form.previewRevision = (form.previewRevision || 0) + 1;
+  form.previewController?.abort();
   if (rolling) {
     const daily = Number(form.elements.daily_minutes.value), days = Number(form.elements.horizon_days.value);
     const valid = Number.isInteger(daily) && daily >= 1 && daily <= 480 && Number.isInteger(days) && days >= 1 && days <= 30;
-    $('#plan-preview', form).textContent = valid ? `近期 ${days} 天，每天最多 ${daily} 分钟；保留所有节点，允许跨次学习。` : '请填写有效的每日预算和窗口。';
+    $('#plan-preview', form).textContent = valid ? '正在读取所选范围的工作量与排期预测…' : '请填写有效的每日预算和窗口。';
+    if (valid) void loadPlanPreview(form, form.previewRevision);
     $('button[type="submit"]', form).disabled = !valid; return;
   }
   const space = byId(form.dataset.space);
@@ -1132,6 +1397,31 @@ function updatePlanPreview(form) {
     preview.innerHTML = `<strong>本次会安排最多 ${sessions.value} 次</strong><span>预计学习 ${total} 分钟 · 每次约 ${minutes.value} 分钟。实际任务会按知识主题和掌握状态生成。</span>`;
   }
   if (submit) submit.disabled = false;
+}
+async function loadPlanPreview(form, revision) {
+  const controller = new AbortController(); form.previewController = controller;
+  const version = modalVersion, spaceId = form.dataset.space;
+  const base = state.plans.get(spaceId);
+  const payload = { schedule_mode: 'budget_rolling', daily_minutes: Number(form.elements.daily_minutes.value),
+    horizon_days: Number(form.elements.horizon_days.value), calendar_timezone: form.elements.calendar_timezone.value,
+    include_review: form.elements.include_review.checked, rebuild_mode: base ? 'local_replan' : 'initial',
+    material_order: [...form.querySelectorAll('[data-new-plan-material]')].map(row => row.dataset.newPlanMaterial) };
+  if (form.elements.order_mode.value !== 'inherit') payload.order_mode = form.elements.order_mode.value;
+  if (base) Object.assign(payload, { base_plan_id: base.id || base.plan_id, expected_plan_version: base.version });
+  const live = () => form.isConnected && modal.open && version === modalVersion && revision === form.previewRevision && !controller.signal.aborted;
+  try {
+    const result = await api.previewPlan(spaceId, payload, { signal: controller.signal });
+    if (!live()) return;
+    $('#plan-preview', form).innerHTML = renderScheduleSummary(result.summary) + planBudgetActions(true)
+      + '<p class="subtle">这是只读预测；生成时将按最新知识状态与计划版本重新计算。</p>';
+  } catch (error) {
+    if (!live()) return;
+    $('#plan-preview', form).textContent = `排期预测暂不可用：${error.message || '请重试'}。生成时仍会检查实际约束。`;
+  }
+}
+function planBudgetActions(inForm = false) {
+  return inForm ? '<div class="learning-actions"><button type="button" class="text-link" data-action="plan-preview-focus" data-field="horizon_days">延长窗口</button><button type="button" class="text-link" data-action="plan-preview-focus" data-field="daily_minutes">调整每日预算</button><button type="button" class="text-link" data-action="plan-preview-scope">缩小学习范围</button></div>'
+    : '<div class="learning-actions"><button type="button" class="text-link" data-action="new-plan">延长窗口 / 调整预算</button><button type="button" class="text-link" data-action="edit-scope">缩小学习范围</button></div>';
 }
 function newPlanOrdering(space) {
   const base = state.plans.get(space.id), bound = materialIds(space);
@@ -1200,10 +1490,11 @@ async function revertAdjustment(id, apply) {
   adjustmentDialog = { ...view, version: result.expected_plan_version, preview: { id } };
   openModal('确认撤回安排', `<p>仅恢复当前仍未开始且符合约束的安排；学习证据及历史记录保留。</p>${adjustmentChanges(result.changes || [])}${result.can_apply && result.changes?.length ? button('确认撤回', 'plan-adjustment-apply', 'button button-primary', '', `data-id="${esc(id)}"`) : ''}${button('关闭', 'close-modal', 'button button-secondary')}`);
 }
-function planModal() {
+function planModal(draft = null) {
   const space = currentSpace(); if (!space) return newSpaceModal();
   if (!space.topic_ids?.length) { return scopeModal({ returnToPlan: true }); }
   openModal('生成学习任务', `<p class="modal-intro">为「${esc(space.name)}」的 ${Number(space.topic_ids.length)} 个学习主题生成一组可执行任务。</p><form id="plan-form" data-space="${esc(space.id)}">${newPlanOrdering(space)}<div class="form-field"><label for="schedule-mode">安排方式</label><select id="schedule-mode" name="schedule_mode"><option value="budget_rolling"${(state.plans.get(space.id) ? state.plans.get(space.id).config?.schedule_mode || 'session_window' : 'budget_rolling') !== 'session_window' ? ' selected' : ''}>滚动每日预算</option><option value="session_window"${(state.plans.get(space.id) ? state.plans.get(space.id).config?.schedule_mode || 'session_window' : 'budget_rolling') === 'session_window' ? ' selected' : ''}>固定学习次数</option></select></div><fieldset data-plan-rolling><legend>近期预算</legend><div class="form-field"><label for="daily-minutes">每天可用分钟</label><input id="daily-minutes" name="daily_minutes" type="number" min="1" max="480" value="${Number(state.plans.get(space.id)?.config?.daily_minutes || 30)}" required></div><div class="form-field"><label for="horizon-days">窗口（天）</label><input id="horizon-days" name="horizon_days" type="number" min="1" max="30" value="${Number(state.plans.get(space.id)?.config?.horizon_days || 7)}" required></div><div class="form-field"><label for="plan-timezone">时区</label><input id="plan-timezone" name="calendar_timezone" value="${esc(state.plans.get(space.id)?.config?.calendar_timezone || 'Asia/Shanghai')}" required></div><p class="subtle">学习和作答共同占用预算；保留完整路线，可跨次学习同一节点。</p></fieldset><fieldset data-plan-fixed><legend>固定会话</legend><div class="form-field"><label for="session-count">最多安排几次学习？</label><select id="session-count" name="session_count"><option value="3">3 次</option><option value="4">4 次</option><option value="5">5 次</option><option value="custom">自定义</option></select></div><div class="form-field plan-custom-field" data-plan-custom="session_count" hidden><label for="session-count-custom">自定义学习次数</label><input id="session-count-custom" name="session_count_custom" type="number" min="3" max="5" step="1" placeholder="请输入 3—5 次"><small>可设置 3—5 次学习。</small></div><div class="form-field"><label for="session-minutes">每次最多学习多久？</label><select id="session-minutes" name="minutes_per_session"><option value="15">15 分钟，轻松起步</option><option value="25" selected>25 分钟，保持专注</option><option value="45">45 分钟，深入理解</option><option value="custom">自定义</option></select></div><div class="form-field plan-custom-field" data-plan-custom="minutes_per_session" hidden><label for="session-minutes-custom">自定义单次时长（分钟）</label><input id="session-minutes-custom" name="minutes_per_session_custom" type="number" min="10" max="120" step="1" placeholder="请输入 10—120 分钟"><small>可设置 10—120 分钟。</small></div></fieldset><label class="check-label"><input type="checkbox" name="include_review" checked>有到期内容时安排复习</label><div id="plan-preview" class="plan-preview" aria-live="polite"></div><div class="form-error" data-form-error hidden role="alert"></div><div class="form-actions">${button('取消', 'close-modal', 'button button-secondary')}<button type="submit" class="button button-primary">生成学习任务</button></div></form>`);
+  restorePlanDraft($('#plan-form'), draft);
   updatePlanPreview($('#plan-form'));
 }
 async function createPlan(form) {
@@ -1223,29 +1514,104 @@ async function createPlan(form) {
     Object.assign(payload, { daily_minutes: daily, horizon_days: horizon, calendar_timezone: String(values.get('calendar_timezone') || 'Asia/Shanghai') });
   }
   if (values.get('order_mode') === 'inherit') delete payload.order_mode;
+  form.previewRevision = (form.previewRevision || 0) + 1;
+  form.previewController?.abort();
+  form.previewSignature = null;
   const status = $('#plan-preview', form);
   if (status) { status.className = 'plan-preview pending'; status.innerHTML = '<strong>正在生成学习任务…</strong><span>正在读取知识状态，请稍候，不要重复点击。</span>'; }
   form.querySelectorAll('select, input, button').forEach(control => { control.disabled = true; });
   const base = state.plans.get(space.id);
   if (base) Object.assign(payload, { rebuild_mode: 'local_replan', base_plan_id: base.id || base.plan_id, expected_plan_version: base.version });
-  const result = await api.createPlan(space.id, payload);
-  if (!result?.plan_id) throw new Error('服务未返回学习安排标识，请刷新后重试。');
-  if (result.run_id && !['ready', 'succeeded', 'completed'].includes(result.status)) await api.waitRun(result.run_id);
-  const plans = storageRead(session, 'knowpath-plan-ids', {}); plans[space.id] = result.plan_id; storageWrite(session, 'knowpath-plan-ids', plans);
-  const plan = await api.plan(result.plan_id); state.plans.set(space.id, { ...plan, space_id: space.id });
-  state.timerDuration = payload.minutes_per_session || payload.daily_minutes; resetTimer(); closeModal();
-  workbench.invalidate(space.id); await workbench.load(space.id);
-  openSpaceTab('tasks', space.id); toast('学习任务已就绪，选择一个任务开始学习。');
+  const ticket = modalVersion, routeTicket = routeVersion, requestedHash = location.hash;
+  const live = () => form.isConnected && modal.open && ticket === modalVersion && routeTicket === routeVersion
+    && location.hash === requestedHash && currentSpace()?.id === space.id;
+  try {
+    const result = await api.createPlan(space.id, payload);
+    if (!result?.plan_id) throw new Error('服务未返回学习安排标识，请刷新后重试。');
+    // Accepted facts and cache invalidation survive the originating dialog/route.
+    workspace.invalidateSpace(space.id);
+    if (result.run_id && !['ready', 'succeeded', 'completed'].includes(result.status)) await api.waitRun(result.run_id);
+    const plans = storageRead(session, 'knowpath-plan-ids', {}); plans[space.id] = result.plan_id; storageWrite(session, 'knowpath-plan-ids', plans);
+    const plan = await api.plan(result.plan_id); state.plans.set(space.id, { ...plan, space_id: space.id });
+    workbench.invalidate(space.id); await workbench.load(space.id);
+    if (!live()) return;
+    state.timerDuration = payload.minutes_per_session || payload.daily_minutes; resetTimer(); closeModal();
+    openSpaceTab('tasks', space.id); toast('学习任务已就绪，选择一个任务开始学习。');
+  } catch (error) {
+    if (live()) throw error;
+  }
+}
+async function continueAfterTaskConfirmation(spaceId, committedPlan = {}, requestedHash = location.hash, requestedVersion = typeof routeVersion === 'undefined' ? null : routeVersion) {
+  const { receipt, target: completionTarget } = committedPlan;
+  if (currentSpace()?.id !== spaceId || location.hash !== requestedHash || requestedVersion !== null && requestedVersion !== routeVersion) {
+    if (completionTarget) taskCompletion.markNavigationPending(completionTarget);
+    return;
+  }
+  const step = receipt?.space_id === spaceId ? receipt.next_action : null;
+  if (!step || !['session', 'task', 'assessment', 'summary', 'scope', 'plan', 'replan', 'archived'].includes(step.kind)
+      || ['session', 'task'].includes(step.kind) && (!step.plan_id || !step.task_id)) {
+    const message = '任务完成已保存，下一步读取失败。请点击“继续学习”查询并恢复导航。';
+    if (completionTarget) taskCompletion.markNavigationPending(completionTarget, message);
+    throw new Error(message);
+  }
+  if (receipt.continuation_context?.space_id === spaceId) {
+    completionContinuations.set(spaceId, { ...receipt.continuation_context, task_id: step.task_id, completionTarget, kind: step.kind });
+    if (receipt.continuation_context.current_plan) state.plans.set(spaceId, receipt.continuation_context.current_plan);
+  }
+  if (step.kind === 'session' && receipt.continuation_context && receipt.continuation_context.current_plan?.id !== step.plan_id) {
+    try {
+      const sessionPlan = await api.plan(step.plan_id);
+      if (sessionPlan.space_id !== spaceId) throw new Error('活动会话不属于当前空间。');
+      completionContinuations.set(spaceId, { ...receipt.continuation_context, current_plan: sessionPlan, current: false, task_id: step.task_id, completionTarget, kind: step.kind });
+    } catch (error) {
+      if (completionTarget) taskCompletion.markNavigationPending(completionTarget, error);
+      throw error;
+    }
+    if (location.hash !== requestedHash || currentSpace()?.id !== spaceId || requestedVersion !== null && routeVersion !== requestedVersion) {
+      completionContinuations.delete(spaceId);
+      if (completionTarget) taskCompletion.markNavigationPending(completionTarget);
+      return;
+    }
+  }
+  workbench.invalidate(spaceId, { planId: receipt.plan_id, planVersion: receipt.current_plan_version || receipt.plan_version });
+  // These projections are informative; they are never a navigation prerequisite.
+  void workbench.load(spaceId).catch(() => {});
+  let destination;
+  if (step.kind === 'session' || step.kind === 'task') destination = studyPath(spaceId, step.task_id, step.plan_id);
+  else if (step.kind === 'assessment') destination = spacePath(spaceId, 'assessment', { plan: step.plan_id, task: step.task_id, assessment_id: step.assessment_id });
+  else destination = spacePath(spaceId, step.kind === 'summary' ? 'summary' : step.kind === 'scope' ? 'materials' : step.kind === 'archived' ? 'settings' : 'plan');
+  const handoff = typeof completionContinuations === 'undefined' ? null : completionContinuations.get(spaceId);
+  if (handoff) handoff.destination = destination;
+  if (location.hash === destination) render();
+  else location.hash = destination;
+  if (completionTarget && !(['session', 'task'].includes(step.kind) && receipt.continuation_context)) taskCompletion.acknowledgeNavigation(completionTarget);
 }
 async function completeTask(id) {
+  const requestedHash = location.hash, requestedVersion = typeof routeVersion === 'undefined' ? null : routeVersion;
   const entry = [...state.plans.entries()].find(([, plan]) => plan.tasks?.some(t => t.id === id));
   if (!entry) throw new Error('没有找到任务，请刷新计划。');
   const [spaceId, plan] = entry, task = plan.tasks.find(t => t.id === id);
   if (plan.status !== 'ready' || task.historical || task.context?.historical || !['pending', 'in_progress'].includes(task.status)) throw new Error('此任务不能从快捷入口完成，请查看任务记录或重新规划。');
-  const updated = await api.completeTask(plan, task);
+  const target = { spaceId, planId: plan.id || plan.plan_id, taskId: task.id, expectedPlanVersion: plan.version, source: 'manual' };
+  const updated = await taskCompletion.complete(target);
   Object.assign(task, updated); plan.version = updated.plan_version; state.plans.set(spaceId, plan); toast('学习任务已完成。掌握状态仍以测评证据为准。');
-  if (currentSpace()) { workbench.invalidate(currentSpace().id); await workbench.load(currentSpace().id); }
-  render();
+  await continueAfterTaskConfirmation(spaceId, { target, receipt: updated }, requestedHash, requestedVersion);
+}
+async function confirmAssessmentTask() {
+  const requestedHash = location.hash, requestedVersion = typeof routeVersion === 'undefined' ? null : routeVersion;
+  const space = currentSpace(), resultState = assessmentPageState();
+  const target = assessmentTaskCompletion(space, resultState, state.plans.get(space?.id));
+  if (!target) throw new Error('此测评没有可确认的当前任务，请核对测评关联与学习计划。');
+  const updated = await taskCompletion.complete(target);
+  await continueAfterTaskConfirmation(target.spaceId, { target, receipt: updated }, requestedHash, requestedVersion);
+}
+async function recoverTaskCompletion(planId, taskId, retry = false) {
+  const space = currentSpace(), requestedHash = location.hash, requestedVersion = routeVersion;
+  if (!space) return;
+  const row = taskCompletion.list(space.id).find(row => row.target.planId === planId && row.target.taskId === taskId);
+  if (!row) throw new Error('原完成请求已处理，请刷新核对当前学习计划。');
+  const receipt = await (retry ? taskCompletion.complete(row.target) : taskCompletion.recover(row.target));
+  await continueAfterTaskConfirmation(space.id, { target: row.target, receipt }, requestedHash, requestedVersion);
 }
 function resetTimer() { clearInterval(state.timerInterval); state.timerInterval = null; state.timerEnd = null; state.timerRemaining = state.timerDuration * 60; }
 function toggleTimer() {
@@ -1510,6 +1876,7 @@ async function attachSourcePdf(file) {
   }
 }
 document.addEventListener('click', async event => {
+  if (event.target.closest('[data-scope-batch]')) { updateScopePicker(document, event.target); return; }
   const optionRow = event.target.closest('[data-action="learning-option-select"]');
   if (optionRow) { selectAssessmentOption(optionRow, event.target); return; }
   const orderMove = event.target.closest('[data-action="order-move"]');
@@ -1520,7 +1887,7 @@ document.addEventListener('click', async event => {
     const row = materialMove.closest('[data-new-plan-material]'), previous = row.previousElementSibling, next = row.nextElementSibling;
     if (Number(materialMove.dataset.direction) < 0 && previous) previous.before(row);
     else if (Number(materialMove.dataset.direction) > 0 && next) next.after(row);
-    materialMove.focus(); return;
+    materialMove.focus(); updatePlanPreview(materialMove.closest('form')); return;
   }
   const originalLink = event.target.closest('[data-study-open-original]');
   if (originalLink) {
@@ -1572,7 +1939,7 @@ document.addEventListener('click', async event => {
     }); return;
   }
   const workspaceAction = event.target.closest('[data-workspace-action]');
-  if (workspaceAction) { await workspace.action(workspaceAction.dataset.workspaceAction, workspaceAction.dataset.value); workbench.invalidate(currentSpace()?.id); return; }
+  if (workspaceAction) { await workspace.action(workspaceAction.dataset.workspaceAction, workspaceAction.dataset.value); return; }
   if (event.target.closest('.skip-link')) { event.preventDefault(); main.focus(); return; }
   const jump = event.target.closest('[data-learning-jump]');
   if (jump) {
@@ -1585,11 +1952,15 @@ document.addEventListener('click', async event => {
   if (!element) { if (event.target.closest('a[href^="#/"]') && modal.open) closeModal(); return; }
   const action = element.dataset.action, id = element.dataset.id;
   const actions = {
+    'completion-recover': () => recoverTaskCompletion(element.dataset.plan, element.dataset.task),
+    'completion-retry': () => recoverTaskCompletion(element.dataset.plan, element.dataset.task, true),
+    'learning-initialize': () => loadRoute(),
     'notes-merge': () => notes.mergeLatest(),
     'notes-edit': () => notes.beginEdit(), 'notes-personal': () => notes.addPersonal(), 'notes-save': () => notes.save(), 'notes-cancel': () => notes.cancelEdit(), 'notes-refresh': () => notes.refresh(), 'notes-retry': () => notes.retry(id),
     'notes-source': () => { const view = notes.snapshot(); state.selected = view.chapter.space_id; const block = (view.editing ? view.draft : view.chapter.blocks)?.[Number(element.dataset.blockIndex)]; return openSourcePage(block?.source_refs?.[Number(element.dataset.sourceIndex)]); },
-    'learning-knowledge': () => learning.loadKnowledge(), 'learning-resume': () => learning.resume(),
+    'learning-knowledge': () => learning.loadKnowledge(), 'learning-resume': () => learning.snapshot().setupReady === false ? loadRoute() : learning.resume(),
     'learning-next': () => learning.next(),
+    'learning-complete-task': confirmAssessmentTask,
     'learning-finalize': async () => { await learning.finalize(); workbench.invalidate(currentSpace()?.id); await workbench.load(currentSpace().id); }, 'learning-evolution': () => learning.loadEvolution(),
     'learning-schedule-preview': () => learning.previewSchedule(element.dataset.scenario || id),
     'learning-schedule-apply': async () => { await learning.applySchedule(); const spaceId = currentSpace()?.id; workbench.invalidate(spaceId); await workbench.load(spaceId); },
@@ -1599,7 +1970,7 @@ document.addEventListener('click', async event => {
     'plan-adjustments': adjustmentModal, 'plan-adjustment-preview': () => revertAdjustment(id, false), 'plan-adjustment-apply': () => revertAdjustment(id, true),
     'plan-refresh': async () => { const plan = state.plans.get(currentSpace()?.id); await api.refreshPlan(plan.id || plan.plan_id, { expected_plan_version: plan.version }, { key: crypto.randomUUID() }); await adjustmentModal(); },
     'learning-replay': () => learning.replay(), 'learning-cancel': () => learning.cancelGeneration(),
-    'close-modal': closeModal, 'close-record': closeModal, search: searchModal, help: helpModal,
+    'close-modal': cancelModal, 'close-record': closeModal, search: searchModal, help: helpModal,
     'progress-node': () => { closeModal(); location.hash = studyPath(currentSpace().id, element.dataset.task, element.dataset.plan); },
     'study-expand-progress': () => {
       const panel = $('[data-study-progress]'); if (!panel) return;
@@ -1608,7 +1979,14 @@ document.addEventListener('click', async event => {
       $('.progress-node.selected, .progress-node', modal)?.focus({ preventScroll: true });
     },
     'progress-more': () => workbench.load(currentSpace().id, { more: true }),
-    'workbench-retry': () => workbench.load(currentSpace().id, { force: true }),
+    'workbench-retry': async () => {
+      const requestedHash = location.hash, current = route(), spaceId = currentSpace()?.id;
+      if (!spaceId) return;
+      await workbench.load(spaceId, { force: true });
+      const entry = workbench.snapshot(spaceId);
+      if (location.hash === requestedHash && currentSpace()?.id === spaceId && current.name === 'space'
+        && ['study', 'overview'].includes(current.section) && !entry.stale && !entry.error) await loadStudy(current);
+    },
     'task-assessment': () => openTaskAssessment(element),
     'clear-assistant-context': () => { state.assistantContext = null; state.chats.delete(currentSpace().id); location.hash = spacePath(currentSpace().id, 'assistant'); },
     'clear-assessment-context': () => { state.assessmentContext = null; location.hash = spacePath(currentSpace().id, 'assessment'); },
@@ -1619,6 +1997,8 @@ document.addEventListener('click', async event => {
     privacy: () => openModal('你的知识，安心放在这里', '<div class="help-content"><h3>资料副本</h3><p>关联的原 PDF 副本保存在当前浏览器的 IndexedDB 中，便于阅读精确版本的来源。清除网站数据会移除这些浏览器副本；后端资料和学习记录按后端配置持久保存。</p><h3>本地服务</h3><p>真实资料与问答通过本地后端处理。前端只向 127.0.0.1:8000 发送请求；模型服务的调用由后端配置决定。前端不包含统计追踪、广告脚本或外部字体。</p><h3>连接凭据</h3><p>本地令牌只保存在当前标签页的 sessionStorage，并通过 X-Local-Token 请求头发送。聊天界面记录保留在本次页面会话中；后台记录遵循后端的持久化设置。</p></div>'),
     'mobile-menu': () => { const nav = $('#main-nav'); const open = nav.classList.toggle('open'); element.setAttribute('aria-expanded', String(open)); element.setAttribute('aria-label', open ? '收起导航' : '展开导航'); },
     'order-open': orderModal, 'order-preview': () => orderCommand('preview'), 'order-apply': () => orderCommand('apply'), 'order-refresh': () => orderCommand('refresh'),
+    'plan-preview-scope': () => scopeModal({ returnToPlan: true, planDraft: capturePlanDraft($('#plan-form')) }),
+    'plan-preview-focus': () => { const field = $('#plan-form')?.elements[element.dataset.field]; field?.focus(); field?.select(); },
     'new-space': () => { state.publishedMaterials = null; newSpaceModal(); }, 'new-plan': planModal, 'edit-scope': scopeModal,
     'archive-space': () => spaceChangeModal(id, 'archive'), 'restore-space': () => spaceChangeModal(id, 'restore'), 'delete-space': () => spaceChangeModal(id, 'delete'),
     'continue-learning': () => currentSpace() ? openSpaceTab('overview') : newSpaceModal(),
@@ -1656,18 +2036,19 @@ document.addEventListener('click', async event => {
   if (actions[action]) await busy(element.tagName === 'BUTTON' && !['select-node', 'toggle-timer', 'reset-timer'].includes(action) ? element : null, actions[action]);
 });
 
+document.addEventListener('pointerdown', () => { assessmentAnswerFocus = null; }, true);
 document.addEventListener('submit', async event => {
   const form = event.target; event.preventDefault();
   if (form.id === 'study-preferences') {
     await busy(form.querySelector('button[type="submit"]'), async () => {
       const fields = new FormData(form), space = await study.preferences(String(fields.get('style')), String(fields.get('instructions')));
-      const existing = byId(space.id); if (existing) Object.assign(existing, space); toast('讲解偏好已保存。');
+      const existing = byId(space.id); if (existing) Object.assign(existing, mergeSpaceProjection(existing, space)); toast('讲解偏好已保存。');
     }); return;
   }
   if (form.id === 'study-question') {
     await busy(form.querySelector('button[type="submit"]'), async () => { const question = String(new FormData(form).get('message') || '').trim(); if (!question) return; await study.ask(question); }); return;
   }
-  if (form.matches('[data-workspace-form]')) { await workspace.submit(new FormData(form)); workbench.invalidate(currentSpace()?.id); return; }
+  if (form.matches('[data-workspace-form]')) { await workspace.submit(new FormData(form)); return; }
   if (form.matches('[data-workspace-filter]')) { await workspace.filter(new FormData(form)); return; }
   if (form.id === 'learning-replay-form') {
     try { const values = new FormData(form), range = dateRange(values); await learning.replay({ limit: Number(values.get('limit')), minimum_delay_hours: Number(values.get('delay')), ...(range.from ? { from_time: range.from } : {}), ...(range.to ? { to_time: range.to } : {}) }); }
@@ -1683,7 +2064,7 @@ document.addEventListener('submit', async event => {
   if (form.id === 'learning-answer-form' || form.id === 'learning-comparison-form') {
     const values = new FormData(form);
     if (form.id === 'learning-answer-form') {
-      await learning.answer(values.get('answer'));
+      await learning.answer(learning.snapshot().pendingAnswer?.answer ?? values.get('answer'));
       if (route().name === 'learning' && !learning.snapshot().error) $(' [data-answer-feedback-heading], #learning-answer-form input, #learning-answer-form textarea, [data-action=learning-finalize]')?.focus();
     } else {
       try { await learning.compare(comparisonPayload(values.get('budgets'), values.get('horizon'))); }
@@ -1697,20 +2078,13 @@ document.addEventListener('submit', async event => {
     if (form.id === 'space-change-form') await submitSpaceChange(form);
     if (form.id === 'new-space-form') await createSpace(form);
     if (form.id === 'plan-form') await createPlan(form);
-    if (form.id === 'scope-form') {
-      const values = new FormData(form), ids = values.getAll('topic_ids'), excluded = values.getAll('excluded_topic_ids'), prerequisites = values.get('prerequisites') === 'on', space = byId(form.dataset.space);
-      if (!ids.length) throw new Error('请选择至少一个学习主题。');
-      if (ids.some(id => excluded.includes(id))) throw new Error('同一个主题不能同时纳入和排除。');
-      const result = await api.setScope(space, ids, excluded, prerequisites); Object.assign(space, result); state.plans.delete(space.id); workbench.invalidate(space.id); learning.clear();
-      const returnToPlan = form.dataset.returnPlan === 'true';
-      closeModal();
-      if (returnToPlan) { state.spaceTab = 'tasks'; state.spaceTabSpace = space.id; openSpaceTab('tasks', space.id); toast('学习范围已保存，继续生成学习任务。'); planModal(); }
-      else { render(); toast('学习范围已保存，记得重新生成相关学习任务。'); await loadRoute(); }
-    }
+    if (form.id === 'scope-form') await saveScopeForm(form);
     if (form.id === 'chat-form') await sendChat(new FormData(form).get('question').trim());
   });
 });
 document.addEventListener('input', event => {
+  if (event.target.form?.id === 'learning-answer-form' && event.target.name === 'answer') { learning.draftAnswer(event.target.value, event.target.form.dataset.answerDraftKey); return; }
+  if (updateScopePicker(document, event.target)) return;
   if (event.target.id === 'study-question-input') { study.question(event.target.value); return; }
   if (event.target.dataset.noteCorrectionId) { notes.editCorrection(event.target.dataset.noteCorrectionId, event.target.value); return; }
   if (event.target.dataset.noteBlock) { notes.edit(event.target.dataset.noteBlock, event.target.value, event.target.dataset.noteCorrection); return; }
@@ -1722,6 +2096,8 @@ document.addEventListener('input', event => {
   if (event.target.closest('#plan-form')) updatePlanPreview(event.target.form);
 });
 document.addEventListener('change', async event => {
+  if (event.target.form?.id === 'learning-answer-form' && event.target.name === 'answer') { learning.draftAnswer(event.target.value, event.target.form.dataset.answerDraftKey); return; }
+  if (updateScopePicker(document, event.target)) return;
   if (event.target.dataset.change === 'order-mode') { planOrder.configure({ order_mode: event.target.value }); renderOrderDialog(); return; }
   if (event.target.matches('[data-study-page]')) { study.page(event.target.value); return; }
   if (event.target.matches('[data-chat-material]')) { state.chatMaterials.set(currentSpace().id, [...document.querySelectorAll('[data-chat-material]:checked')].map(input => input.value)); return; }
@@ -1775,12 +2151,12 @@ document.addEventListener('keydown', event => {
     const results = [...modal.querySelectorAll('.search-result')]; const next = results[(results.indexOf(document.activeElement) - 1 + results.length) % results.length]; if (next) { event.preventDefault(); next.focus(); }
   }
 });
-modal.addEventListener('click', event => { if (event.target !== modal) return; const rect = modal.getBoundingClientRect(); if (event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom) closeModal(); });
-modal.addEventListener('cancel', event => { event.preventDefault(); closeModal(); });
+modal.addEventListener('click', event => { if (event.target !== modal) return; const rect = modal.getBoundingClientRect(); if (event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom) void cancelModal().catch(showError); });
+modal.addEventListener('cancel', event => { event.preventDefault(); void cancelModal().catch(showError); });
 document.addEventListener('dragover', event => { const zone = event.target.closest('#upload-zone'); if (zone) { event.preventDefault(); zone.classList.add('dragging'); } });
 document.addEventListener('dragleave', event => { const zone = event.target.closest('#upload-zone'); if (zone && !zone.contains(event.relatedTarget)) zone.classList.remove('dragging'); });
 document.addEventListener('drop', async event => { const zone = event.target.closest('#upload-zone'); if (zone) { event.preventDefault(); zone.classList.remove('dragging'); try { await uploadFiles(event.dataTransfer.files); } catch (error) { toast(error.message, true); } } });
-window.addEventListener('hashchange', () => { state.query = ''; if (modal.open) closeModal(); render(); main.focus({ preventScroll: true }); window.scrollTo(0, 0); void loadRoute(); });
+window.addEventListener('hashchange', () => { for (const [id, handoff] of (typeof completionContinuations === 'undefined' ? [] : completionContinuations)) if (handoff.destination !== location.hash) completionContinuations.delete(id); routeVersion++; workspace.sync(); state.query = ''; if (modal.open) closeModal(); render(); main.focus({ preventScroll: true }); window.scrollTo(0, 0); void loadRoute(); });
 window.addEventListener('resize', () => { progressDock.dispose(); updateProgressPosition(); }, { passive: true });
 window.matchMedia?.('(max-width: 1099px)').addEventListener('change', updateStudySidebar);
 window.addEventListener('beforeunload', () => { clearInterval(assessmentTicker); progressDock.dispose(); study.dispose(); learning.dispose(); notes.dispose(); state.chatController?.abort(); clearInterval(state.timerInterval); clearMaterialRefresh(); });

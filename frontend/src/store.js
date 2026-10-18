@@ -1,5 +1,18 @@
 export const graphTitle = node => String(node?.title || node?.name || '未命名知识点').replace(/\s+/g, ' ').trim();
 
+export function mergeSpaceProjection(known, incoming) {
+  if (!known) return incoming;
+  if (Number(incoming.space_version || 0) < Number(known.space_version || 0)) return known;
+  return { ...known, ...incoming };
+}
+
+export function mergeSpaceList(known, incoming) {
+  const byId = new Map(known.map(space => [space.id, space]));
+  // The received list owns membership, including deletions. Existing rows keep
+  // any newer acknowledged projection while new rows and archives still arrive.
+  return incoming.map(space => mergeSpaceProjection(byId.get(space.id), space));
+}
+
 export function buildGraphIndex(graph = {}) {
   const nodes = [], byId = new Map();
   for (const node of graph.nodes || []) {
@@ -91,6 +104,43 @@ export function storageRead(storage, key, fallback = null) {
 }
 export function storageWrite(storage, key, value) {
   try { storage.setItem(key, JSON.stringify(value)); return true; } catch { return false; }
+}
+
+// A draft is editable browser intent, separate from an immutable submitted answer.
+export function createAssessmentDraftStore(storage) {
+  const storageKey = 'knowpath-assessment-drafts-v1';
+  let fallback = {}, unsaved = false;
+  const read = () => {
+    if (unsaved) return fallback;
+    const value = storageRead(storage, storageKey, fallback);
+    return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+  };
+  const key = identity => JSON.stringify([identity.spaceId, identity.planId || '', identity.taskId || '', identity.assessmentId, identity.questionId, identity.answerRevision]);
+  const write = values => { fallback = values; unsaved = !storageWrite(storage, storageKey, values); };
+  function retain(scope, identity = null) {
+    const values = read(), keep = identity && key(identity);
+    let modified = false;
+    for (const candidate of Object.keys(values)) {
+      let parts;
+      try { parts = JSON.parse(candidate); } catch { continue; }
+      if (Array.isArray(parts) && parts[0] === scope.spaceId && parts[1] === (scope.planId || '') && parts[2] === (scope.taskId || '')
+        && parts[3] === scope.assessmentId && candidate !== keep) { delete values[candidate]; modified = true; }
+    }
+    if (modified) write(values);
+  }
+  return {
+    key,
+    get(identity) { const value = read()[key(identity)]; return typeof value?.answer === 'string' ? { ...identity, answer: value.answer } : null; },
+    set(identity, answer) { write({ ...read(), [key(identity)]: { answer } }); return { ...identity, answer }; },
+    retain,
+    forget(spaceId) {
+      const values = read();
+      for (const candidate of Object.keys(values)) {
+        try { if (JSON.parse(candidate)?.[0] === spaceId) delete values[candidate]; } catch { /* Ignore unrelated malformed records. */ }
+      }
+      write(values);
+    },
+  };
 }
 export function validateFile(file) {
   if (!/\.(pdf|md|txt)$/i.test(file.name)) throw new Error('请选择 PDF、Markdown（.md）或 TXT 文件。');

@@ -2,7 +2,7 @@ import { storageRead, storageWrite } from './store.js';
 
 // Only the server measures active time. Browser storage holds intent and identity.
 export function createActivityController({ send, storage, changed = () => {}, document = globalThis.document,
-  window = globalThis.window, setInterval = globalThis.setInterval, clearInterval = globalThis.clearInterval, now = () => Date.now() } = {}) {
+  window = globalThis.window, setInterval = globalThis.setInterval, clearInterval = globalThis.clearInterval, now = () => Date.now(), disposeEvent = 'disconnect' } = {}) {
   let state = { identity: '', manualPaused: false, hidden: false, waiting: false, disconnected: false, paused: false, activity: null };
   let timer, epoch = 0, queue = Promise.resolve();
   let lastInteraction = now();
@@ -40,7 +40,7 @@ export function createActivityController({ send, storage, changed = () => {}, do
   }
   function dispose({ notify = true } = {}) {
     // Send immediately while the caller still owns the old session/question.
-    const notification = notify && state.identity ? Promise.resolve(send?.({ ...state.context, event: 'disconnect' })).catch(() => {}) : Promise.resolve();
+    const notification = notify && state.identity ? Promise.resolve(send?.({ ...state.context, event: disposeEvent })).catch(() => {}) : Promise.resolve();
     detach(); state.identity = ''; state.needsActivityCheck = false; return notification;
   }
   async function attach(identity, context = {}, initial = 'reconnect') {
