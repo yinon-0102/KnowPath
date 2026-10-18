@@ -12,7 +12,7 @@ from hashlib import sha256
 from uuid import uuid4
 
 from knowpath_backend.learning.errors import DomainNotFound
-from knowpath_backend.learning.materials.service import MaterialParser, MaterialParseError
+from knowpath_backend.learning.materials.service import MaterialParser, MaterialParseError, parser_identity, parse_material
 
 logger = logging.getLogger(__name__)
 
@@ -30,7 +30,7 @@ class MaterialParseWorker:
     def _locked(self, event_id):
         peek = self.repository.get_record("outbox", event_id, lock=False)
         with self.repository.transaction():
-            material = self.graph._material(peek["payload"]["material_id"])
+            material = self.graph._lock_work(peek["payload"]["material_id"])
             version = self.graph.materials.get_version(peek["aggregate_id"])
             if version is None:
                 raise DomainNotFound("material_version", peek["aggregate_id"])
@@ -45,6 +45,12 @@ class MaterialParseWorker:
             self.graph.materials.update_material(material)
 
     def _cancelled(self, event, material, version):
+        if material.current_version_id != version.id:
+            event.update(status='cancelled', lease_token=None, lease_until=None)
+            self.repository.put_record('outbox', event)
+            self.graph.runs.request_cancel(event['payload']['run_id'])
+            self.graph.runs.acknowledge_cancel(event['payload']['run_id'])
+            return True
         run = self.graph.runs.get(event["payload"]["run_id"])
         if run["status"] == "cancelling":
             self.graph.runs.acknowledge_cancel(run["id"])
@@ -66,6 +72,9 @@ class MaterialParseWorker:
 
     def claim(self, event_id):
         try:
+            peek = self.repository.get_record('outbox', event_id, lock=False)
+            if peek['event_type'] != 'material.parse' or peek['status'] not in {'pending', 'processing'}:
+                return None
             with self._locked(event_id) as (event, material, version):
                 if event["event_type"] != "material.parse" or event["status"] not in {"pending", "processing"}:
                     return None
@@ -101,7 +110,7 @@ class MaterialParseWorker:
         if terminal:
             self._status(material, version, "failed")
             self.graph.runs.fail(event["payload"]["run_id"], {"code": code,
-                "message": "资料解析失败，请检查原文件后重试", "details": {}, "retryable": code == "MATERIAL_PARSE_FAILED"})
+                "message": "资料解析失败，请检查原文件后重试", "details": {'stage': 'parsing', 'retryable': code == 'MATERIAL_PARSE_FAILED'}, "retryable": code == "MATERIAL_PARSE_FAILED"})
 
     @job_observed
     def execute(self, claimed):
@@ -115,7 +124,7 @@ class MaterialParseWorker:
             if content is None or sha256(content).hexdigest() != content_hash or content_hash != claimed["payload"]["content_hash"]:
                 raise MaterialParseError("original unavailable", code="MATERIAL_SOURCE_MISSING")
             with span(logger, 'material.parse', input_bytes=len(content)) as metrics:
-                chunks = self.parser.parse(content, filename=filename)
+                chunks, manifest = parse_material(self.parser, content, filename=filename)
                 metrics['chunk_count'] = len(chunks)
             with self._locked(claimed["id"]) as (event, material, version):
                 if not self._owned(event, claimed) or self._cancelled(event, material, version):
@@ -123,6 +132,8 @@ class MaterialParseWorker:
                 if version.content_hash != content_hash:
                     raise MaterialParseError("original changed", code="MATERIAL_SOURCE_MISSING")
                 version.chunks = chunks
+                version.parser_version = parser_identity(self.parser)
+                version.parse_manifest = manifest
                 self._status(material, version, "ready")
                 published = self.graph._published(self.graph._history(material.id))
                 self.graph._stage(material.id, {"version_id": version.id,
@@ -139,6 +150,12 @@ class MaterialParseWorker:
             try:
                 with self._locked(claimed["id"]) as (event, material, version):
                     if self._owned(event, claimed) and not self._cancelled(event, material, version):
+                        if not version.chunks:
+                            version.parse_manifest = (exc.manifest if isinstance(exc, MaterialParseError) and exc.manifest else
+                                {'schema_version': 1, 'parser_version': parser_identity(self.parser), 'complete': False,
+                                 'pages': [], 'document_status': 'extraction_failed'})
+                            version.parser_version = parser_identity(self.parser)
+                            self.graph.materials.update_version(version)
                         safe_codes = {"EMPTY_MATERIAL", "ENCRYPTED_PDF", "SCANNED_PDF_UNSUPPORTED",
                                       "PDF_PAGE_LIMIT_EXCEEDED", "MATERIAL_PARSE_FAILED", "MATERIAL_SOURCE_MISSING"}
                         code = exc.code if isinstance(exc, MaterialParseError) and exc.code in safe_codes else "MATERIAL_PARSE_FAILED"

@@ -6,7 +6,7 @@ from fastapi.testclient import TestClient
 
 from knowpath_backend.learning.api import create_app
 from knowpath_backend.learning.errors import DomainConflict, DomainNotFound
-from knowpath_backend.test.test_learning_graph_reconciliation import graph_workspace
+from knowpath_backend.test.test_learning_graph_reconciliation import graph_workspace, legacy_graph_workspace
 from knowpath_backend.test.test_learning_graph_worker import worker, event_id
 
 
@@ -152,8 +152,8 @@ def test_cancelled_ingest_replay_stays_cancelled_and_new_key_restarts(graph_work
     assert worker(factory()).run_once(event_id(state, retry))
 
 
-def test_ingest_pins_requested_version_and_never_overwrites_publication(graph_workspace):
-    factory, upload, label = graph_workspace
+def test_ingest_pins_requested_version_and_never_overwrites_publication(legacy_graph_workspace):
+    factory, upload, label = legacy_graph_workspace
     state = factory()
     first = submit(state, upload, label + '-first')
     assert worker(state).run_once(event_id(state, first))

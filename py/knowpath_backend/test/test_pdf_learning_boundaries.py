@@ -43,23 +43,39 @@ def test_compact_chapter_titles_never_merge_articles_across_chapters():
     assert '第二章' in second.section_path[0]
 
 
-def test_repeat_upload_upgrades_legacy_version_once_and_preserves_old_sources():
+def test_repeat_upload_keeps_legacy_product_until_explicit_reparse():
     from dataclasses import replace
     from knowpath_backend.learning.materials.service import MaterialService, InMemoryMaterialRepository
     text = '第一章 总则\n第一条 第一项。\n第二条 第二项。'
     class Legacy:
+        VERSION = 'knowpath_parser_v1'
         def parse(self, content, filename):
             return [replace(c, page=1) for c in MaterialParser()._parse_text(text)]
     class Structured:
+        VERSION = MaterialParser.VERSION
         def parse(self, content, filename):
-            return structured_pdf_chunks([text], MaterialParser()._parse_text)
+            from knowpath_backend.learning.materials.document_structure import ParsedChunks
+            return ParsedChunks(MaterialParser().parse_pages([text]))
     repo = InMemoryMaterialRepository()
     service = MaterialService(repo, Legacy())
     old = service.create(filename='law.pdf', content=b'%PDF-source', idempotency_key='old')
     service.parser = Structured()
     new = service.create_version(material_id=old.material.id, filename='law.pdf', content=b'%PDF-source', idempotency_key='upgrade')
-    assert new.version.id != old.version.id
+    assert new.version.id == old.version.id
     assert repo.get_version(old.version.id).chunks == old.version.chunks
-    assert new.version.chunks[0].section_path
+    assert not new.version.chunks[0].section_path
     replay = service.create_version(material_id=old.material.id, filename='law.pdf', content=b'%PDF-source', idempotency_key='repeat')
     assert replay.version.id == new.version.id
+    from knowpath_backend.learning.state import LearningState
+    from knowpath_backend.learning.workers.material_ingest import MaterialParseWorker
+    state = LearningState(repo)
+    space = state.create_space({'material_ids': [old.material.id]})
+    before = state.space_service.bound_topics(space)
+    assert state.graph_service.lifecycle(old.material.id)['parser_upgrade_available'] is True
+    reparsed = state.graph_service.reparse(old.material.id, {'version_id': old.version.id}, 'explicit-law')
+    assert reparsed['material_version_id'] != old.version.id
+    MaterialParseWorker(state.graph_service, Structured()).run_once()
+    current = repo.get_version(reparsed['material_version_id'])
+    assert current.parse_manifest['units'] and current.chunks[0].section_path
+    assert repo.get_version(old.version.id).chunks == old.version.chunks
+    assert state.space_service.bound_topics(state.get_space(space['id'])) == before

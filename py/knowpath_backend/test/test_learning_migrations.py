@@ -42,7 +42,7 @@ def test_migrations_load_backend_dotenv_without_overriding_environment(
     engine = sa.create_engine(expected)
     try:
         with engine.connect() as connection:
-            assert connection.scalar(sa.text("SELECT version_num FROM alembic_version")) == "0018_learning_personalization"
+            assert connection.scalar(sa.text("SELECT version_num FROM alembic_version")) == "0021_space_scope_options"
     finally:
         engine.dispose()
     assert not (tmp_path / "fallback.db").exists()
@@ -86,10 +86,58 @@ def test_empty_database_upgrade_matches_current_schema(migration_database):
     config, engine = migration_database
     command.upgrade(config, "head")
     with engine.connect() as connection:
-        assert connection.scalar(sa.text("SELECT version_num FROM alembic_version")) == "0018_learning_personalization"
+        assert connection.scalar(sa.text("SELECT version_num FROM alembic_version")) == "0021_space_scope_options"
         context = MigrationContext.configure(connection, opts={"compare_type": True})
         assert compare_metadata(context, Base.metadata) == []
     assert "run_events" in sa.inspect(engine).get_table_names()
+
+
+def test_scope_options_migration_preserves_historical_scope_and_is_reversible(migration_database):
+    from datetime import datetime
+    config, engine = migration_database
+    command.upgrade(config, '0020_material_parse_manifest')
+    spaces = sa.Table('learning_spaces', sa.MetaData(), autoload_with=engine)
+    with engine.begin() as connection:
+        connection.execute(spaces.insert().values(id='historical-space', name='Old', status='draft',
+            bindings=[], topic_ids=['historical-topic'], excluded_topic_ids=[], profile={},
+            space_version=7, scope_version=3, profile_version=2, state_version=4,
+            created_at=datetime(2026, 1, 1), updated_at=datetime(2026, 1, 2)))
+        before = dict(connection.execute(sa.select(spaces)).mappings().one())
+    command.upgrade(config, 'head')
+    migrated = sa.Table('learning_spaces', sa.MetaData(), autoload_with=engine)
+    assert 'scope_options' in migrated.c
+    with engine.connect() as connection:
+        after = dict(connection.execute(sa.select(migrated)).mappings().one())
+    assert after.pop('scope_options') is None
+    assert after == before
+    command.downgrade(config, '0020_material_parse_manifest')
+    restored = sa.Table('learning_spaces', sa.MetaData(), autoload_with=engine)
+    with engine.connect() as connection:
+        assert dict(connection.execute(sa.select(restored)).mappings().one()) == before
+
+
+def test_parser_identity_migration_preserves_legacy_chunks(migration_database):
+    from datetime import datetime
+    config, engine = migration_database
+    command.upgrade(config, '0018_learning_personalization')
+    meta = sa.MetaData()
+    materials = sa.Table('materials', meta, autoload_with=engine)
+    versions = sa.Table('material_versions', meta, autoload_with=engine)
+    chunks = sa.Table('source_chunks', meta, autoload_with=engine)
+    with engine.begin() as connection:
+        timestamp = datetime(2026, 10, 1)
+        connection.execute(materials.insert().values(id='legacy-material', name='Legacy', type='txt', status='ready',
+            current_version_id='legacy-version', version=1, size_bytes=3, created_at=timestamp, updated_at=timestamp))
+        connection.execute(versions.insert().values(id='legacy-version', material_id='legacy-material', filename='old.txt',
+            media_type='text/plain', content_hash='a'*64, size_bytes=3, status='ready', graph_version=1, created_at=timestamp))
+        connection.execute(chunks.insert().values(id='legacy-chunk', material_version_id='legacy-version', text='old',
+            section_path=['Legacy'], line_start=1, line_end=1, content_hash='b'*64))
+        previous = connection.execute(sa.select(chunks)).mappings().all()
+    command.upgrade(config, 'head')
+    with engine.connect() as connection:
+        assert connection.scalar(sa.text('SELECT parser_version FROM material_versions')) == 'legacy_unknown'
+        assert connection.scalar(sa.text('SELECT parse_manifest FROM material_versions')) is None
+        assert connection.execute(sa.select(chunks)).mappings().all() == previous
 
 def test_lesson_incremental_migration_preserves_prior_records(migration_database):
     config,engine=migration_database

@@ -77,19 +77,28 @@ class SqlAlchemyMaterialRepository:
 
     def find_by_content_hash(self, content_hash: str, *, filename: str | None = None, material_id: str | None = None) -> tuple[Material, MaterialVersion] | None:
         with self.unit_of_work.session() as session:
-            query = select(MaterialVersionRow).where(MaterialVersionRow.content_hash == content_hash)
+            # Lock parents before the hash range, matching parser/reparse and
+            # publication. Global upload dedup conservatively serializes parent
+            # rows; no chunks are loaded for those unrelated materials. Keep the
+            # missing-hash range lock and the outer ingestion deadlock retry.
+            parents = select(MaterialRow).order_by(MaterialRow.id)
+            if material_id is not None:
+                parents = parents.where(MaterialRow.id == material_id)
             if self.unit_of_work.active:
-                # InnoDB's indexed next-key lock protects both existing hashes
-                # and absent ranges until this ingestion commits.
+                parents = parents.with_for_update()
+            materials = {row.id: row for row in session.scalars(parents.execution_options(populate_existing=True))}
+            query = select(MaterialVersionRow).where(MaterialVersionRow.content_hash == content_hash).order_by(MaterialVersionRow.id)
+            if material_id is not None:
+                query = query.where(MaterialVersionRow.material_id == material_id)
+            if self.unit_of_work.active:
                 query = query.with_for_update()
             for version in session.scalars(query.execution_options(populate_existing=True)):
+                material = materials.get(version.material_id)
+                if material is None or material.current_version_id != version.id:
+                    continue
                 if filename is not None and parser_kind(version.filename) != parser_kind(filename):
                     continue
-                if material_id is not None and version.material_id != material_id:
-                    continue
-                material = session.scalar(select(MaterialRow).where(MaterialRow.id == version.material_id).with_for_update())
-                if material is not None:
-                    return _material_from_row(material), _version_from_rows(version, session, lock=self.unit_of_work.active)
+                return _material_from_row(material), _version_from_rows(version, session, lock=self.unit_of_work.active)
             return None
 
     def save(self, material: Material, version: MaterialVersion, *, idempotency_key: str, request_fingerprint: str) -> None:
@@ -173,14 +182,22 @@ class SqlAlchemyMaterialRepository:
 
     def get_raw(self, version_id: str) -> bytes | None:
         with self.unit_of_work.session() as session:
+            version_query = select(MaterialVersionRow).where(MaterialVersionRow.id == version_id)
+            if self.unit_of_work.active:
+                # A deduplicated upload can observe a version committed after
+                # its initial REPEATABLE READ snapshot. Read both parent and
+                # raw reference as current rows, in parent-first lock order.
+                version_query = version_query.with_for_update().execution_options(populate_existing=True)
+            version = session.scalar(version_query)
+            if version is None:
+                return None
             query = select(MaterialRawRow).where(MaterialRawRow.version_id == version_id)
             if self.unit_of_work.active:
                 query = query.with_for_update().execution_options(populate_existing=True)
             row = session.scalar(query)
             if row is None:
                 return None
-            version = session.get(MaterialVersionRow, version_id)
-            return self._read_raw(row, version) if version else None
+            return self._read_raw(row, version)
 
     def raw_objects(self, material_id):
         with self.unit_of_work.session() as session:
@@ -203,10 +220,16 @@ class SqlAlchemyMaterialRepository:
                 MaterialVersionRow.id == version.id).with_for_update())
             if row is None:
                 raise MaterialNotFound(version.id)
+            stored = _version_from_rows(row, session, lock=True)
+            if stored.chunks and stored.chunks != version.chunks:
+                raise ValueError("parsed material version is immutable")
+            if stored.chunks and (stored.parse_manifest != version.parse_manifest or stored.parser_version != version.parser_version):
+                raise ValueError("parsed material structure is immutable")
             row.status = version.status
-            session.query(SourceChunkRow).filter(
-                SourceChunkRow.material_version_id == version.id).delete(synchronize_session=False)
-            session.add_all(_chunk_row(version.id, chunk) for chunk in version.chunks)
+            row.parser_version = version.parser_version
+            row.parse_manifest = version.parse_manifest or None
+            if not stored.chunks:
+                session.add_all(_chunk_row(version.id, chunk) for chunk in version.chunks)
 
     def update_material(self, material: Material) -> None:
         with self.unit_of_work.session() as session:
@@ -218,7 +241,13 @@ class SqlAlchemyMaterialRepository:
 
     def list_versions(self, material_id: str) -> list[MaterialVersion]:
         with self.unit_of_work.session() as session:
-            rows = session.scalars(select(MaterialVersionRow).where(MaterialVersionRow.material_id == material_id)).all()
+            statement = select(MaterialVersionRow).where(
+                MaterialVersionRow.material_id == material_id
+            ).order_by(MaterialVersionRow.id)
+            if self.unit_of_work.active:
+                statement = statement.with_for_update().execution_options(populate_existing=True)
+            # Lock all version parents before loading their chunks, just as get_version does.
+            rows = session.scalars(statement).all()
             return [_version_from_rows(row, session, lock=self.unit_of_work.active) for row in rows]
 
     def delete_material(self, material_id: str) -> None:
@@ -256,6 +285,8 @@ def _version_row(version: MaterialVersion) -> MaterialVersionRow:
         content_hash=version.content_hash,
         size_bytes=version.size_bytes,
         status=version.status,
+        parser_version=version.parser_version,
+        parse_manifest=version.parse_manifest or None,
         created_at=version.created_at,
     )
 
@@ -303,6 +334,8 @@ def _version_from_rows(row: MaterialVersionRow, session: Session, *, lock: bool 
         size_bytes=row.size_bytes,
         status=row.status,
         created_at=row.created_at.replace(tzinfo=timezone.utc),
+        parser_version=row.parser_version,
+        parse_manifest=row.parse_manifest or {},
         chunks=[
             SourceChunk(
                 id=chunk.id,

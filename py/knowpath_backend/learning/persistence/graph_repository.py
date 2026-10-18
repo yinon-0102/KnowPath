@@ -23,6 +23,20 @@ class InMemoryGraphRepository(InMemoryLearningRepository):
 
 
 class SqlAlchemyGraphRepository(SqlAlchemyLearningRepository):
+    def records(self, table, *, lock=True, **filters):
+        if table != "graph_revisions":
+            return super().records(table, lock=lock, **filters)
+        with self.unit_of_work.session() as session:
+            # Match the unique (material_id, sequence) index. Sorting full JSON
+            # snapshots by id can exhaust MySQL's filesort buffer even for a
+            # short history; sequence also gives a stable row-lock order.
+            query = select(GraphRevisionRow).filter_by(**filters).order_by(
+                GraphRevisionRow.material_id, GraphRevisionRow.sequence)
+            if lock and self.unit_of_work.active:
+                query = query.with_for_update().execution_options(populate_existing=True)
+            rows = [self._decode(row) for row in session.scalars(query)]
+            return sorted(rows, key=lambda row: (row.get("created_at", ""), row["id"]))
+
     def replay(self, key, fingerprint):
         with self.unit_of_work.session() as session:
             row = session.get(IdempotencyRow, key)

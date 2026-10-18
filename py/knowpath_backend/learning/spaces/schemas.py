@@ -59,6 +59,7 @@ class SetScope(Contract):
     topic_ids: Annotated[list[Identifier], Field(min_length=1)]
     excluded_topic_ids: list[Identifier] = Field(default_factory=list)
     include_prerequisites: StrictBool = True
+    scope_mode: Literal['all', 'custom'] = 'custom'
     expected_version: Version
 
 

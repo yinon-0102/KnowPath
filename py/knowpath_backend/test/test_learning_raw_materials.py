@@ -52,6 +52,32 @@ def test_raw_is_immutable_and_survives_repository_restart(repository):
     assert repository.get_raw('missing') is None
 
 
+def test_transactional_raw_read_locks_version_before_raw_reference(repository):
+    if not isinstance(repository, SqlAlchemyMaterialRepository):
+        pytest.skip('SQL row-lock contract')
+    from sqlalchemy import event
+    from sqlalchemy.orm import Session
+
+    result = create(MaterialService(repository), defer_parse=True)
+    reads = []
+
+    def capture(state):
+        if state.is_select:
+            reads.append((str(state.statement), state.statement._for_update_arg is not None))
+
+    event.listen(Session, 'do_orm_execute', capture)
+    try:
+        with repository.transaction():
+            assert repository.get_raw(result.version.id) == b'original text'
+    finally:
+        event.remove(Session, 'do_orm_execute', capture)
+    version = next(i for i, (sql, _) in enumerate(reads) if 'FROM material_versions' in sql)
+    raw = next(i for i, (sql, _) in enumerate(reads) if 'FROM material_raw_files' in sql)
+    assert reads[version][1], 'version must use a current read after an earlier RR snapshot'
+    assert reads[raw][1]
+    assert version < raw, 'lock the version parent before its raw reference'
+
+
 def test_upload_raw_and_idempotency_roll_back_together(repository):
     with pytest.raises(RuntimeError):
         with repository.transaction():
@@ -212,6 +238,9 @@ def test_raw_migration_matches_metadata_and_preserves_old_tables(tmp_path, monke
         for name in ('storage_backend', 'bucket', 'object_key', 'etag'):
             raw._columns.remove(raw.c[name])
         raw.c.content.nullable = False
+        versions = historical.tables['material_versions']
+        versions._columns.remove(versions.c.parser_version)
+        versions._columns.remove(versions.c.parse_manifest)
         assert compare_metadata(MigrationContext.configure(connection), historical) == []
     command.downgrade(config, "0012_correction_context")
     assert set(inspect(engine).get_table_names()) == original

@@ -12,6 +12,7 @@ from knowpath_backend.learning.errors import DomainConflict, DomainNotFound
 
 FIELDS = ("id", "name", "status", "goal", "target_date", "weekly_minutes", "bindings",
           "topic_ids", "excluded_topic_ids", "space_version", "scope_version", "profile_version", "profile", "state_version")
+SCOPE_OPTIONS = ('include_prerequisites', 'scope_mode', 'prerequisite_additions')
 
 
 def _conflict():
@@ -88,6 +89,8 @@ class SqlAlchemySpaceRepository:
     @staticmethod
     def _read(row):
         space = {key: copy.deepcopy(getattr(row, key)) for key in FIELDS}
+        options = row.scope_options or {}
+        space.update({key: copy.deepcopy(options[key]) for key in SCOPE_OPTIONS if key in options})
         for key in ("created_at", "updated_at"):
             space[key] = getattr(row, key).replace(tzinfo=timezone.utc).isoformat()
         return space
@@ -95,6 +98,7 @@ class SqlAlchemySpaceRepository:
     def put(self, space):
         with self.unit_of_work.session() as session:
             values = {key: copy.deepcopy(space[key]) for key in FIELDS}
+            values['scope_options'] = {key: copy.deepcopy(space[key]) for key in SCOPE_OPTIONS if key in space} or None
             for key in ("created_at", "updated_at"):
                 values[key] = datetime.fromisoformat(space[key]).astimezone(timezone.utc).replace(tzinfo=None)
             session.merge(LearningSpaceRow(**values))

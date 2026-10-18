@@ -66,7 +66,8 @@ class KnowledgeUpdateService:
         return sorted(hashes)
 
     def _signature(self, topic):
-        fields = ('name', 'description', 'kind', 'parent_id', 'level', 'status', 'automatic_questions', 'prerequisites')
+        from .learning_units import SEMANTIC_FIELDS
+        fields = ('name', 'description', 'kind', 'parent_id', 'level', 'status', 'automatic_questions', 'prerequisites') + SEMANTIC_FIELDS
         value = {k: topic.get(k) for k in fields}
         value['automatic_questions'] = topic.get('automatic_questions', True)
         value['sources'] = self._sources(topic.get('source_refs', []))
@@ -107,6 +108,12 @@ class KnowledgeUpdateService:
         return old, new, sorted(affected)
 
     def _preview(self, space, bindings, updates):
+        if not updates:
+            # preview selected the existing bindings. Comparing their entire
+            # source/evidence snapshots would hold the space lock needlessly.
+            return {'space_id': space['id'], 'bindings': copy.deepcopy(space['bindings']),
+                    'available_updates': [], 'affected_topic_ids': [],
+                    'invalidated_question_ids': [], 'plan_impact': None}
         _, _, affected = self._impact(space, bindings)
         questions = sorted({q['id'] for a in self.repository.records('assessments', space_id=space['id'], lock=False)
                             for q in a['questions'] if q['topic_id'] in affected})

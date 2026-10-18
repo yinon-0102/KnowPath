@@ -4,7 +4,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from knowpath_backend.learning.errors import DomainConflict
-from knowpath_backend.test.test_learning_graph_reconciliation import graph_workspace, stage
+from knowpath_backend.test.test_learning_graph_reconciliation import graph_workspace, legacy_graph_workspace, stage
 
 
 class PreparedBackend:
@@ -117,12 +117,12 @@ def test_invalid_receipt_is_never_ready(graph_workspace):
             return result
     assert worker(state, Invalid(), max_attempts=1).run_once(event_id(state, staged))
     assert state.get_run(staged["run_id"])["status"] == "failed"
-    assert state.graph_service.diff(upload.material.id)["status"] == "draft"
+    assert state.graph_service.diff(upload.material.id)["status"] == "failed"
 
 
 @pytest.mark.parametrize("action", ["keep_old", "use_new", "keep_both"])
-def test_review_decisions_pin_effective_sources_and_exclude_conflicted_questions(graph_workspace, action):
-    factory, upload, label = graph_workspace
+def test_review_decisions_pin_effective_sources_and_exclude_conflicted_questions(legacy_graph_workspace, action):
+    factory, upload, label = legacy_graph_workspace
     state = factory()
     staged = stage(factory, upload, label)
     worker(state).run_once(event_id(state, staged))

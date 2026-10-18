@@ -37,6 +37,8 @@ class MaterialVersionRow(Base):
     content_hash: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     size_bytes: Mapped[int] = mapped_column(Integer, nullable=False)
     status: Mapped[str] = mapped_column(String(32), nullable=False)
+    parser_version: Mapped[str] = mapped_column(String(128), nullable=False, default="legacy_unknown", server_default="legacy_unknown")
+    parse_manifest: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     graph_version: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
@@ -106,6 +108,7 @@ class LearningSpaceRow(Base):
     bindings: Mapped[list] = mapped_column(JSON, nullable=False)
     topic_ids: Mapped[list] = mapped_column(JSON, nullable=False)
     excluded_topic_ids: Mapped[list] = mapped_column(JSON, nullable=False)
+    scope_options: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     space_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     scope_version: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     profile: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)

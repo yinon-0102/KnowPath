@@ -58,7 +58,8 @@ def compare_snapshots(base, candidate):
                 for side in (before, after):
                     if side:
                         affected.update(side[key] for key in ("from_id", "to_id"))
-            reviewed_fields = ("name", "description", "status", "automatic_questions", "prerequisites", "alternatives")
+            from .learning_units import SEMANTIC_FIELDS
+            reviewed_fields = ("name", "description", "status", "automatic_questions", "prerequisites", "alternatives") + SEMANTIC_FIELDS
             if kind == "node" and before and after and (
                     before["content_hash"] != after["content_hash"]
                     or any(before.get(field) != after.get(field) for field in reviewed_fields)):
@@ -84,14 +85,146 @@ class GraphReconciliationService:
     def _history(self, material_id):
         return sorted(self.repository.records("graph_revisions", material_id=material_id), key=lambda row: row["sequence"])
 
+    def _lock_work(self, material_id):
+        """Acquire the aggregate's existing work before any Run lock.
+
+        Commands may cancel several revisions or a parser handoff. Prelocking
+        keeps those later transitions in material -> version/revision -> outbox
+        -> Run order, including calls nested inside a worker transaction.
+        """
+        material = self._material(material_id)
+        versions = sorted(self.materials.list_versions(material_id), key=lambda v: v.id)
+        for version in versions:
+            self.materials.get_version(version.id)
+        history = self._history(material_id)
+        for aggregate_id in sorted([v.id for v in versions] + [r['id'] for r in history]):
+            self.repository.records('outbox', aggregate_id=aggregate_id)
+        return material
+
     @staticmethod
     def _published(history):
         published = [row for row in history if row["status"] == "published"]
         return max(published, key=lambda row: row["graph_version"]) if published else None
 
-    @staticmethod
-    def _response(revision):
-        return {"run_id": revision["run_id"], "status": "queued", "candidate_revision_id": revision["id"]}
+    def _response(self, revision):
+        return {"run_id": revision["run_id"], "status": self.runs.get(revision["run_id"])["status"],
+                "candidate_revision_id": revision["id"], "material_version_id": revision["material_version_id"]}
+
+    def _invalidate(self, history, *, base=None, except_id=None, cancel_parses=False, material_id=None, keep_version=None):
+        """Caller holds material lock. Fence revisions before outbox and Runs."""
+        obsolete = [r for r in history if r['id'] != except_id and r['status'] in {'draft', 'pending_review'}
+                    and (base is None or r['base_graph_version'] == base)]
+        versions = []
+        if cancel_parses:
+            for version in sorted(self.materials.list_versions(material_id), key=lambda v: v.id):
+                if version.id != keep_version:
+                    versions.append(self.materials.get_version(version.id))
+        for revision in obsolete:
+            revision['status'] = 'superseded'
+            self.repository.put_record('graph_revisions', revision)
+        for revision in obsolete:
+            for event in self.repository.records('outbox', aggregate_id=revision['id']):
+                if event['status'] in {'pending', 'processing'}:
+                    event.update(status='cancelled', lease_token=None, lease_until=None)
+                    self.repository.put_record('outbox', event)
+        parse_runs = []
+        for version in versions:
+            for event in self.repository.records('outbox', aggregate_id=version.id, event_type='material.parse'):
+                if event['status'] in {'pending', 'processing'}:
+                    event.update(status='cancelled', lease_token=None, lease_until=None)
+                    self.repository.put_record('outbox', event)
+                    parse_runs.append(event['payload']['run_id'])
+        for run_id in [r['run_id'] for r in obsolete] + parse_runs:
+            self.runs.request_cancel(run_id)
+            self.runs.acknowledge_cancel(run_id)
+
+    def lifecycle(self, material_id, version_id=None):
+        from knowpath_backend.learning.materials.service import MaterialParser
+        with self.repository.transaction():
+            material = self._lock_work(material_id)
+            version = self.materials.get_version(version_id or material.current_version_id)
+            if version is None or version.material_id != material_id:
+                raise DomainNotFound('material_version', version_id)
+            history = self._history(material_id)
+            published = self._published(history)
+            revisions = [r for r in history if r['material_version_id'] == version.id and r['status'] != 'superseded']
+            candidate = revisions[-1] if revisions else None
+            historical = [r for r in history if r['material_version_id'] == version.id and r.get('publication')]
+            if candidate is None and historical:
+                candidate = max(historical, key=lambda r: r['graph_version'])
+            parse_events = self.repository.records('outbox', aggregate_id=version.id, event_type='material.parse')
+            parse_runs = [self.runs.get(e['payload']['run_id']) for e in parse_events]
+            run = self.runs.get(candidate['run_id']) if candidate else max(parse_runs, key=lambda r: r['created_at'], default=None)
+            stage = ('learnable' if candidate and candidate.get('publication') else
+                     'pending_review' if candidate and candidate['status'] == 'pending_review' else
+                     'preparing' if candidate else 'pending_review' if version.chunks else
+                     'parsing' if run and run['status'] in {'queued', 'running'} else 'received')
+            error = None
+            if (candidate and candidate['status'] == 'failed') or (run and run['status'] in {'failed', 'cancelled', 'cancelling'}) or version.status == 'failed':
+                stage = 'failed'
+                error = copy.deepcopy(run.get('error')) if run else None
+                error = error or {'code': 'MATERIAL_TASK_CANCELLED' if run and run['status'] in {'cancelled', 'cancelling'} else 'MATERIAL_IMPORT_FAILED',
+                    'message': '任务已取消，可重新提交任务' if run and run['status'] in {'cancelled', 'cancelling'} else '资料处理失败，可重新提交任务',
+                    'details': {'stage': 'preparing' if version.chunks else 'parsing', 'retryable': True}, 'retryable': True}
+            return {'stage': stage, 'material_version_id': version.id, 'parser_version': version.parser_version,
+                    'current_parser_version': MaterialParser.VERSION,
+                    'parser_upgrade_available': bool(version.chunks) and version.parser_version != MaterialParser.VERSION,
+                    'parse_manifest': copy.deepcopy(version.parse_manifest),
+                    'next_action': ('retry' if error and error.get('retryable') else 'reparse') if error else
+                                   'reconcile' if stage == 'pending_review' and not candidate else
+                                   'publish' if stage == 'pending_review' else 'ingest' if stage == 'received' else None,
+                    'candidate_revision_id': candidate['id'] if candidate else None, 'run_id': run['id'] if run else None,
+                    'error': error, 'published_available': published is not None,
+                    'published_revision_id': published['id'] if published else None,
+                    'published_graph_version': published['graph_version'] if published else None}
+
+    def retry(self, material_id, payload, key):
+        def change():
+            self._lock_work(material_id)
+            facts = self.lifecycle(material_id, payload['version_id'])
+            if facts['stage'] != 'failed':
+                raise DomainConflict('TASK_NOT_FAILED', '当前任务没有失败，请查看处理状态')
+            if not facts['error'].get('retryable', False):
+                raise DomainConflict('TASK_NOT_RETRYABLE', '请检查原文件，上传修正版本或重新解析')
+            self._invalidate(self._history(material_id), cancel_parses=True, material_id=material_id)
+            return self.enqueue_ingest(material_id, payload['version_id'])
+        return self.commands._execute('material.retry', material_id, payload, key, change)
+
+    def reparse(self, material_id, payload, key):
+        from datetime import datetime, timezone
+        from knowpath_backend.learning.materials.service import MaterialParser, MaterialVersion
+        parser_version = MaterialParser.VERSION
+        def change():
+            material = self._lock_work(material_id)
+            source = self.materials.get_version(payload['version_id'])
+            if source is None or source.material_id != material_id:
+                raise DomainNotFound('material_version', payload['version_id'])
+            content = self.materials.get_raw(source.id)
+            if content is None or sha256(content).hexdigest() != source.content_hash:
+                raise DomainConflict('MATERIAL_SOURCE_MISSING', '原文件缺失或校验失败，请重新上传')
+            timestamp = datetime.now(timezone.utc)
+            version = MaterialVersion(id=str(uuid4()), material_id=material_id, filename=source.filename,
+                media_type=source.media_type, content_hash=source.content_hash, size_bytes=source.size_bytes,
+                status='uploaded', created_at=timestamp, parser_version=parser_version)
+            self._invalidate(self._history(material_id), cancel_parses=True, material_id=material_id)
+            material.current_version_id, material.updated_at = version.id, timestamp
+            material.size_bytes = version.size_bytes
+            material.version += 1
+            if material.status != 'archived':
+                material.status = 'uploaded'
+            self.materials.save(material, version, idempotency_key='reparse-source:'+version.id,
+                request_fingerprint=digest([source.id, parser_version]))
+            self.materials.save_raw(version.id, content)
+            return {**self.enqueue_ingest(material_id, version.id), 'material_version_id': version.id}
+        return self.commands._execute('material.reparse', material_id,
+            {**payload, 'parser_version': parser_version}, key, change)
+
+    def rebuild(self, material_id, payload, key):
+        def change():
+            self._lock_work(material_id)
+            self._invalidate(self._history(material_id), base=payload['expected_graph_version'])
+            return self._stage(material_id, payload)
+        return self.commands._execute('graph.rebuild', material_id, payload, key, change)
 
     def ingest(self, material_id, payload, key):
         """Queue saved originals or already parsed sources, without publishing."""
@@ -100,22 +233,25 @@ class GraphReconciliationService:
 
     def enqueue_ingest(self, material_id, version_id):
         # Called within the command/upload transaction; never retry a nested UOW.
-        material = self._material(material_id)
+        material = self._lock_work(material_id)
         version = self.materials.get_version(version_id)
         if version is None or version.material_id != material_id:
             raise DomainNotFound("material_version", version_id)
+        if material.current_version_id != version_id:
+            raise DomainConflict('MATERIAL_VERSION_STALE', '历史资料版本只读，请从原文件重新解析生成新版本')
         if version.status == "ready" and version.chunks:
             published = self._published(self._history(material_id))
             return self._stage(material_id, {"version_id": version_id,
                 "expected_graph_version": published["graph_version"] if published else 0}, run_kind="material_ingest")
         if self.materials.get_raw(version_id) is None:
             raise DomainConflict("MATERIAL_SOURCE_MISSING", "原文件不存在，请重新上传资料")
+        self._invalidate(self._history(material_id), cancel_parses=True, material_id=material_id, keep_version=version_id)
         for event in self.repository.records("outbox", aggregate_type="material_version", aggregate_id=version_id,
                                              event_type="material.parse"):
             if event["status"] in {"pending", "processing"}:
                 run = self.runs.get(event["payload"]["run_id"])
                 if run["status"] in {"queued", "running"}:
-                    return {"run_id": run["id"], "status": "queued", "candidate_revision_id": None}
+                    return {"run_id": run["id"], "status": run['status'], "candidate_revision_id": None}
         run = self.runs.create("material_ingest")
         version.status = "processing"
         self.materials.update_version(version)
@@ -135,10 +271,12 @@ class GraphReconciliationService:
     def _stage(self, material_id, payload, *, run_kind="graph_reconcile", run_id=None):
         # Caller owns the transaction and retry boundary. Retrying a nested
         # transaction would reuse a failed Session or commit partial staging.
-        self._material(material_id)  # Material lock serializes candidate sequence and publication base.
+        material = self._lock_work(material_id)
         version = self.materials.get_version(payload["version_id"])
         if version is None or version.material_id != material_id:
             raise DomainNotFound("material_version", payload["version_id"])
+        if material.current_version_id != version.id:
+            raise DomainConflict('MATERIAL_VERSION_STALE', '历史解析版本只读，请重新解析为新版本')
         if version.status != "ready" or not version.chunks:
             raise DomainConflict("MATERIAL_NOT_READY", "资料版本尚未完成解析")
         history = self._history(material_id)
@@ -146,15 +284,18 @@ class GraphReconciliationService:
         base_version = published["graph_version"] if published else 0
         if payload["expected_graph_version"] != base_version:
             raise DomainConflict("VERSION_CONFLICT", "图谱版本已变化，请刷新后重试", {"graph_version": base_version})
-        for row in reversed(history):
-            if row["material_version_id"] == version.id and row["base_graph_version"] == base_version and row["status"] == "draft" and not row["diff"].get("correction_id"):
-                if run_id is None and self.runs.get(row["run_id"])["status"] in {"queued", "running"}:
-                    return self._response(row)
         # Rebuilding an immutable material version must preserve prior review
         # decisions, including corrections and keep_old/keep_both publication.
         snapshot = (copy.deepcopy(published["publication"]["snapshot"])
                     if published and published["material_version_id"] == version.id
                     else extract_snapshot(material_id, version))
+        for row in reversed(history):
+            if (run_id is None and row['material_version_id'] == version.id and row['base_graph_version'] == base_version
+                    and row['snapshot_hash'] == digest(snapshot) and row['status'] in {'draft', 'pending_review'}
+                    and not row['diff'].get('correction_id')
+                    and self.runs.get(row['run_id'])['status'] in {'queued', 'running', 'succeeded'}):
+                return self._response(row)
+        self._invalidate(history, base=base_version)
         revision_id = str(uuid4())
         run = self.runs.get(run_id) if run_id else self.runs.create(run_kind)
         timestamp = now()
@@ -172,20 +313,27 @@ class GraphReconciliationService:
 
     def diff(self, material_id, revision_id=None, include_unchanged=False):
         with self.repository.transaction():
-            self._material(material_id)
+            material = self._lock_work(material_id)
             history = self._history(material_id)
             if revision_id:
                 revision = next((row for row in history if row["id"] == revision_id), None)
                 if revision is None:
                     raise DomainNotFound("graph_revision", revision_id)
             else:
-                candidates = [row for row in history if row["status"] in {"draft", "pending_review"}]
+                published = self._published(history)
+                current_base = published['graph_version'] if published else 0
+                candidates = [row for row in history if row['material_version_id'] == material.current_version_id
+                              and row['base_graph_version'] == current_base
+                              and row["status"] in {"draft", "pending_review", "failed"}]
                 revision = candidates[-1] if candidates else None
             if revision is None:
                 published = self._published(history)
                 result = {"base_graph_version": published["graph_version"] if published else 0,
                           "candidate_revision_id": None, "added": [], "changed": [], "removed": [],
                           "conflicts": [], "affected_topic_ids": []}
+                facts = self.lifecycle(material_id)
+                result.update(status=facts['stage'], error=facts['error'],
+                              material_version_id=facts['material_version_id'], next_action=facts['next_action'])
                 if include_unchanged:
                     result["unchanged"] = []
                 return result
@@ -194,15 +342,24 @@ class GraphReconciliationService:
                 result.pop("unchanged", None)
             result.update(base_graph_version=revision["base_graph_version"], candidate_revision_id=revision["id"],
                           material_version_id=revision["material_version_id"], status=revision["status"])
+            run = self.runs.get(revision['run_id'])
+            result['error'] = run.get('error')
+            if revision['status'] == 'draft' and run['status'] in {'failed', 'cancelling', 'cancelled'}:
+                result['status'] = 'failed'
+                result['error'] = run.get('error') or {'code': 'MATERIAL_TASK_CANCELLED',
+                    'message': '任务已取消，可重新提交任务', 'retryable': True,
+                    'details': {'stage': 'preparing', 'retryable': True}}
             return result
 
     def publish(self, material_id, revision_id, payload, key, *, correction_id=None):
         def change():
-            self._material(material_id)
+            material = self._lock_work(material_id)
             history = self._history(material_id)
             revision = next((row for row in history if row["id"] == revision_id), None)
             if revision is None:
                 raise DomainNotFound("graph_revision", revision_id)
+            if revision['material_version_id'] != material.current_version_id and not correction_id:
+                raise DomainConflict('MATERIAL_VERSION_STALE', '候选属于历史资料版本，请审核当前版本')
             if revision['diff'].get('correction_id'):
                 if revision['diff']['correction_id'] != correction_id:
                     raise DomainConflict('CORRECTION_CONFIRMATION_REQUIRED', '纠错候选必须经纠错确认入口发布')
@@ -213,6 +370,8 @@ class GraphReconciliationService:
             current = published["graph_version"] if published else 0
             if payload["expected_graph_version"] != current or revision["base_graph_version"] != current:
                 raise DomainConflict("VERSION_CONFLICT", "图谱版本已变化，请重新生成候选快照")
+            if correction_id and (not published or published['material_version_id'] != revision['material_version_id']):
+                raise DomainConflict('VERSION_CONFLICT', '纠错来源不属于当前发布快照，请重新提交')
             known = {item["conflict_id"] for item in revision["diff"]["conflicts"]}
             supplied = {item["conflict_id"] for item in payload.get("resolutions", [])}
             if supplied - known:
@@ -277,6 +436,7 @@ class GraphReconciliationService:
             if published:
                 published["status"] = "superseded"
                 self.repository.put_record("graph_revisions", published)
+            self._invalidate(history, base=current, except_id=revision_id)
             self.repository.put_record("graph_revisions", revision)
             return {"graph_version": current + 1, "material_version_id": revision["material_version_id"],
                     "candidate_revision_id": revision_id, "published_at": timestamp}

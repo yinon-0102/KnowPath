@@ -178,14 +178,15 @@ def state_version(app, version_id):
     return app.state.learning_state.material_repository.get_version(version_id)
 
 
-def test_old_version_failure_does_not_replace_current_or_unarchive_material(apps):
+def test_old_version_is_cancelled_without_replacing_current_or_unarchiving_material(apps):
     app = apps()
     with TestClient(app) as client:
         first = upload(client, content=b'').json()
         path = '/api/v1/materials/' + first['material']['id'] + '/versions'
         second = client.post(path, files={'file': ('next.txt', b'Current content')},
             data={'auto_ingest': 'false'}, headers={'Idempotency-Key': 'v2'}).json()
-    assert parse_worker(app).run_once()
+    assert not parse_worker(app).run_once()
+    assert app.state.learning_state.get_run(first['run_id'])['status'] == 'cancelled'
     repo = app.state.learning_state.material_repository
     assert repo.get_material(first['material']['id']).status == 'uploaded'
     assert repo.get_material(first['material']['id']).current_version_id == second['material_version_id']

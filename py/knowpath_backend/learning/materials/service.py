@@ -40,9 +40,10 @@ class MaterialTooLarge(MaterialError):
 class MaterialParseError(MaterialError):
     """The input has a supported type but cannot be parsed into text."""
 
-    def __init__(self, message: str, *, code: str = "MATERIAL_PARSE_FAILED") -> None:
+    def __init__(self, message: str, *, code: str = "MATERIAL_PARSE_FAILED", manifest=None) -> None:
         super().__init__(message)
         self.code = code
+        self.manifest = manifest or {}
 
 
 class IdempotencyConflict(MaterialError):
@@ -75,6 +76,8 @@ class MaterialVersion:
     status: str
     created_at: datetime
     chunks: list[SourceChunk] = field(default_factory=list)
+    parser_version: str = "legacy_unknown"
+    parse_manifest: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -205,13 +208,16 @@ class InMemoryMaterialRepository:
 
     def find_by_content_hash(self, content_hash: str, *, filename: str | None = None, material_id: str | None = None) -> tuple[Material, MaterialVersion] | None:
         with self._lock:
-            for version in self.versions.values():
+            for material in sorted(self.materials.values(), key=lambda m: m.id):
+                if material_id is not None and material.id != material_id:
+                    continue
+                version = self.versions.get(material.current_version_id)
+                if version is None:
+                    continue
                 if (version.content_hash == content_hash
                         and (filename is None or parser_kind(version.filename) == parser_kind(filename))
                         and (material_id is None or version.material_id == material_id)):
-                    material = self.materials.get(version.material_id)
-                    if material is not None:
-                        return copy.deepcopy((material, version))
+                    return copy.deepcopy((material, version))
             return None
 
     def save(self, material: Material, version: MaterialVersion, *,
@@ -240,7 +246,12 @@ class InMemoryMaterialRepository:
             if version.id not in self.versions:
                 raise MaterialNotFound(version.id)
             stored = self.versions[version.id]
-            self.versions[version.id] = replace(stored, status=version.status, chunks=copy.deepcopy(version.chunks))
+            if stored.chunks and stored.chunks != version.chunks:
+                raise ValueError("parsed material version is immutable")
+            if stored.chunks and (stored.parse_manifest != version.parse_manifest or stored.parser_version != version.parser_version):
+                raise ValueError("parsed material structure is immutable")
+            self.versions[version.id] = replace(stored, status=version.status, chunks=copy.deepcopy(version.chunks),
+                parser_version=version.parser_version, parse_manifest=copy.deepcopy(version.parse_manifest))
 
     def record_idempotency(self, *, key: str, request_fingerprint: str,
                            material_id: str, version_id: str) -> None:
@@ -273,6 +284,7 @@ class InMemoryMaterialRepository:
 class MaterialParser:
     """Parse supported files into source chunks with stable source locations."""
 
+    VERSION = "knowpath_parser_v2"
     SUPPORTED_EXTENSIONS = {".md", ".markdown", ".txt", ".pdf"}
     MAX_SIZE_BYTES = 20 * 1024 * 1024
     MAX_PDF_PAGES = 300
@@ -287,6 +299,10 @@ class MaterialParser:
             raise MaterialTooLarge("material exceeds the 20 MiB upload limit")
 
     def parse(self, content: bytes, *, filename: str) -> list[SourceChunk]:
+        from .document_structure import ParsedChunks
+        return ParsedChunks(self.parse_document(content, filename=filename))
+
+    def parse_document(self, content: bytes, *, filename: str):
         self.validate_upload(content, filename=filename)
         extension = PurePath(filename).suffix.lower()
         if extension not in self.SUPPORTED_EXTENSIONS:
@@ -295,15 +311,24 @@ class MaterialParser:
             raise MaterialParseError("material is empty", code="EMPTY_MATERIAL")
 
         if extension == ".pdf":
-            return self._parse_pdf(content)
+            return self._parse_pdf_document(content)
         else:
             try:
                 text = content.decode("utf-8-sig", errors="strict")
             except UnicodeDecodeError as exc:
                 raise MaterialParseError("material is not valid UTF-8") from exc
-        return self._parse_text(text)
+        from .document_structure import structure_document
+        parsed = structure_document([text], parser_version=self.VERSION,
+                                    markdown=extension in {'.md', '.markdown'}, pdf=False)
+        from .document_structure import signature
+        if not parsed.chunks or not any(u['body_signature'] != signature('') for u in parsed.manifest['units']):
+            raise MaterialParseError("material contains no extractable text", code="EMPTY_MATERIAL", manifest=parsed.manifest)
+        return parsed
 
     def _parse_pdf(self, content: bytes) -> list[SourceChunk]:
+        return self._parse_pdf_document(content).chunks
+
+    def _parse_pdf_document(self, content: bytes):
         try:
             from pypdf import PdfReader
         except ImportError as exc:  # pragma: no cover - depends on deployment extras
@@ -317,23 +342,47 @@ class MaterialParser:
                 raise MaterialParseError("encrypted PDFs are unsupported", code="ENCRYPTED_PDF")
             if len(reader.pages) > self.MAX_PDF_PAGES:
                 raise MaterialParseError("PDF exceeds the 300 page limit", code="PDF_PAGE_LIMIT_EXCEEDED")
-            pages = [page.extract_text() or "" for page in reader.pages]
+            pages, states = [], []
+            for page in reader.pages:
+                try:
+                    text = page.extract_text() or ""
+                    resources = page.get('/Resources')
+                    resources = resources.get_object() if resources else {}
+                    objects = resources.get('/XObject') or {}
+                    objects = objects.get_object() if hasattr(objects, 'get_object') else objects
+                    # Forms can contain nested images or diagrams. Conservatively
+                    # report their visual content rather than claiming text-only.
+                    images = bool(objects)
+                    stream = page.get_contents()
+                    drawing = bool(stream is not None and stream.get_data().strip())
+                    from .pdf_structure import graphics_coverage
+                    graphics, visual_review = graphics_coverage(stream.operations) if stream is not None else (False, False)
+                    status = ('text_with_images' if images else 'text_with_graphics' if visual_review else 'text_extracted') if text.strip() else (
+                        'ocr_required' if images else 'manual_review_required' if drawing else 'known_blank')
+                    pages.append(text)
+                    states.append({'status': status, 'graphics_present': graphics,
+                        'review_required': status in {'text_with_images', 'text_with_graphics', 'ocr_required', 'manual_review_required'}})
+                except Exception:
+                    pages.append('')
+                    states.append({'status': 'extraction_failed', 'review_required': True})
         except MaterialParseError:
             raise
         except Exception as exc:  # pragma: no cover - parser-specific failures
-            raise MaterialParseError("failed to parse PDF") from exc
-        if not any(text.strip() for text in pages):
-            raise MaterialParseError("PDF has no extractable text", code="SCANNED_PDF_UNSUPPORTED")
-        from .pdf_structure import structured_pdf_chunks
+            raise MaterialParseError("failed to parse PDF", manifest={'parser_version': self.VERSION,
+                'schema_version': 1, 'complete': False, 'pages': [], 'document_status': 'extraction_failed'}) from exc
+        parsed = self.parse_pages(pages, page_states=states)
+        if not parsed.chunks:
+            raise MaterialParseError("PDF has no extractable text", code="SCANNED_PDF_UNSUPPORTED", manifest=parsed.manifest)
+        return parsed
+
+    def parse_pages(self, pages, *, page_states=None):
+        from .document_structure import structure_document
+        from .pdf_structure import structured_pdf_chunks, legal_document
+        document = structure_document(pages, parser_version=self.VERSION, page_states=page_states)
         structured = structured_pdf_chunks(pages, self._parse_text)
         if structured is not None:
-            return structured
-        chunks: list[SourceChunk] = []
-        for page_number, text in enumerate(pages, start=1):
-            if not text.strip():
-                continue
-            chunks.extend(replace(chunk, page=page_number) for chunk in self._parse_text(text))
-        return chunks
+            return legal_document(pages, structured, document)
+        return document
 
     def _parse_text(self, text: str) -> list[SourceChunk]:
         normalized = text.replace("\r\n", "\n").replace("\r", "\n")
@@ -427,10 +476,7 @@ class MaterialService:
             self.repository.save_raw(version.id, content)
             return CreateMaterialResult(material=material, version=version, replayed=True)
 
-        chunks = [] if defer_parse else self.parser.parse(content, filename=filename)
         duplicate = self.repository.find_by_content_hash(content_hash, filename=filename)
-        from .pdf_structure import reusable_duplicate
-        duplicate = reusable_duplicate(self.repository, duplicate)
         if duplicate is not None:
             material, version = duplicate
             self.repository.record_idempotency(
@@ -442,6 +488,7 @@ class MaterialService:
             self.repository.save_raw(version.id, content)
             return CreateMaterialResult(material=material, version=version, replayed=True)
 
+        chunks, manifest = ([], {}) if defer_parse else parse_material(self.parser, content, filename=filename)
         now = datetime.now(timezone.utc)
         material_id = str(uuid4())
         version_id = str(uuid4())
@@ -466,6 +513,8 @@ class MaterialService:
             status="uploaded" if defer_parse else "ready",
             created_at=now,
             chunks=chunks,
+            parser_version=parser_identity(self.parser),
+            parse_manifest=manifest,
         )
         self.repository.save(
             material,
@@ -512,10 +561,7 @@ class MaterialService:
             self.repository.save_raw(version.id, content)
             return CreateMaterialResult(material=material, version=version, replayed=True)
 
-        chunks = [] if defer_parse else self.parser.parse(content, filename=filename)
         duplicate = self.repository.find_by_content_hash(content_hash, filename=filename, material_id=material_id)
-        from .pdf_structure import reusable_duplicate
-        duplicate = reusable_duplicate(self.repository, duplicate)
         if duplicate is not None and duplicate[0].id == material_id:
             self.repository.record_idempotency(
                 key=idempotency_key,
@@ -526,6 +572,7 @@ class MaterialService:
             self.repository.save_raw(duplicate[1].id, content)
             return CreateMaterialResult(material=material, version=duplicate[1], replayed=True)
 
+        chunks, manifest = ([], {}) if defer_parse else parse_material(self.parser, content, filename=filename)
         now = datetime.now(timezone.utc)
         version = MaterialVersion(
             id=str(uuid4()),
@@ -537,6 +584,8 @@ class MaterialService:
             status="uploaded" if defer_parse else "ready",
             created_at=now,
             chunks=chunks,
+            parser_version=parser_identity(self.parser),
+            parse_manifest=manifest,
         )
         material.current_version_id = version.id
         if defer_parse and material.status != "archived":
@@ -565,6 +614,17 @@ def _request_options_fingerprint(fingerprint: str, *, defer_parse: bool,
 
 def parser_kind(filename: str) -> str:
     return "pdf" if PurePath(filename).suffix.lower() == ".pdf" else "text"
+
+
+def parser_identity(parser) -> str:
+    value = getattr(parser, 'VERSION', MaterialParser.VERSION)
+    return value if isinstance(value, str) else MaterialParser.VERSION
+
+
+def parse_material(parser, content, *, filename):
+    """Keep custom/legacy parser ports valid without manufacturing metadata."""
+    chunks = parser.parse(content, filename=filename)
+    return list(chunks), getattr(chunks, 'manifest', {})
 
 
 def _sha256(value: bytes) -> str:

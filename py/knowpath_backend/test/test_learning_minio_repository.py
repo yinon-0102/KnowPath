@@ -55,6 +55,22 @@ def test_legacy_inline_content_remains_readable_when_minio_enabled(storage):
     assert store.objects == {}
 
 
+def test_reparse_copies_bytes_to_new_version_object_without_reusing_old_key(storage):
+    repository, store, engine = storage
+    result = upload(repository)
+    state = LearningState(repository)
+    response = state.graph_service.reparse(result.material.id, {'version_id': result.version.id}, 'reparse-key')
+    new_id = response['material_version_id']
+    assert new_id != result.version.id
+    with repository.unit_of_work.session() as session:
+        old = session.get(MaterialRawRow, result.version.id)
+        new = session.get(MaterialRawRow, new_id)
+        assert new.object_key == raw_object_key(new_id)
+        assert new.object_key != old.object_key
+    assert repository.get_raw(new_id) == repository.get_raw(result.version.id)
+    assert len(store.objects) == 2
+
+
 def test_rollback_removes_new_objects_and_sql_state(storage):
     repository, store, _ = storage
     with pytest.raises(RuntimeError):

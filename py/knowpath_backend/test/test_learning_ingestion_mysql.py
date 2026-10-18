@@ -58,17 +58,21 @@ def test_mysql_upload_concurrent_replay_and_restart(scenario, monkeypatch):
         if scenario == "different_keys":
             barrier, guard = Barrier(4), Lock()
             reads = 0
-            original_find = SqlAlchemyMaterialRepository.find_by_content_hash
-            def synchronized_find(repository, content_hash, **kwargs):
+            original_get = SqlAlchemyMaterialRepository.get_idempotency
+            def synchronized_get(repository, request_key):
                 nonlocal reads
-                result = original_find(repository, content_hash, **kwargs)
+                # Race all four intents before parent/hash locks. Waiting after
+                # find_by_content_hash would hold the winning parent lock while
+                # the other callers wait for that same lock, a fixture deadlock.
+                result = original_get(repository, request_key)
                 with guard:
-                    wait = reads < 4
-                    reads += 1
+                    wait = request_key in upload_keys and reads < 4
+                    if wait:
+                        reads += 1
                 if wait:
                     barrier.wait(timeout=15)
                 return result
-            monkeypatch.setattr(SqlAlchemyMaterialRepository, "find_by_content_hash", synchronized_find)
+            monkeypatch.setattr(SqlAlchemyMaterialRepository, "get_idempotency", synchronized_get)
         first_clients = [new_client() for _ in range(4)]
         if scenario == "stale_snapshot":
             snapshot_ready, winner_committed = Event(), Event()

@@ -16,6 +16,22 @@ def source_key(ref):
     return ref.get("material_id"), ref.get("material_version_id"), ref.get("chunk_id")
 
 
+def lock_source_dependencies(materials, refs):
+    """Fence source parents before publication acquires outbox and Run locks.
+
+    Memory transactions already serialize the store. Outside a SQL transaction
+    there are no retained locks to order, so metadata reads need no extra work.
+    Missing sources retain the caller's existing validation/cancellation path.
+    """
+    uow = getattr(materials, 'unit_of_work', None)
+    if uow is None or not uow.active:
+        return
+    for identifier in sorted({ref['material_id'] for ref in refs if ref.get('material_id')}):
+        materials.get_material(identifier)
+    for identifier in sorted({ref['material_version_id'] for ref in refs if ref.get('material_version_id')}):
+        materials.get_version(identifier)
+
+
 def original_source_refs(sources):
     """Project verified retrieval spans onto assessment/source-read identities."""
     refs = {}
@@ -104,6 +120,8 @@ class SourceAccessService:
             except DomainNotFound:
                 if identifier == space_id:
                     raise
+        lock_source_dependencies(self.assessments.spaces.materials,
+            [*plan['sources'], *(binding for space in spaces.values() for binding in space['bindings'])])
         # Assessment creation locks its source versions before inserting the
         # aggregate. This also fences assessments in a brand-new related space
         # absent from the discovery plan, without taking every space lock.

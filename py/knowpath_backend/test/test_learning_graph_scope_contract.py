@@ -6,8 +6,15 @@ from knowpath_backend.learning.knowledge.reconciliation import extract_snapshot
 from knowpath_backend.learning.state import LearningState
 
 
-def workspace(text):
+def workspace(text, *, legacy=False):
     state = LearningState()
+    if legacy:
+        from knowpath_backend.learning.materials.service import MaterialParser
+        class LegacyParser:
+            VERSION = 'knowpath_parser_v1'
+            def parse(self, content, *, filename):
+                return MaterialParser()._parse_text(content.decode())
+        state.material_service.parser = LegacyParser()
     upload = state.material_service.create(filename="relations.md", content=text.encode(), idempotency_key="upload")
     return state, upload
 
@@ -27,6 +34,106 @@ def edge(snapshot, source, target, *, status="active", confirmed=True, sourced=T
     return {"id": source + target, "type": "prerequisite_of", "from_id": by_name[source]["id"],
             "to_id": by_name[target]["id"], "status": status, "confirmed": confirmed,
             "source_refs": deepcopy(by_name[target]["source_refs"]) if sourced else [], "confidence": 1.0}
+
+
+def test_new_space_defaults_to_every_effective_canonical_unit_and_empty_save_is_atomic():
+    from knowpath_backend.learning.errors import DomainConflict
+    state, upload = workspace("# Chapter\n\nIntroduction.\n\n## A\n\nA fact.\n\n## B\n\nB fact.")
+    space = state.space_service.create({"material_ids": [upload.material.id]})
+    topics = state.space_service.bound_topics(space)
+    expected = [t['id'] for t in topics if t['id'] == t['canonical_topic_id'] and t.get('is_learnable', True)]
+    assert space['topic_ids'] == expected
+    assert space['include_prerequisites'] is True
+    before = deepcopy(state.space_service.get(space['id']))
+    with pytest.raises(DomainConflict):
+        state.space_service.set_scope(space['id'], {'topic_ids': [], 'expected_version': 1})
+    assert state.space_service.get(space['id']) == before
+    result = state.space_service.set_scope(space['id'], {'topic_ids': expected, 'include_prerequisites': False, 'expected_version': 1})
+    assert result['excluded_topic_ids'] == []
+    assert result['include_prerequisites'] is False
+    assert state.space_service.get(space['id'])['include_prerequisites'] is False
+
+
+@pytest.mark.parametrize('validity', ['valid', 'stale', 'wrong_revision', 'missing_revision'])
+def test_scope_and_planner_share_exact_mastered_prerequisite_rule(validity):
+    from knowpath_backend.learning.errors import DomainConflict
+    from knowpath_backend.learning.assessments.service import revision
+    state, upload = workspace("# A\n\nBase fact.\n\n# B\n\nDependent fact.")
+    snapshot = extract_snapshot(upload.material.id, upload.version)
+    snapshot['relations'] = [edge(snapshot, 'A', 'B')]
+    space = publish_fixture(state, upload, snapshot)
+    topics = {t['name']: t for t in state.space_service.bound_topics(space) if t['id'] == t['canonical_topic_id']}
+    a, b = topics['A'], topics['B']
+    row = {'id': 'mastery', 'space_id': space['id'], 'topic_id': a['id'], 'status': 'mastered',
+           'score_validity': 'stale' if validity == 'stale' else 'current', 'topic_revision_id': revision(a)}
+    if validity == 'wrong_revision': row['topic_revision_id'] = 'old-revision'
+    if validity == 'missing_revision': row.pop('topic_revision_id')
+    state.graph_service.repository.put_record('states', row)
+    payload = {'topic_ids': [b['id']], 'excluded_topic_ids': [a['id']], 'include_prerequisites': False, 'expected_version': 1}
+    before = deepcopy(state.space_service.get(space['id']))
+    if validity == 'valid':
+        saved = state.space_service.set_scope(space['id'], payload)
+        assert saved['topic_ids'] == [b['id']]
+        assert [t['id'] for t in state.plan_sessions._ordered_topics(state.space_service.get(space['id']), {a['id']: row})] == [b['id']]
+    else:
+        with pytest.raises(DomainConflict) as failure:
+            state.space_service.set_scope(space['id'], payload)
+        assert failure.value.code == 'SCOPE_PREREQUISITE_CONFLICT'
+        assert failure.value.details['conflicts'][0]['prerequisite_topic_id'] == a['id']
+        assert state.space_service.get(space['id']) == before
+        planning_scope = dict(before, topic_ids=[b['id']], excluded_topic_ids=[a['id']])
+        with pytest.raises(DomainConflict) as planning_failure:
+            state.plan_sessions._ordered_topics(planning_scope, {a['id']: row})
+        assert planning_failure.value.code == 'PLAN_CONSTRAINT_UNSATISFIABLE'
+
+
+def test_container_batch_expands_effective_descendants_and_direct_introduction():
+    state, upload = workspace('# Chapter\n\nIntroduction.\n\n## A\n\nA fact.\n\n## B\n\nB fact.')
+    space = state.space_service.create({'material_ids': [upload.material.id]})
+    topics = state.space_service.bound_topics(space)
+    chapter = next(t for t in topics if t['name'] == 'Chapter' and t.get('is_learnable') is False)
+    expected = {t['id'] for t in topics if t['id'] == t['canonical_topic_id'] and t.get('is_learnable', True)}
+    result = state.space_service.set_scope(space['id'], {'topic_ids': [chapter['id']], 'expected_version': 1})
+    assert set(result['topic_ids']) == expected
+    assert chapter['id'] not in result['topic_ids']
+
+
+def test_all_mode_rejects_partial_selection_instead_of_persisting_a_false_label():
+    from knowpath_backend.learning.errors import DomainConflict
+    state, upload = workspace('# A\n\nA fact.\n\n# B\n\nB fact.')
+    space = state.space_service.create({'material_ids': [upload.material.id]})
+    before = deepcopy(state.space_service.get(space['id']))
+    with pytest.raises(DomainConflict):
+        state.space_service.set_scope(space['id'], {'topic_ids': space['topic_ids'][:1], 'scope_mode': 'all', 'expected_version': 1})
+    assert state.space_service.get(space['id']) == before
+
+
+def test_sql_scope_preferences_exclusions_and_addition_sources_roundtrip(tmp_path, monkeypatch):
+    from sqlalchemy import create_engine
+    from knowpath_backend.learning.persistence.db import init_db
+    from knowpath_backend.learning.persistence.material_repository import SqlAlchemyMaterialRepository
+    engine = create_engine(f"sqlite+pysqlite:///{tmp_path / 'scope-options.db'}")
+    init_db(engine)
+    repository = SqlAlchemyMaterialRepository(engine)
+    state = LearningState(repository)
+    upload = state.material_service.create(filename='units.md', content=b'# A\n\nA fact.\n\n# B\n\nB fact.\n\n# C\n\nC fact.', idempotency_key='units')
+    space = state.space_service.create({'material_ids': [upload.material.id]})
+    restarted = LearningState(repository).space_service.get(space['id'])
+    assert restarted['scope_mode'] == 'all'
+    assert restarted['topic_ids'] == space['topic_ids']
+    topics = state.space_service.bound_topics(space)
+    ids = {t['name']: t['id'] for t in topics if t['id'] == t['canonical_topic_id']}
+    for topic in topics:
+        if topic['name'] == 'B': topic['prerequisites'] = [ids['A']]
+    monkeypatch.setattr(state.space_service, 'bound_topics', lambda space: deepcopy(topics))
+    result = state.space_service.set_scope(space['id'], {'topic_ids': [ids['B']], 'excluded_topic_ids': [ids['C']], 'expected_version': 1})
+    restored = LearningState(repository).space_service.get(space['id'])
+    for field in ('topic_ids', 'excluded_topic_ids', 'include_prerequisites', 'scope_mode', 'prerequisite_additions'):
+        assert restored[field] == result[field]
+    assert restored['prerequisite_additions'][0]['source_refs']
+    result = state.space_service.set_scope(space['id'], {'topic_ids': result['topic_ids'], 'excluded_topic_ids': [ids['C']], 'include_prerequisites': False, 'expected_version': 2})
+    assert LearningState(repository).space_service.get(space['id'])['include_prerequisites'] is False
+    engine.dispose()
 
 
 def test_heading_hierarchy_is_sourced_without_inventing_sequential_dependencies():
@@ -80,6 +187,14 @@ def test_scope_never_silently_adds_unusable_prerequisites(kind):
     payload = {"topic_ids": [ids["B"]], "expected_version": 1, "include_prerequisites": kind != "disabled"}
     if kind == "excluded":
         payload["excluded_topic_ids"] = [ids["A"]]
+    if kind in {'excluded', 'disabled'}:
+        from knowpath_backend.learning.errors import DomainConflict
+        before = deepcopy(state.space_service.get(space['id']))
+        with pytest.raises(DomainConflict) as failure:
+            state.space_service.set_scope(space['id'], payload)
+        assert failure.value.code == 'SCOPE_PREREQUISITE_CONFLICT'
+        assert state.space_service.get(space['id']) == before
+        return
     result = state.space_service.set_scope(space["id"], payload)
     assert result["topic_ids"] == [ids["B"]]
     assert result["prerequisite_topic_ids"] == []
@@ -200,13 +315,13 @@ def test_exclusion_uses_canonical_identity_and_fixed_published_binding():
     with pytest.raises(DomainConflict, match="别名"):
         state.space_service.set_scope(space["id"], {"topic_ids": ["topic_a"], "excluded_topic_ids": [ids["A"]], "expected_version": 1})
     result = state.space_service.set_scope(space["id"], {"topic_ids": ["topic_b"], "expected_version": 1})
-    assert result["prerequisite_topic_ids"] == ["topic_a"]
+    assert result["prerequisite_topic_ids"] == [ids['A']]
 
 
 @pytest.mark.parametrize("declaration,kind", [("Related topics: A", "related_to"), ("Prerequisites: A", "prerequisite_of")])
 def test_keep_old_retains_relation_only_source_without_activating_new_claim(declaration, kind):
     from knowpath_backend.test.test_learning_graph_worker import worker, event_id
-    state, upload = workspace("# A\n\nBase fact.\n\n# B\n\nOld B definition.")
+    state, upload = workspace("# A\n\nBase fact.\n\n# B\n\nOld B definition.", legacy=True)
     first = state.graph_service.reconcile(upload.material.id,
         {"version_id": upload.version.id, "expected_graph_version": 0}, "first-reconcile")
     worker(state).run_once(event_id(state, first))

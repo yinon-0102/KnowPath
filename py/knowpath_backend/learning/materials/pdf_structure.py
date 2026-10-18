@@ -1,6 +1,8 @@
 """Bounded legal learning units with immutable page/line source fragments."""
 from dataclasses import replace
+from hashlib import sha256
 import re
+from uuid import uuid4
 
 NUMBER = r"[〇零一二三四五六七八九十百千万两0-9]+"
 ARTICLE = re.compile(r"^\s*第\s*(" + NUMBER + r")\s*条")
@@ -95,3 +97,84 @@ def structured_pdf_chunks(pages, parse_text):
                     line_start=source_lines[chunk.line_start - 1][0],
                     line_end=source_lines[chunk.line_end - 1][0]))
     return chunks
+
+
+def graphics_coverage(operations):
+    """Recognize a small rule-line whitelist; other painted vectors need review."""
+    paint = {b'f', b'F', b'f*', b'S', b's', b'B', b'B*', b'b', b'b*'}
+    path, stack, width, transformed, count = [], [], 1.0, False, 0
+    present, review = False, False
+    for arguments, operation in operations:
+        if operation == b'q':
+            stack.append((width, transformed))
+        elif operation == b'Q' and stack:
+            width, transformed = stack.pop()
+        elif operation == b'w':
+            width = float(arguments[0])
+        elif operation == b'cm':
+            # Translation preserves rule geometry. Scaling, shear and rotation
+            # cannot be safely classified without rendering the complete page.
+            transformed = transformed or tuple(float(v) for v in arguments[:4]) != (1.0, 0.0, 0.0, 1.0)
+        elif operation in {b'm', b'l', b're', b'c', b'v', b'y', b'h'}:
+            path.append((operation, [float(v) for v in arguments]))
+        elif operation == b'n':
+            path = []
+        elif operation in paint:
+            present, count = True, count + 1
+            rule = False
+            if not transformed and count <= 4:
+                if operation == b'S' and len(path) == 2 and [row[0] for row in path] == [b'm', b'l']:
+                    first, last = path[0][1], path[1][1]
+                    rule = abs(first[1] - last[1]) < 0.01 and 0 < width <= 3
+                elif len(path) == 1 and path[0][0] == b're':
+                    side_a, side_b = abs(path[0][1][2]), abs(path[0][1][3])
+                    short, long = min(side_a, side_b), max(side_a, side_b)
+                    rule = 0 < short <= 3 and long >= short * 20 and (
+                        operation in {b'f', b'F', b'f*'} or 0 < width <= 3)
+            review = review or not rule
+            path = []
+        elif operation in {b'Do', b'sh', b'INLINE IMAGE'}:
+            present, review = True, True
+    return present, review
+
+
+def legal_document(pages, structured, document):
+    """Keep article scopes while classifying margin/front/reference sources.
+
+    This adapter applies only to a new parse. Existing legal chunks and their
+    legacy name identities never pass through it on reads or repeat uploads.
+    """
+    from .document_structure import ParsedDocument, signature
+    manifest = document.manifest
+    extra_units = [u for u in manifest['units'] if u['content_role'] in {'front_matter', 'footer', 'reference'}]
+    extra_ids = {cid for u in extra_units for cid in u['chunk_ids']}
+    extras = [c for c in document.chunks if c.id in extra_ids]
+    excluded = {(c.page, line) for c in extras for line in range(c.line_start, c.line_end + 1)}
+    original = [text.replace('\r\n', '\n').replace('\r', '\n').splitlines() for text in pages]
+    filtered = []
+    for chunk in structured:
+        batch = []
+        def flush():
+            if batch:
+                text = '\n'.join(line for _, line in batch)
+                filtered.append(replace(chunk, id=str(uuid4()), text=text, line_start=batch[0][0],
+                    line_end=batch[-1][0], content_hash=sha256(text.encode()).hexdigest()))
+                batch.clear()
+        for line in range(chunk.line_start, chunk.line_end + 1):
+            if (chunk.page, line) in excluded:
+                flush()
+            else:
+                batch.append((line, original[chunk.page - 1][line - 1]))
+        flush()
+    groups = {}
+    for chunk in filtered:
+        groups.setdefault(chunk.section_path, []).append(chunk)
+    manifest['units'] = [{'key': 'legal:' + signature('/'.join(path)), 'parent_key': None,
+        'name': path[-1], 'number': '', 'occurrence': 1, 'kind': 'concept', 'content_role': 'instruction',
+        'chunk_ids': [c.id for c in group], 'body_signature': signature(''.join(c.text for c in group)),
+        'identity_signature': signature(''.join(c.text for c in group)), 'review_required': False}
+        for path, group in groups.items()] + extra_units
+    chunks = filtered + extras
+    for page in manifest['pages']:
+        page['unit_keys'] = [u['key'] for u in manifest['units'] if any(c.page == page['page'] and c.id in u['chunk_ids'] for c in chunks)]
+    return ParsedDocument(chunks, manifest)

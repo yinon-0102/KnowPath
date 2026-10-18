@@ -12,6 +12,7 @@ from sqlalchemy.exc import IntegrityError, OperationalError
 
 from knowpath_backend.learning.errors import DomainConflict, DomainNotFound
 from knowpath_backend.learning.knowledge.relations import structural_topics, apply_prerequisites
+from knowpath_backend.learning.spaces.scope import canonical, effective, expand_selection, mastered, prerequisite_conflicts
 from knowpath_backend.observability import bind_context, span, log_event
 
 logger = logging.getLogger(__name__)
@@ -30,6 +31,7 @@ class SpaceService:
         self.repository = repository
         self.materials = materials
         self.graphs = None
+        self.planning_states = lambda space_id: {}
 
     def _execute(self, operation, space_id, payload, key, change):
         with bind_context(operation=operation, resource_id=space_id), span(logger, 'command') as details:
@@ -103,6 +105,9 @@ class SpaceService:
                      "profile": {field: {"value": payload.get(field), "source": "explicit", "updated_at": timestamp}
                                  for field in ("goal", "weekly_minutes", "target_date")},
                      "created_at": timestamp, "updated_at": timestamp}
+            space.update(topic_ids=[t['id'] for t in self.bound_topics(space)
+                                    if t['id'] == canonical(t) and effective(t)],
+                         include_prerequisites=True, scope_mode='all')
             self.repository.put(space)
             return {**space, "state_version": 0, "state": {}, "active_session_id": None}
         return self._execute("space.create", None, payload, key, change)
@@ -158,6 +163,10 @@ class SpaceService:
                     node["graph_version"] = binding["graph_version"]
             else:
                 bound = topics_for_version(binding["material_id"], version)
+            slug_counts = {}
+            for topic in bound:
+                slug = ''.join(ch.lower() if ch.isalnum() else '_' for ch in topic['name']).strip('_')
+                slug_counts[slug] = slug_counts.get(slug, 0) + 1
             for topic in bound:
                 if topic.get("status") == "rejected":
                     continue
@@ -165,7 +174,7 @@ class SpaceService:
                 topic["learning_revision_id"] = binding.get("topic_revision_ids", {}).get(topic["id"])
                 topics[topic["id"]] = topic
                 slug = "".join(ch.lower() if ch.isalnum() else "_" for ch in topic["name"]).strip("_")
-                if slug and len(space["bindings"]) == 1:
+                if slug and len(space["bindings"]) == 1 and ('structure_key' not in topic or slug_counts[slug] == 1):
                     alias = f"topic_{slug}"
                     if alias not in topics:
                         alias_topic = copy.deepcopy(topic)
@@ -194,8 +203,18 @@ class SpaceService:
             excluded_canonical = {canonical(identifier) for identifier in excluded}
             if {canonical(identifier) for identifier in selected} & excluded_canonical:
                 raise DomainConflict("SCOPE_CONFLICT", "学习范围不能通过别名包含排除主题")
+            selected = expand_selection(selected, list(topics.values()))
+            excluded = expand_selection(excluded, list(topics.values()))
+            excluded_canonical = {canonical(identifier) for identifier in excluded}
+            if not selected or {canonical(identifier) for identifier in selected} & excluded_canonical:
+                raise DomainConflict('SCOPE_CONFLICT', '学习范围必须包含有效学习单元，且不能同时纳入和排除')
+            if payload.get('scope_mode') == 'all':
+                all_units = {canonical(t['id']) for t in topics.values() if effective(t)}
+                if excluded or {canonical(identifier) for identifier in selected} != all_units:
+                    raise DomainConflict('SCOPE_CONFLICT', '学习全部有效内容必须包含所有有效学习单元且没有排除项，请刷新或选择自选章节')
             chosen = {canonical(identifier) for identifier in selected}
-            prerequisites, recommendations = [], set()
+            states = self.planning_states(space_id)
+            prerequisites, additions, recommendations = [], [], set()
             pending = list(selected)
             while pending:
                 identifier = pending.pop(0)
@@ -205,15 +224,29 @@ class SpaceService:
                 for parent in topic.get("prerequisites", []):
                     if parent not in topics or canonical(parent) in excluded_canonical or canonical(parent) in chosen:
                         continue
+                    if mastered(topics[parent], states, list(topics.values())):
+                        continue
                     if payload.get("include_prerequisites", True):
+                        if not effective(topics[parent]):
+                            continue
                         selected.append(parent)
                         prerequisites.append(parent)
+                        additions.append({'topic_id': parent, 'required_by_topic_id': identifier,
+                                          'reason': '必要前置知识', 'source_refs': copy.deepcopy(topics[parent].get('source_refs', []))})
                         chosen.add(canonical(parent))
                         pending.append(parent)
                     else:
                         recommendations.add(parent)
             recommended = sorted(identifier for identifier in recommendations if canonical(identifier) not in chosen)
+            conflicts = prerequisite_conflicts([topics[i] for i in selected], list(topics.values()), states)
+            if conflicts:
+                names = '；'.join(f"{c['topic_name']} 需要 {c['prerequisite_name']}" for c in conflicts)
+                raise DomainConflict('SCOPE_PREREQUISITE_CONFLICT', '学习范围缺少必要前置知识：' + names + '。请加入前置知识，或移除依赖主题。',
+                                     {'conflicts': conflicts, 'adjustable_constraints': ['将前置知识加入范围', '移除依赖主题', '先完成有效的前置知识测评']})
             space["topic_ids"], space["excluded_topic_ids"] = selected, excluded
+            space['include_prerequisites'] = payload.get('include_prerequisites', True)
+            space['scope_mode'] = payload.get('scope_mode', 'custom')
+            space['prerequisite_additions'] = additions
             space["space_version"] += 1
             space["scope_version"] += 1
             if self.graphs is not None:
@@ -224,7 +257,10 @@ class SpaceService:
             space["updated_at"] = now()
             self.repository.put(space)
             return {"scope_version": space["scope_version"], "space_version": space["space_version"],
-                    "topic_ids": selected, "prerequisite_topic_ids": prerequisites, "recommended_topic_ids": recommended}
+                    "topic_ids": selected, "excluded_topic_ids": excluded,
+                    "include_prerequisites": space['include_prerequisites'], 'scope_mode': space['scope_mode'],
+                    'prerequisite_additions': additions,
+                    "prerequisite_topic_ids": prerequisites, "recommended_topic_ids": recommended}
         return self._execute("space.scope", space_id, payload, key, change)
 
     def update_profile(self, space_id, payload, key=None):

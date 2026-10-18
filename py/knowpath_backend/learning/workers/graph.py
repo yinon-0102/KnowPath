@@ -53,12 +53,16 @@ class GraphWorker:
         with self.repository.transaction():
             if peek["payload"].get("space_id"):
                 self.repository.get(peek["payload"]["space_id"])
-            self.graph._material(peek["payload"]["material_id"])
+            self.graph._lock_work(peek["payload"]["material_id"])
             revision = self.repository.get_record("graph_revisions", peek["aggregate_id"])
             event = self.repository.get_record("outbox", event_id)
             yield event, revision
 
     def _cancelled(self, event, revision):
+        if revision['status'] != 'draft':
+            event.update(status='cancelled', lease_token=None, lease_until=None)
+            self.repository.put_record('outbox', event)
+            return True
         run = self.graph.runs.get(revision["run_id"])
         if run["status"] == "cancelling":
             self.graph.runs.acknowledge_cancel(run["id"])
@@ -78,6 +82,9 @@ class GraphWorker:
 
     def claim(self, event_id):
         try:
+            peek = self.repository.get_record('outbox', event_id, lock=False)
+            if peek['event_type'] != 'graph.prepare' or peek['status'] not in {'pending', 'processing'}:
+                return None
             with self._locked(event_id) as (event, revision):
                 if event["event_type"] != "graph.prepare" or event["status"] not in {"pending", "processing"}:
                     return None
@@ -130,8 +137,11 @@ class GraphWorker:
                      available_at=None if terminal else (self.clock() + timedelta(seconds=min(300, 2 ** min(event["attempts"], 8)))).isoformat())
         self.repository.put_record("outbox", event)
         if terminal:
+            revision['status'] = 'failed'
+            self.repository.put_record('graph_revisions', revision)
             self.graph.runs.fail(revision["run_id"], {"code": error_code,
-                "message": "图谱版本已变化，请重新提交纠错" if error_code == "VERSION_CONFLICT" else "图谱或向量索引准备失败，可重新提交任务", "details": {}, "retryable": error_code != "VERSION_CONFLICT"})
+                "message": "图谱版本已变化，请重新提交纠错" if error_code == "VERSION_CONFLICT" else "图谱或向量索引准备失败，可重新提交任务",
+                "details": {'stage': 'preparing', 'retryable': error_code != 'VERSION_CONFLICT'}, "retryable": error_code != "VERSION_CONFLICT"})
             if event["payload"].get("correction_id"):
                 correction = self.repository.get_record("corrections", event["payload"]["correction_id"])
                 correction["status"] = "failed"

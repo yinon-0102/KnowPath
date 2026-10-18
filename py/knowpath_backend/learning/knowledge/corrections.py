@@ -48,8 +48,10 @@ class CorrectionService:
             field = 'nodes' if payload['kind'] == 'node' else 'relations'
             selected = None
             # Space -> sorted materials -> revisions is also the worker lock order.
-            for binding in sorted(space['bindings'], key=lambda b: b['material_id']):
+            bindings = sorted(space['bindings'], key=lambda b: b['material_id'])
+            for binding in bindings:
                 self.graph._material(binding['material_id'])
+            for binding in bindings:
                 if not binding.get('graph_revision_id'):
                     continue
                 revision = self.repository.get_record('graph_revisions', binding['graph_revision_id'])
@@ -96,6 +98,7 @@ class CorrectionService:
             difference['affected_topic_ids'] = sorted(affected)
             identifier, revision_id, timestamp = str(uuid4()), str(uuid4()), now()
             difference['correction_id'] = identifier
+            self.graph._invalidate(history, base=base['graph_version'])
             run = self.graph.runs.create('knowledge_publish')
             revision = {'id': revision_id, 'material_id': base['material_id'], 'material_version_id': base['material_version_id'],
                 'sequence': max(r['sequence'] for r in history)+1, 'base_graph_version': base['graph_version'],
@@ -120,6 +123,8 @@ class CorrectionService:
                 raise DomainConflict('CORRECTION_NOT_PENDING', '旧纠错缺少来源快照，请重新提交')
             self.graph._material(peek['material_id'])
             revision = self.repository.get_record('graph_revisions', peek['candidate_revision_id'])
+            if revision['status'] not in {'draft', 'pending_review', 'published'}:
+                raise DomainConflict('CORRECTION_NOT_PENDING', '纠错候选已失效，请重新提交')
             correction = self.repository.get_record('corrections', correction_id)
             if correction['confirmation']:
                 if correction['confirmation']['request'] != payload:

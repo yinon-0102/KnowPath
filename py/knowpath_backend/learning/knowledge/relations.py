@@ -24,6 +24,9 @@ def _ref(material_id, version, chunk):
 
 
 def structural_topics(material_id, version):
+    from .learning_units import has_learning_units, learning_units
+    if has_learning_units(version):
+        return learning_units(material_id, version)
     topics = {}
     for index, chunk in enumerate(version.chunks):
         names = chunk.section_path or (chunk.text.split(".", 1)[0][:80],)
@@ -48,7 +51,18 @@ def structural_topics(material_id, version):
 
 def extract_relations(material_id, version, nodes):
     by_id = {n["id"]: n for n in nodes}
-    by_name = {n["name"].casefold(): n for n in nodes}
+    grouped_names = {}
+    for node in nodes:
+        grouped_names.setdefault(node['name'].casefold(), []).append(node)
+    by_name = {name: rows[0] for name, rows in grouped_names.items() if len(rows) == 1}
+    from .learning_units import has_learning_units
+    structured = has_learning_units(version)
+    by_chunk = {}
+    if structured:
+        for node in nodes:
+            if node.get('is_learnable'):
+                for ref in node['source_refs']:
+                    by_chunk.setdefault(ref['chunk_id'], []).append(node)
     relations = {}
 
     def add(kind, source, target, refs, evidence, *, structural=False):
@@ -78,7 +92,9 @@ def extract_relations(material_id, version, nodes):
         (re.compile(r"^学习(.+?)需要先掌握(.+?)[。.]?$"), True),
     ]
     for chunk in version.chunks:
-        current = by_name.get(chunk.section_path[-1].casefold()) if chunk.section_path else None
+        owners = by_chunk.get(chunk.id, [])
+        current = (owners[0] if len(owners) == 1 else None) if structured else (
+            by_name.get(chunk.section_path[-1].casefold()) if chunk.section_path else None)
         if current is None:
             continue
         for line in chunk.text.splitlines():

@@ -37,6 +37,34 @@ def create_space(client, material_id, key="space", **extra):
     return client.post("/api/v1/learning-spaces", json={"name": "Python", "material_ids": [material_id], "goal": "Understand functions", "weekly_minutes": 180, **extra}, headers={"Idempotency-Key": key})
 
 
+def test_http_default_scope_and_explicit_mode_survive_restart_and_rejected_clear(workspace):
+    factory, material_id, topic_id = workspace
+    with ParsedUploadClient(factory()) as client:
+        original = create_space(client, material_id).json()
+        assert original['scope_mode'] == 'all'
+        assert original['topic_ids'] == [topic_id]
+        assert original['excluded_topic_ids'] == []
+        assert original['include_prerequisites'] is True
+        path = f"/api/v1/learning-spaces/{original['id']}"
+        payload = {'topic_ids': [topic_id], 'excluded_topic_ids': [], 'scope_mode': 'custom',
+                   'include_prerequisites': False, 'expected_version': 1}
+        response = client.post(path + '/scope', json=payload, headers={'Idempotency-Key': 'custom-scope'})
+        assert response.status_code == 200
+        saved = response.json()
+        assert saved['topic_ids'] == [topic_id]
+        assert saved['excluded_topic_ids'] == []
+        assert saved['include_prerequisites'] is False
+        assert saved['scope_mode'] == 'custom'
+        assert (saved['space_version'], saved['scope_version']) == (2, 1)
+    with ParsedUploadClient(factory()) as client:
+        restored = client.get(path).json()
+        assert restored['include_prerequisites'] is False
+        assert restored['scope_mode'] == 'custom'
+        assert restored['topic_ids'] == [topic_id]
+        assert client.post(path + '/scope', json={**payload, 'topic_ids': [], 'expected_version': 2}, headers={'Idempotency-Key': 'clear'}).status_code == 422
+        assert client.get(path).json() == restored
+
+
 def test_space_profile_scope_and_binding_survive_restart(workspace):
     factory, material_id, topic_id = workspace
     with ParsedUploadClient(factory()) as client:

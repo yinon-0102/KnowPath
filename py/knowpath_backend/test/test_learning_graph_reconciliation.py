@@ -10,13 +10,22 @@ from sqlalchemy import create_engine, delete, select
 from knowpath_backend.learning.api import create_app
 from knowpath_backend.learning.persistence.db import Base, IdempotencyRow, MaterialRow, MaterialVersionRow, SourceChunkRow, RunRow, OutboxEventRow
 from knowpath_backend.learning.errors import DomainConflict, DomainNotFound
-from knowpath_backend.learning.materials.service import InMemoryMaterialRepository, MaterialService
+from knowpath_backend.learning.materials.service import InMemoryMaterialRepository, MaterialService, MaterialParser
 from knowpath_backend.learning.persistence.material_repository import SqlAlchemyMaterialRepository
 from knowpath_backend.learning.state import LearningState
 
 
 @pytest.fixture(params=["memory", "sqlite", "mysql"])
 def graph_workspace(request, tmp_path):
+    yield from _graph_workspace(request, tmp_path)
+
+
+@pytest.fixture(params=["memory", "sqlite", "mysql"])
+def legacy_graph_workspace(request, tmp_path):
+    yield from _graph_workspace(request, tmp_path, legacy=True)
+
+
+def _graph_workspace(request, tmp_path, legacy=False):
     engine = None
     if request.param == "mysql":
         url = os.getenv("LEARNING_TEST_MYSQL_URL")
@@ -31,6 +40,13 @@ def graph_workspace(request, tmp_path):
     run_ids = set()
     def factory():
         state = LearningState(SqlAlchemyMaterialRepository(engine) if engine else memory)
+        if legacy:
+            class LegacyParser(MaterialParser):
+                VERSION = "knowpath_parser_v1"
+
+                def parse(self, content, filename):
+                    return self._parse_text(content.decode('utf-8'))
+            state.material_service.parser = LegacyParser()
         original = state.run_service.create
         def tracked(*args, **kwargs):
             run = original(*args, **kwargs)
@@ -142,8 +158,8 @@ def test_publish_rejects_unprepared_or_missing_candidate(graph_workspace):
     assert graph.diff(upload.material.id)["status"] == "draft"
 
 
-def test_diff_compares_against_exact_published_snapshot(graph_workspace):
-    factory, upload, label = graph_workspace
+def test_diff_compares_against_exact_published_snapshot(legacy_graph_workspace):
+    factory, upload, label = legacy_graph_workspace
     graph = factory().graph_service
     first = stage(factory, upload, label)
     # Seed the future worker/publication boundary; this is not production readiness.

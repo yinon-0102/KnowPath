@@ -9,14 +9,32 @@ class GraphQueryService:
     def __init__(self, graphs):
         self.graphs = graphs
 
-    def _snapshot(self, material_id, version_id=None):
+    def _snapshot(self, material_id, version_id=None, *, graph_revision_id=None, graph_version=None, legacy_snapshot=False):
         material = self.graphs._material(material_id)
+        if legacy_snapshot and (version_id is None or graph_version != 1 or graph_revision_id is not None):
+            raise DomainNotFound("legacy_graph_snapshot", version_id)
+        if version_id is not None:
+            version = self.graphs.materials.get_version(version_id)
+            if version is None or version.material_id != material_id:
+                raise DomainNotFound("material_version", version_id)
         history = self.graphs._history(material_id)
         published = [r for r in history if r["status"] in {"published", "superseded"} and r.get("publication")
-                     and (version_id is None or r["material_version_id"] == version_id)]
+                     and r["material_id"] == material_id
+                     and (version_id is None or r["material_version_id"] == version_id)
+                     and (graph_revision_id is None or r["id"] == graph_revision_id)
+                     and (graph_version is None or r["graph_version"] == graph_version)]
+        if legacy_snapshot:
+            published = []  # Legacy spaces bind the original version projection, even after publication.
+        if not published and not legacy_snapshot and (graph_revision_id is not None or graph_version is not None):
+            raise DomainNotFound("graph_revision", graph_revision_id if graph_revision_id is not None else graph_version)
         if published:
             revision = max(published, key=lambda r: r["graph_version"])
+            version = self.graphs.materials.get_version(revision["material_version_id"])
+            if version is None or version.material_id != material_id:
+                raise DomainNotFound("material_version", revision["material_version_id"])
             snapshot = deepcopy(revision["publication"]["snapshot"])
+            if snapshot.get("material_id") != material_id or snapshot.get("material_version_id") != version.id:
+                raise DomainNotFound("graph_revision", revision["id"])
             metadata = {"revision_id": revision["id"], "graph_version": revision["graph_version"],
                         "material_version_id": revision["material_version_id"],
                         "valid_from": revision["publication"].get("published_at"),
@@ -28,22 +46,26 @@ class GraphQueryService:
             if version is None or version.material_id != material_id:
                 raise DomainNotFound("material_version", version_id)
             snapshot = extract_snapshot(material_id, version)
-            metadata = {"revision_id": None, "graph_version": 0, "material_version_id": version.id,
+            metadata = {"revision_id": None, "graph_version": 1 if legacy_snapshot else 0, "material_version_id": version.id,
                         "valid_from": None, "valid_to": None, "recorded_at": version.created_at.isoformat()}
         apply_prerequisites(snapshot)
         for record in snapshot["nodes"] + snapshot["relations"]:
             record.update(metadata)
         return snapshot, metadata
 
-    def material_topics(self, material_id, version_id=None, *, include_inactive=False, depth=None):
-        snapshot, metadata = self._snapshot(material_id, version_id)
+    def material_topics(self, material_id, version_id=None, *, graph_revision_id=None, graph_version=None, legacy_snapshot=False,
+                        include_inactive=False, depth=None):
+        snapshot, metadata = self._snapshot(material_id, version_id, graph_revision_id=graph_revision_id,
+                                            graph_version=graph_version, legacy_snapshot=legacy_snapshot)
         nodes = [node for node in snapshot["nodes"] if (include_inactive or node.get("status") == "active")
                  and (depth is None or node.get("level", 1) <= depth)]
         return {"material_id": material_id, "version_id": metadata["material_version_id"],
-                "graph_version": metadata["graph_version"], "items": nodes}
+                "graph_version": metadata["graph_version"], "graph_revision_id": metadata["revision_id"], "items": nodes}
 
-    def material_graph(self, material_id, version_id=None, *, include_inactive=False, include_sources=True):
-        snapshot, metadata = self._snapshot(material_id, version_id)
+    def material_graph(self, material_id, version_id=None, *, graph_revision_id=None, graph_version=None, legacy_snapshot=False,
+                       include_inactive=False, include_sources=True):
+        snapshot, metadata = self._snapshot(material_id, version_id, graph_revision_id=graph_revision_id,
+                                            graph_version=graph_version, legacy_snapshot=legacy_snapshot)
         permitted = {node["id"] for node in snapshot["nodes"]
                      if include_inactive or node.get("status") == "active"}
         nodes = [node for node in snapshot["nodes"] if node["id"] in permitted]
@@ -51,7 +73,7 @@ class GraphQueryService:
                  if edge.get("from_id") in permitted and edge.get("to_id") in permitted
                  and edge.get("status") not in {"rejected", "superseded", "inactive"}]
         result = {"material_id": material_id, "version_id": metadata["material_version_id"],
-                  "graph_version": metadata["graph_version"], "nodes": nodes, "edges": edges}
+                  "graph_version": metadata["graph_version"], "graph_revision_id": metadata["revision_id"], "nodes": nodes, "edges": edges}
         if include_sources:
             refs = {ref["chunk_id"] for item in nodes + edges for ref in item.get("source_refs", [])}
             result["sources"] = [source for source in snapshot["sources"] if source["id"] in refs]
