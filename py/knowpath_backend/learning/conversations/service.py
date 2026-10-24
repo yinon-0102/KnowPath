@@ -213,7 +213,10 @@ class MessageService:
             raise DomainConflict('BOUND_VERSION_UNAVAILABLE', '绑定原文已删除或不可用')
         topics = self.spaces.bound_topics(space)
         aliases = {t['id']: t.get('canonical_topic_id', t['id']) for t in topics}
-        selected = {aliases.get(t, t) for t in space['topic_ids']}
+        # Automatic-all stores the current effective topic IDs too. That list
+        # is a projection, not an explicit whitelist of original chunks.
+        selected = (set() if space.get('scope_mode') == 'all'
+                    else {aliases.get(t, t) for t in space['topic_ids']})
         excluded = {aliases.get(t, t) for t in space['excluded_topic_ids']}
         allowed, denied = {}, set()
         binding = next(b for b in space['bindings'] if b['material_id'] == reading['material_id'])

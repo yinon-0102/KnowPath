@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "description": "Synthetic Web wire baseline; field presence and event order, no user content.",
+  "send_required": ["run_id", "session_id", "status"],
+  "completed_required": ["message_id", "session_id", "text", "citations", "request_scope", "answer_mode", "supplement_explanation"],
+  "citation_required": ["material_id", "material_version_id", "chunk_id"],
+  "history_required": ["id", "sequence", "message", "response", "status", "run_id", "created_at", "reading_context", "lesson_id"],
+  "event_order": ["message.route", "message.delta", "message.completed", "run.completed"],
+  "answer_modes": ["auto", "material", "general"],
+  "entrances": ["conversation", "reading", "lesson"],
+  "synthetic_tool_call": {"id": "call_definition", "type": "function", "function": {"name": "definition", "arguments": "{\"topic\": \"functions\"}"}},
+  "synthetic_tool_result": {"role": "tool", "tool_call_id": "call_definition", "content": "Functions group reusable behavior."}
+}
