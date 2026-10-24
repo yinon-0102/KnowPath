@@ -2,7 +2,7 @@
 from pathlib import Path
 from typing import Literal, Optional
 
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, field_validator
 
 
 ColdBackendType = Literal["none", "jsonl", "sqlite"]
@@ -21,6 +21,11 @@ class MemoryConfig(BaseModel):
 
     阈值集中在这里，方便整体调参；不同 Agent 可以持有不同的 config。
     """
+
+    checkpoint_max_bytes: int = Field(default=1048576, gt=0)
+    checkpoint_max_buffer_entries: int = Field(default=128, gt=0)
+    summary_max_dependencies: int = Field(default=512, gt=0)
+    source_metadata_max_bytes: int = Field(default=65536, gt=0)
 
     # ── 容量上限 ────────────────────────────────────────────
     l1_max_tokens: int = 8000      # 工作记忆 token 预算(放得下典型对话活跃工作集,减少抖动)

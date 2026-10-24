@@ -19,19 +19,25 @@ class SemanticIndex(MemoryTier):
     name = "L5"
 
     def __init__(self, backend: Optional[VectorBackend] = None):
+        self._hot_items = {}
         self.backend = backend if backend is not None else InMemoryVectorBackend()
 
     def add(self, item: MemoryItem) -> None:
         self.backend.add(item)
 
     def get(self, item_id: str) -> Optional[MemoryItem]:
-        return self.backend.get(item_id)
+        return self._hot_items.get(item_id) or self.backend.get(item_id)
 
     def items(self) -> List[MemoryItem]:
-        return self.backend.items()
+        return [self._hot_items.get(item.id, item) for item in self.backend.items()]
 
     def remove(self, item_id: str) -> Optional[MemoryItem]:
+        self._hot_items.pop(item_id, None)
         return self.backend.remove(item_id)
 
     def search(self, query: str, k: int = 5) -> List[Tuple[MemoryItem, float]]:
-        return self.backend.search(query, k=k)
+        return [(self._hot_items.get(item.id, item), score) for item, score in self.backend.search(query, k=k)]
+
+    def bind_hot_items(self, items):
+        """Overlay validated session objects without writes or embedding calls."""
+        self._hot_items = {item.id: item for item in items}

@@ -18,7 +18,8 @@ class WorkingMemory(MemoryTier):
 
     name = "L1"
 
-    def __init__(self, config: MemoryConfig):
+    def __init__(self, config: MemoryConfig, *, whole_turns: bool = False):
+        self.whole_turns = whole_turns
         self.config = config
         self._items: List[MemoryItem] = []
 
@@ -45,6 +46,21 @@ class WorkingMemory(MemoryTier):
 
     def evict(self) -> List[MemoryItem]:
         """超 budget 时驱逐：跳过 pinned 和最近 N 条。"""
+        if self.whole_turns:
+            groups = self.turn_groups()
+            complete = [group for group in groups if complete_turn(group) is not None]
+            recent = complete[-self.config.l1_recent_turns:] if self.config.l1_recent_turns else []
+            protected = {turn_key(group[0]) for group in recent}
+            evicted = []
+            for group in groups:
+                if self.total_tokens() <= self.config.l1_max_tokens:
+                    break
+                if turn_key(group[0]) in protected or any(item.pinned for item in group):
+                    continue
+                for item in group:
+                    self.remove(item.id)
+                    evicted.append(item)
+            return evicted
         evicted: List[MemoryItem] = []
         budget = self.config.l1_max_tokens
         recent_n = self.config.l1_recent_turns
@@ -65,3 +81,44 @@ class WorkingMemory(MemoryTier):
             protected_start -= 1  # 列表缩短，保护区起点跟着前移
 
         return evicted
+
+    def turn_groups(self):
+        return group_turns(self._items, infer_legacy=not self.whole_turns)
+
+
+def group_turns(items, *, infer_legacy=True):
+    """Stable first-seen turn order. Legacy untagged adjacent pairs stay compatible."""
+    groups = []
+    tagged = {}
+    for item in items:
+        key = turn_key(item)
+        if key is not None:
+            if key not in tagged:
+                tagged[key] = []
+                groups.append(tagged[key])
+            tagged[key].append(item)
+        elif infer_legacy and groups and not turn_key(groups[-1][0]) and item.role == 'assistant' and groups[-1][-1].role == 'user':
+            groups[-1].append(item)
+        else:
+            groups.append([item])
+    return groups
+
+
+def turn_key(item):
+    """Only an explicit stable tag establishes Web turn identity."""
+    legacy_tag = item.metadata.get('turn_id')
+    if item.turn_id is not None and legacy_tag is not None and item.turn_id != legacy_tag:
+        return None
+    tag = item.turn_id if item.turn_id is not None else legacy_tag
+    return tag if type(tag) is str and tag else None
+
+
+def complete_turn(group):
+    """One active user and one active assistant with the same explicit turn ID."""
+    if (len(group) != 2 or {item.role for item in group} != {'user', 'assistant'}
+            or len({item.id for item in group}) != 2 or any(not item.is_active for item in group)):
+        return None
+    key = turn_key(group[0])
+    if key is None or any(turn_key(item) != key for item in group):
+        return None
+    return sorted(group, key=lambda item: item.role == 'assistant')

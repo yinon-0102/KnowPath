@@ -7,6 +7,8 @@
 - tick 调度：同步 / 异步 / 关 + 节流
 """
 import threading
+from copy import deepcopy
+from contextlib import contextmanager
 from concurrent.futures import Future, ThreadPoolExecutor
 from typing import Callable, Dict, List, Optional, Sequence, Tuple, Union
 
@@ -57,7 +59,7 @@ from knowpath_backend.memory.summary import (
     SummaryMemory,
     SummaryReconciler,
 )
-from knowpath_backend.memory.working import WorkingMemory
+from knowpath_backend.memory.working import WorkingMemory, group_turns, complete_turn, turn_key
 
 
 class MemoryManager:
@@ -82,11 +84,25 @@ class MemoryManager:
         conflict_detector: Optional[ConflictDetector] = None,
         llm=None,
         card_store=None,
+        context_policy=None,
+        whole_turns: Optional[bool] = None,
+        provenance: Optional[bool] = None,
     ):
+        if getattr(context_policy, 'whole_turns', False) and whole_turns is False:
+            raise ValueError('Web policy requires complete whole turns')
+        if getattr(context_policy, 'provenance', False) and provenance is False:
+            raise ValueError('Web policy requires bounded provenance')
+        if whole_turns is None:
+            whole_turns = bool(getattr(context_policy, "whole_turns", False))
+        self.provenance = bool(getattr(context_policy, "provenance", False)) if provenance is None else provenance
+        self.context_policy = context_policy
+        self._checkpoint_identity = {}
         self.config = config or MemoryConfig()
+        if getattr(context_policy, 'whole_turns', False) and self.config.tick_mode == 'async':
+            raise ValueError('Web context policy does not permit async tick')
         self.embedding = coerce_embedding(embedding)
 
-        self.working = WorkingMemory(self.config)
+        self.working = WorkingMemory(self.config, whole_turns=whole_turns)
         self.cold = ColdStorage(cold_backend or self._build_cold_backend())
         self.semantic = SemanticIndex(
             vector_backend or self._build_vector_backend()
@@ -99,6 +115,8 @@ class MemoryManager:
             summarizer=summarizer,
             max_tokens=self.config.l2_max_tokens,
             reconciler=reconciler,
+            max_dependencies=self.config.summary_max_dependencies,
+            track_provenance=self.provenance,
         )
         # L0 跨会话核心记忆
         self.playbook = card_store if card_store is not None else PlaybookStore(self.config.playbook_path())
@@ -148,6 +166,7 @@ class MemoryManager:
         # 用 RLock(可重入):tick 内部可能调 _cascade_evict_from_l1,
         # 后者如果再次需要锁不会自死锁
         self._lock = threading.RLock()
+        self._dispatch_lock = threading.RLock()
         self._turn_counter = 0
         self._last_reflect_turn = 0       # 上次 L2 反思发生的轮次
         self._last_reconcile_turn = 0     # 上次 KG 冷回路发生的轮次
@@ -170,6 +189,75 @@ class MemoryManager:
             dedup=self.config.context_dedup,
         )
         self._last_budget_report = None
+
+    @contextmanager
+    def _snapshot_boundary(self):
+        from knowpath_backend.memory.checkpoint import CheckpointBusy
+        # Dispatch protects future publication and counters. Check busy before
+        # taking the worker lock: waiting on a future while holding it deadlocks.
+        with self._dispatch_lock:
+            if self._pending_tick is not None and not self._pending_tick.done():
+                raise CheckpointBusy('Cannot snapshot or restore while tick is in flight')
+            if not self._lock.acquire(blocking=False):
+                raise CheckpointBusy('Memory state is busy')
+            try:
+                yield
+            finally:
+                self._lock.release()
+
+    def export_checkpoint(self, **identity):
+        from knowpath_backend.memory.checkpoint import export_state, parse_checkpoint
+        from knowpath_backend.memory.contracts import MemoryCheckpoint
+        with self._snapshot_boundary():
+            cp = MemoryCheckpoint(**{**self._checkpoint_identity, **identity}, state=export_state(self))
+            parse_checkpoint(cp, self.config)
+            return cp
+
+    def restore_checkpoint(self, checkpoint):
+        from knowpath_backend.memory.checkpoint import InvalidCheckpoint, parse_checkpoint
+        cp, items, summary, buffer, entries = parse_checkpoint(checkpoint, self.config)
+        if getattr(self.context_policy, 'whole_turns', False) and not cp.state['whole_turns']:
+            raise InvalidCheckpoint('Checkpoint cannot disable whole-turn Web policy')
+        with self._snapshot_boundary():
+            # Validate every hot object against its peers and the qualified L5
+            # identity before installing anything. L1 has metadata/pin priority;
+            # monotonic heat and predecessor IDs merge across the other copies.
+            from knowpath_backend.memory.dependencies import source_identity
+            canonical = {}
+            hot = [*items, *buffer, *([summary] if summary is not None else [])]
+            for item in hot:
+                peers = [canonical[item.id]] if item.id in canonical else []
+                indexed = self.semantic.backend.get(item.id)
+                if indexed is not None:
+                    peers.append(indexed)
+                for peer in peers:
+                    if source_identity(peer) != source_identity(item):
+                        raise InvalidCheckpoint('Checkpoint and indexed/hot item identities disagree')
+                    if peer.superseded_by != item.superseded_by:
+                        raise InvalidCheckpoint('Checkpoint lifecycle copies disagree')
+                if item.id not in canonical:
+                    canonical[item.id] = item
+                live = canonical[item.id]
+                for peer in [item, *peers]:
+                    live.access_count = max(live.access_count, peer.access_count)
+                    live.last_access = max(live.last_access, peer.last_access)
+                    live.prior_score = max(live.prior_score, peer.prior_score)
+                    live.supersedes = list(dict.fromkeys([*live.supersedes, *peer.supersedes]))
+            items = [canonical[item.id] for item in items]
+            buffer = [canonical[item.id] for item in buffer]
+            summary = canonical[summary.id] if summary is not None else None
+            working = WorkingMemory(self.config, whole_turns=cp.state['whole_turns'])
+            for item in items:
+                working.add(item)
+            self.semantic.bind_hot_items(canonical.values())
+            self.working = working
+            self.tiers[working.name] = working
+            self.summary.restore_state(summary, buffer)
+            self.recall_buffer.restore_entries(entries)
+            self._turn_counter = cp.state['counters']['turn']
+            self._last_reflect_turn = cp.state['counters']['reflect']
+            self._last_reconcile_turn = cp.state['counters']['reconcile']
+            self._checkpoint_identity = {k: v for k, v in cp.to_dict().items() if k not in ('state', 'schema_version')}
 
     # ── 后端工厂（按 config 字符串选择） ────────────────────
     def _build_cold_backend(self) -> Optional[ColdBackend]:
@@ -250,6 +338,7 @@ class MemoryManager:
         source_ref: Optional[str] = None,
         confidence: float = 1.0,
         scope: str = "project",
+        metadata: Optional[Dict] = None,
     ) -> PlaybookCard:
         """显式添加一张 L0 卡片(/remember 命令的底层)。
 
@@ -263,12 +352,20 @@ class MemoryManager:
             source_ref=source_ref,
             confidence=confidence,
             user_pinned=(source == L0Source.USER_EXPLICIT),
+            metadata=self._card_source_metadata(metadata or {}),
         )
         if scope == "user" and self.user_layer is not None:
             self.user_layer.add_card(card)
         else:
             self.playbook.add(card)
         return card
+
+    def _card_source_metadata(self, metadata, *, source_id=None):
+        if not self.provenance:
+            return deepcopy(metadata)
+        from knowpath_backend.memory.dependencies import canonical_metadata
+        return canonical_metadata(metadata, max_dependencies=self.config.summary_max_dependencies,
+                                  max_bytes=self.config.source_metadata_max_bytes, source_id=source_id)
 
     def forget(self, card_id: str) -> bool:
         """显式忘记一张 L0 卡片(/forget 命令)。返回是否成功。"""
@@ -303,12 +400,14 @@ class MemoryManager:
         pinned: bool = False,
         metadata: Optional[Dict] = None,
         task_turn: bool = False,
+        turn_id: Optional[str] = None,
     ) -> MemoryItem:
         item = MemoryItem(
             content=content,
             role=role,
             pinned=pinned,
-            metadata=metadata or {},
+            metadata=deepcopy(metadata or {}),
+            turn_id=turn_id or (metadata or {}).get("turn_id"),
         )
         # ★ 种子分: 启发式打分,关键消息一进 L1 就被 pin,不依赖 LLM
         item.prior_score = evaluate_prior_score(content, role, task_turn=task_turn)
@@ -319,7 +418,11 @@ class MemoryManager:
         with self._lock:
             self.working.add(item)
             self.semantic.add(item)
-            self._cascade_evict_from_l1()
+            # A tagged Web turn is staged until both members exist. Capacity
+            # eviction then processes the completed turn without guessing a pair.
+            matching = [it for it in self.working.items() if turn_key(it) == turn_key(item)]
+            if not self.working.whole_turns or turn_key(item) is None or complete_turn(matching) is not None:
+                self._cascade_evict_from_l1()
             # 检测冲突 —— 用新写入项去查找它取代了哪些旧项
             # (副作用: KG 反哺可能提升 item.prior_score,L0 旧卡可能被 negate)
             if self.conflict_detector is not None:
@@ -352,6 +455,7 @@ class MemoryManager:
             source=L0Source.SEED_PROMOTED,
             source_ref=item.id,
             confidence=min(1.0, 0.7 + 0.3 * item.prior_score),
+            metadata=self._card_source_metadata(item.metadata, source_id=item.id),
         )
         self.playbook.add(card)
 
@@ -398,6 +502,7 @@ class MemoryManager:
                 source=L0Source.L1_GRADUATED,
                 source_ref=item.id,
                 confidence=0.8,
+                metadata=self._card_source_metadata(item.metadata, source_id=item.id),
             )
             self.playbook.add(card)
             active_contents.add(item.content)
@@ -450,20 +555,21 @@ class MemoryManager:
             f"状态变更: 旧信息「{old_joined}」已被新信息「{new_item.content}」取代。"
             "请更新摘要 —— 稳定事实保留,当前状态以新信息为准。"
         )
-        self.summary.reconcile(signal)
+        self.summary.reconcile(signal, sources=[new_item])
 
     def _reflect_on_summary(self) -> None:
         """L2 定期反思: 对照最近对话主动复查摘要,修正过期/矛盾内容。"""
         if self.summary.current_summary() is None:
             return
-        recent = [it.content for it in self.working.items()[-5:] if it.is_active]
+        recent_items = [it for it in self.working.items()[-5:] if it.is_active]
+        recent = [it.content for it in recent_items]
         if not recent:
             return
         signal = (
             "定期复查: 对照下面的最近对话,修正摘要中已过期或自相矛盾的内容,"
             "稳定事实保留。最近对话:\n" + "\n".join(f"- {c}" for c in recent)
         )
-        self.summary.reconcile(signal)
+        self.summary.reconcile(signal, sources=recent_items)
 
     def _negate_l0_cards_for(self, item_id: str) -> None:
         """某条 memory item 被 supersede 时,联动 negate 它产生的 L0 卡片。
@@ -506,12 +612,12 @@ class MemoryManager:
         segs: List[ContextSegment] = []
         seq = 0
 
-        def add(source, role, content, *, priority, floor, order, item_id=None):
+        def add(source, role, content, *, priority, floor, order, item_id=None, metadata=None, group_id=None):
             nonlocal seq
             segs.append(ContextSegment(
                 source=source, role=role, content=content, priority=priority,
                 tokens=self._context_engine.count_tokens(content),
-                floor=floor, order=order, seq=seq, item_id=item_id,
+                floor=floor, order=order, seq=seq, item_id=item_id, metadata=deepcopy(metadata or {}), group_id=group_id,
             ))
             seq += 1
 
@@ -527,15 +633,15 @@ class MemoryManager:
             line = self._format_l0_line(card)
             if card.is_hard_constraint():
                 add("l0-core", "system", line, priority=1.0, floor=True,
-                    order=1, item_id=card.id)
+                    order=1, item_id=card.id, metadata=card.metadata)
                 card.refresh(); self.playbook.update(card)
             elif effective >= 0.5:
                 add("l0-core", "system", line, priority=min(1.0, effective),
-                    floor=False, order=1, item_id=card.id)
+                    floor=False, order=1, item_id=card.id, metadata=card.metadata)
                 card.refresh(); self.playbook.update(card)
             elif effective >= 0.2:
                 add("l0-bg", "system", line, priority=min(1.0, effective * 0.5),
-                    floor=False, order=4, item_id=card.id)
+                    floor=False, order=4, item_id=card.id, metadata=card.metadata)
                 card.refresh(boost=0.005); self.playbook.update(card)
             # else 省略
 
@@ -548,7 +654,7 @@ class MemoryManager:
                 "(身份/偏好/约束/当前状态)以上文 L0 核心信息与 KG 事实为准;"
                 "本段与之冲突时一律以 L0/KG 为准。\n\n" + summary.content
             )
-            add("l2", "system", content, priority=0.45, floor=False, order=2)
+            add("l2", "system", content, priority=0.45, floor=False, order=2, metadata=summary.metadata)
 
         # 4) KG 事实(逐条成段,便于按条去重/计预算)
         if effective_query:
@@ -570,17 +676,34 @@ class MemoryManager:
                 preview = item.content[:120]
                 add("recall", "system", f"- [{item.role}] {preview}",
                     priority=float(entry.hit_score), floor=False, order=5,
-                    item_id=entry.item_id)
+                    item_id=entry.item_id, metadata=item.metadata)
 
         # 6) L1 最近对话(最近 l1_recent_turns 轮保底)
         active = [it for it in self.working.items() if it.is_active]
-        recent_cut = max(0, len(active) - self.config.l1_recent_turns)
-        for idx, it in enumerate(active):
-            md = it.to_message_dict()
-            is_recent = idx >= recent_cut
-            add("l1", md["role"], md["content"],
-                priority=0.5 if is_recent else 0.2,
-                floor=is_recent, order=6, item_id=it.id)
+        groups = group_turns(active, infer_legacy=False) if self.working.whole_turns else [[item] for item in active]
+        complete = [group for group in groups if complete_turn(group) is not None] if self.working.whole_turns else groups
+        recent = complete[-self.config.l1_recent_turns:] if self.config.l1_recent_turns else []
+        recent_ids = {group[0].id for group in recent}
+        for group in groups:
+            if self.working.whole_turns:
+                validated = complete_turn(group)
+                if validated is None:
+                    # Legacy control-role history stays quoted, outside recent
+                    # dialogue. Untagged or incomplete Q/A is never guessed.
+                    for it in group:
+                        if turn_key(it) is None and it.role == 'system':
+                            add("l1", it.role, it.content, priority=0.2, floor=False,
+                                order=6, item_id=it.id, metadata=it.metadata)
+                    continue
+                is_recent = group[0].id in recent_ids
+                group = validated
+            else:
+                is_recent = group[0].id in recent_ids
+            group_id = ('l1:' + turn_key(group[0])) if self.working.whole_turns else None
+            for it in group:
+                add("l1", it.role, it.content,
+                    priority=0.5 if is_recent else 0.2,
+                    floor=is_recent, order=6, item_id=it.id, metadata=it.metadata, group_id=group_id)
 
         return segs
 
@@ -610,6 +733,8 @@ class MemoryManager:
         effective_query = query or kg_query
         segments = self._gather_segments(system_prompt, effective_query,
                                          passive_recall_k)
+        if self.context_policy is not None:
+            segments = self.context_policy(segments)
         result = self._context_engine.build(
             segments, self.config.context_budget_tokens)
         self._last_budget_report = result.report
@@ -708,11 +833,22 @@ class MemoryManager:
             all_items.sort(key=lambda x: x.created_at)
             existing_ids = {it.id for it in self.working.items()}
             loaded = 0
-            for item in all_items[-n:]:
-                if item.id in existing_ids or not item.is_active:
+            if n <= 0:
+                return 0
+            if self.working.whole_turns:
+                groups = [validated for group in group_turns(all_items, infer_legacy=False)
+                          if (validated := complete_turn(group)) is not None]
+            else:
+                groups = [[it] for it in all_items]
+            for group in groups[-n:]:
+                if any(not it.is_active for it in group):
                     continue
-                self.working.add(item)
-                loaded += 1
+                for item in group:
+                    if item.id in existing_ids:
+                        continue
+                    self.working.add(item)
+                    existing_ids.add(item.id)
+                    loaded += 1
             return loaded
 
     def export_kg_graph(self, format: str = "mermaid", include_inactive: bool = True) -> str:
@@ -821,29 +957,30 @@ class MemoryManager:
         - "submitted": 异步提交了,本次不返回结果
         - promoted/demoted/recalled: 同步执行的结果
         """
-        self._turn_counter += 1
-        cfg = self.config
+        with self._dispatch_lock:
+            self._turn_counter += 1
+            cfg = self.config
 
-        if cfg.tick_mode == "off":
-            return {"skipped": "off"}
+            if cfg.tick_mode == "off":
+                return {"skipped": "off"}
 
-        # 节流:不到 N 轮直接返回
-        if self._turn_counter % cfg.tick_every_n_turns != 0:
-            return {"skipped": "throttled"}
+            # 节流:不到 N 轮直接返回
+            if self._turn_counter % cfg.tick_every_n_turns != 0:
+                return {"skipped": "throttled"}
 
-        if cfg.tick_mode == "sync":
-            return self._tick_locked()
+            if cfg.tick_mode == "sync":
+                return self._tick_locked()
 
-        # async 模式 —— 提交到后台
-        if self._pending_tick is not None and not self._pending_tick.done():
-            # 上次的还在跑,跳过这次(避免堆积)
-            return {"skipped": "in_flight"}
+            # async 模式 —— 提交到后台
+            if self._pending_tick is not None and not self._pending_tick.done():
+                # 上次的还在跑,跳过这次(避免堆积)
+                return {"skipped": "in_flight"}
 
-        if self._executor is None:  # 防御性兜底
-            return self._tick_locked()
+            if self._executor is None:  # 防御性兜底
+                return self._tick_locked()
 
-        self._pending_tick = self._executor.submit(self._tick_safe)
-        return {"submitted": True}
+            self._pending_tick = self._executor.submit(self._tick_safe)
+            return {"submitted": True}
 
     def _tick_safe(self) -> Dict[str, List[str]]:
         """后台线程的入口 —— 捕获异常防止 Future 静默吞掉错误。"""
@@ -865,6 +1002,7 @@ class MemoryManager:
         recalled: List[str] = []
 
         cfg = self.config
+        self.recall_buffer.evict_expired(self._turn_counter)
         kw = dict(
             decay_tau_days=cfg.decay_tau_days,
             w_access=cfg.w_access,
@@ -898,9 +1036,8 @@ class MemoryManager:
                 score >= cfg.promote_threshold
                 and item.access_count >= cfg.promote_min_hits
             ):
-                item.pinned = True
-                self.working.add(item)
-                recalled.append(item.id)
+                for restored in self._load_recalled_turn(item):
+                    recalled.append(restored.id)
 
         # L3 → L1: 反复命中的检索项晋升回现场(高阈值)
         l3_promoted = self._maybe_promote_from_l3()
@@ -962,11 +1099,35 @@ class MemoryManager:
             if item is None or not item.is_active or item.id in l1_ids:
                 self.recall_buffer.remove(entry.item_id)
                 continue
-            item.pinned = True
-            self.working.add(item)
+            restored = self._load_recalled_turn(item)
+            if not restored:
+                continue
+            for member in restored:
+                self.recall_buffer.remove(member.id)
             self.recall_buffer.remove(entry.item_id)
             promoted.append(item.id)
         return promoted
+
+    def _load_recalled_turn(self, item):
+        members = [item]
+        if self.working.whole_turns:
+            turn_id = turn_key(item)
+            if not turn_id:
+                return []
+            members = [it for it in self.semantic.items()
+                       if turn_key(it) == turn_id]
+            members = complete_turn(members)
+            if members is None:
+                return []
+        existing = {it.id for it in self.working.items()}
+        added = []
+        for member in members:
+            if member.id not in existing:
+                member.pinned = True
+                self.working.add(member)
+                existing.add(member.id)
+                added.append(member)
+        return added
 
     # ── 异步 tick 的辅助 API ───────────────────────────────
     def wait_for_tick(self, timeout: Optional[float] = None) -> Optional[Dict]:
@@ -1004,7 +1165,7 @@ class MemoryManager:
 
     # ── 工具方法 ───────────────────────────────────────────
     def clear(self) -> None:
-        self.working = WorkingMemory(self.config)
+        self.working = WorkingMemory(self.config, whole_turns=self.working.whole_turns)
         self.tiers[self.working.name] = self.working
         self.summary.clear()
         self.recall_buffer = RecallBuffer(self.config)

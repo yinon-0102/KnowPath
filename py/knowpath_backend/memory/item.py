@@ -28,6 +28,7 @@ class MemoryItem(BaseModel):
     id: str = Field(default_factory=_new_id)
     content: str
     role: MessageRole = "user"
+    turn_id: Optional[str] = None  # Web: authoritative LearningMessage.id
 
     created_at: datetime = Field(default_factory=datetime.now)
     last_access: datetime = Field(default_factory=datetime.now)

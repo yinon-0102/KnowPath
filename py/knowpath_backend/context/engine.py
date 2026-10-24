@@ -6,7 +6,7 @@
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Callable, Dict, List, Optional, Tuple
 
 
@@ -37,6 +37,8 @@ class ContextSegment:
     order: int                      # 权威性序号(见 ORDER)
     seq: int = 0                    # gather 顺序,稳定排序 tiebreaker
     item_id: Optional[str] = None   # 关联 MemoryItem id(用于跨层去重)
+    metadata: dict = field(default_factory=dict)
+    group_id: Optional[str] = None
 
 
 @dataclass
@@ -227,13 +229,50 @@ class ContextEngine:
         return messages
 
     def build(self, segments: List[ContextSegment], budget: int) -> BuildResult:
-        segs = self._dedup(segments)
+        # A marked turn is an indivisible selection unit. Content dedup must not
+        # remove one user prompt while retaining its assistant reply.
+        grouped = {}
+        standalone = []
+        for segment in segments:
+            if segment.group_id is None:
+                standalone.append(segment)
+            else:
+                grouped.setdefault(segment.group_id, []).append(segment)
+        accepted = []
+        seen_ids = set()
+        for group in sorted(grouped.values(), key=lambda g: (min(s.order for s in g), min(s.seq for s in g))):
+            if self.dedup:
+                # Repeated gathering of one turn may repeat its member records.
+                unique = []
+                fingerprints = set()
+                for segment in group:
+                    fingerprint = (segment.item_id, segment.role, self._normalize(segment.content))
+                    if fingerprint not in fingerprints:
+                        unique.append(segment)
+                        fingerprints.add(fingerprint)
+                group = unique
+                ids = {s.item_id for s in group if s.item_id}
+                if ids & seen_ids:
+                    continue
+                seen_ids.update(ids)
+            accepted.append(group)
+        if self.dedup:
+            # Full L1 turns take precedence over individual cross-layer copies.
+            standalone = [s for s in standalone if not s.item_id or s.item_id not in seen_ids]
+        segs = self._dedup(standalone)
+        members = {}
+        for group in accepted:
+            unit = replace(group[0], source='turn', content='', tokens=sum(s.tokens for s in group),
+                           floor=any(s.floor for s in group), priority=max(s.priority for s in group))
+            members[id(unit)] = group
+            segs.append(unit)
         # 预算扣减:固定小标题开销 + 与 group 段数量成正比的并接损耗
         # (逐段 token 估算会低估并接后的真实 token,每个 group 段最多差 ~1 token;
         #  计数感知的预留把"永不超预算"从概率性变成确定性。)
         group_count = sum(1 for s in segs if s.source in GROUP_SOURCES)
         reserve = HEADING_RESERVE + group_count
         chosen, report = self._select(segs, max(0, budget - reserve))
-        result = BuildResult(messages=self._render(chosen), report=report)
+        expanded = [member for unit in chosen for member in members.get(id(unit), [unit])]
+        result = BuildResult(messages=self._render(expanded), report=report)
         report.budget = budget
         return result
