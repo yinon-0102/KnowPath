@@ -149,3 +149,44 @@ SQL 合格集合、外置依赖、同 revision 恢复以及完整 request-local 
 第五轮仅修改计划/复核记录，新增 R23–R26：数据库时间与旧租约 token 隔离、索引作业独立条件写回/就绪状态、管理命令收据优先重放/分页资格、真实模型输入固定开销。维持 Task 0–13、A01–A42；主工作区与隔离工作区静态检查均通过，文档检查不是功能验收。
 
 Task 3 已启动单一实现者：八表、SQL/内存仓库、存储适配、依赖外置和增量迁移；要求先明确协议/失败测试，再走红绿与真实 MySQL 验收。Task 4–13 尚未实施。Task 5 仍负责关闭完整请求副本隔离与 SQL 同 revision 恢复门禁。
+
+### Task 3 阶段证据（实施中，未审查通过）
+
+- 首轮缺失模块/迁移红灯：22 failed / 1 skipped（`agent-4m16acsr`，无收集错误）；其中测试运行时导入失败表示模块未实现，不作为行为覆盖证据。
+- 行为红灯：8 failed / 17 passed / 1 skipped（`agent-vg3foj5q`），覆盖卡片 remove 协议、调用预留、扫描限额、payload 漂移修复；后续来源/候选变更集红灯 12 failed / 17 passed / 1 skipped（`agent-m6qap17x`）。
+- 首轮绿灯：34 passed / 1 skipped（`agent-l5skr6ls`，exitstatus=0、无收集错误）。包含 SQLite 与独立 MySQL 的迁移、JSON、索引、唯一/FK、回滚；跳过为 SQLite 参数下纯内存 ContextVar 测试不适用。
+- root 已只读核对上述四份结果 JSON。该绿灯早于后续账本独立提交、依赖自动登记及兼容修订，不代表最终源码通过。
+- 当前实现范围：八表与旧消息/会话复合约束、SQL/内存仓库、Cold/Vector/Playbook adapter、确定性 UUID、规范来源投影/未知身份隔离、依赖外置、候选状态与向量变更集。独立规格/质量审查和最终回归尚未完成，不勾选 Task 3。
+
+独立规格审查正在闭环，已实际复现五项：跨 revision 安全收据被误判冲突；builder 为旧向量刷新代数使旧模型覆盖新模型；真实 Citation/SourceSpan 的检索版本、artifact_hash 和坐标丢失；Vector.remove 可以清除其他模型/范围的索引；snapshot 合法 JSON 标量损坏使读取抛 AttributeError 而非逻辑不可见。逐项修复必须重新审查，已有中间绿灯不覆盖这些边界。
+
+root 中间全 Agent 回归 `agent-psmvb136` 为 191 passed / 3 skipped（无独立 MySQL 配置、SQLite 不适用纯内存 ContextVar、内存不适用 SQL 独立账本），早于上述修复，非最终证据。实现者中间兼容回归 `compatibility-4nd8hs50` 1470 passed / 88 skipped / 2 failed：原 RAG 迁移测试发现 Base 的 UniqueConstraint 与迁移 unique Index 不一致，以及离线 MySQL 迁移不应反射 MockConnection；保持原测试，分别修正声明和冻结 parent stubs，待最终重验。
+
+### Task 3 规格审查闭环（质量审查中）
+
+独立规格共发现六项确证缺陷，前五项见上文；最后一项是嵌套 SourceSpan 的 material_version_id 为 None/整数/空串/异版本/超长值仍可能活动投影。新增五值×双后端测试 `agent-wg7gpe26` 先 10 failed，再在 projection 入口限定非空字符串、长度及 parent 版本一致；generic 兼容不变。来源字段扩展保留真实 Citation→SourceSpan 归属关系及完整反向身份，不只保留全局去重集合或哈希。
+
+- 最新实现者定向集 `agent-vccz2chb`：177 passed / 2 不适用 skip，含 Task 3、Task 2、原 RAG 迁移和真实 MySQL。
+- 最终独立规格复审 `agent-_hvv6q7r`：170 passed / 2 不适用 skip、exit 0，结论 SPEC PASS。另有多引用跨度归属与 600 条外置依赖尾部反向查询的独立断言；SQLite 升降升已独立验证。
+- 此前 root `agent-dc2pjgvo`：77 passed / 2 不适用 skip，含真实 MySQL，但早于最后 span 版本修订，不作为该修订的最终验证。
+- 当前独立质量审查已开始；root 正在独立重验最终专用 MySQL 路径，完整 Agent/compatibility 回归在审查闭环后执行。尚未提交或勾选 Task 3。
+
+### Task 3 质量修复及最终独立验证
+
+独立质量审查确认两项 Important：内存读请求可读取另一个线程未提交并最终回滚的内容；平面 source_dependencies 坐标 span 未复用严格版本校验。单一实现者补确定性并发/来源测试，RED agent-mrqihhtf 为 14 failed / 6 不适用 skip；修复后 agent-swlvqxqp 为 191 passed / 8 不适用 skip，含独立 MySQL。
+
+公开多步读取与 Cold/Vector/Playbook adapter 读取现在共用业务事务 RLock；返回脱离存储的快照，回滚后动态解析重新绑定的字典。ContextVar 仍负责写边界，不再被视为读隔离。坐标 span 的物料版本要求非空 str、长度不超过 128，nested 额外匹配父版本；非 span generic dependency 兼容不变，损坏读取不写库。
+
+最终冻结源码证据：
+
+- 独立规格 agent-ibu3tr0m：184 passed / 8 不适用 skip，SPEC PASS；覆盖仓库、Task 2 checkpoint/protocol、SQLite 迁移循环。
+- 独立质量 agent-vyqj2std：98 passed / 8 不适用 skip；agent-7bwpvy5j：78 passed，QUALITY PASS。另独立验证 8 类 adapter 读取跨事务回滚阻塞、动态字典重绑和迭代器脱离存储。
+- root 全 Agent + 显式独立 MySQL：agent-4k2obych，253 passed / 8 不适用 skip，48.38s。
+- root 最终 compatibility-vgb5vlmn：1472 passed / 88 skipped / 1 既有依赖 warning，226.70s。88 项包括未配置的外部服务/专用 MySQL 业务组合，并非已验证；Task 3 专用 MySQL 另在上述 Agent 套件真实执行。
+- root 已读取以上所有 results.json 的汇总：exitstatus=0、collection_errors=0。旧 compatibility-uoi17rzi 的原 session 已确认 terminal 1472 passed / 88 skipped，但早于最后质量修复，不用作最终证据。
+- 8 项不适用 skip：SQLite 参数的纯内存 ContextVar 1 项、内存参数的 SQL 独立账本 1 项、SQLite 参数的内存线程锁 6 项；对应适用后端均执行。
+- 数据库仅使用既有专用 knowpath_agent_test；未操作日常数据库、调用在线模型或部署。
+
+第六轮文档审查已补入 R27–R30 / 3.13，主工作区及实施工作区均保留 14 任务、42 验收。Task 3 存储交付不包含 Task 4 当前来源资格、Task 5 请求副本/SQL 同 revision 恢复、Task 7/11 索引作业调度及进度、Task 10 全生命周期管理；这些仍按总计划继续实施。
+
+Task 3 源码提交：6a72b47。暂存清单恰为上述 11 个源码/测试文件，ZIP 未纳入；提交前移除迁移文件 EOF 多余空行，git diff --cached --check 通过。下一项为 Task 4；完整目标继续保持所有 Web 入口替换，尚未完成。
