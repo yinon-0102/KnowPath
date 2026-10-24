@@ -54,7 +54,7 @@
 
 Task 1 第一版经规格和质量两轮独立审查，发现并修复：hook 将有效回答改为空白；取消信号重复取样造成成功返回/自动写入；默认召回 hook 绕过模型端口；严格模式下旧 verify/TDD 回调吞异常；默认 SDK 端口取消行为与旧中断字符串契约不一致。严格策略默认 hooks 为空，构造时拒绝旧 verify/TDD；无效配置在创建记忆存储之前拒绝。保留普通调用者的默认 hooks 和中断文本。最后一项构造器检查补测为 2 failed → 2 passed。
 
-Task 1 交付：`core/turn.py`、`core/model_port.py`、`memory/contracts.py`、`learning/agent_runtime/contracts.py`；修改 Agent 构造与收尾、Function Calling 调用循环、MemoryManager 卡片存储注入。未给通用模块引入 learning 反向依赖；调用方注入的记忆和 SDK 客户端由调用方关闭。检查点契约目前只是版本化数据类型，完整导出/恢复属于 Task 2。
+Task 1 代码提交：`a3879e5`（`refactor(agent): inject memory and support externally committed turns`）。交付 `core/turn.py`、`core/model_port.py`、`memory/contracts.py`、`learning/agent_runtime/contracts.py`；修改 Agent 构造与收尾、Function Calling 调用循环、MemoryManager 卡片存储注入。未给通用模块引入 learning 反向依赖；调用方注入的记忆和 SDK 客户端由调用方关闭。检查点契约目前只是版本化数据类型，完整导出/恢复属于 Task 2。
 
 独立执行结果（修复后的最终版本）：
 
@@ -68,7 +68,7 @@ Task 1 的 external 只控制自动收尾。其“持久 L0–L5 不变”的广
 | 任务 | 状态 / 下一项依赖 |
 | --- | --- |
 | Task 1 基座注入与外部提交 | 接口与定向回归已验证；持久隔离退出门禁待 Task 5 |
-| Task 2 完整检查点 | 下一项；接口已稳定 |
+| Task 2 完整检查点 | 用户要求复核计划，已暂停；9 项失败测试已执行，首轮实验实现未跑绿灯/回归、未提交，不算完成；新增恢复/整轮/依赖边界须按第三轮计划补验 |
 | Task 3 SQL 存储 | 未实施 |
 | Task 4 范围/来源依赖 | 未实施 |
 | Task 5 工作副本/租约/原子发布 | 未实施，需独立 MySQL 竞争验证 |

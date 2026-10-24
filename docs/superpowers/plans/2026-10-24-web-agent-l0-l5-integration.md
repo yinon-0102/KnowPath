@@ -14,6 +14,8 @@
 
 **已确认范围：** 用户选择“替换所有对话入口：通用 Agent + 完整 L0–L5，保留测评、规划等业务服务”。
 
+**第三轮复核：** 本轮限定计划审查，已补齐整轮身份、热状态恢复、异步快照、依赖容量及开发/部署门禁，验收扩展至 A01–A42。隔离工作区已有局部实现，实际状态见该工作区执行记录；本轮修订不表示全量接入或测试通过。
+
 **路径约定：** 仓库为 `C:/Users/27202/Desktop/KnowPath`。下文 `core/`、`agents/`、`memory/`、`learning/`、`conversations/` 等后端文件简写分别相对 `py/knowpath_backend/` 或已明确的 `learning/` 父模块；仅写文件名的测试相对 `py/knowpath_backend/test/`。带 `py/`、`frontend/`、`docs/` 前缀的路径相对仓库。Python 命令在 `py/` 执行，前端命令在 `frontend/` 执行。标注“新增”的文件和接口是本计划交付物，不代表当前已经存在。
 
 ---
@@ -205,7 +207,7 @@ flowchart TD
 ### 3.7 调用账本、重试和进程边界
 
 - 每次物理外部调用在发送前写入独立 `learning_agent_calls` 预留记录；覆盖 Agent、分类、摘要、embedding、重排、checker 以及 SDK/HTTP 层重试，不能只计顶层 `run()` 次数。已发送调用即使回答事务回滚，也不恢复额度。
-- 调用状态为 `reserved → sent → succeeded|failed|unknown`；`sent` 表示可能已发送。崩溃后存在 `sent/unknown` 且无候选收据的请求按现有 RAG 思路终止为 `AGENT_EXECUTION_INTERRUPTED`，不自动重放可能已计费的请求。仅对已证明未发送的失败自动重试；明确新请求分配新消息 ID 和预算。
+- 调用状态为 `reserved → sent → succeeded|failed|unknown`；`sent` 表示可能已发送。崩溃恢复先检查回答提交收据；若没有收据，且本消息曾有任一可能已发送的调用，第一版终止为 `AGENT_EXECUTION_INTERRUPTED`，不从头重跑。此规则也覆盖调用已记为 succeeded/failed、但响应或候选尚未可靠保存的窗口，不能只检查当前状态为 sent/unknown 的行。仅对整条消息所有调用均可证明未发送的失败自动重试；明确新请求分配新消息 ID 和预算。本次不新增保存模型完整响应和逐调用恢复执行的另一套持久工作流。
 - 预算归属逻辑消息，Worker 换进程、续租或重试不能重置总预算。优先检查成功提交收据；提交结果不确定时重读收据，而不是重跑模型。
 - API BackgroundTasks 与持久 Worker 使用同一执行上下文和记忆 token。管理命令/删除/运行取消可撤销 token，续租必须同时核实 outbox 与记忆 token；任一失效都不能继续发送调用或发布事件。
 - `on_tool_call`、`on_tool_result`、`on_text_chunk` 当前有忽略回调异常的行为。Web 将 LeaseLost、预算耗尽和范围失效定义为致命控制信号，不能捕获后当成普通工具结果继续运行；保留其他非 Web 调用者原有默认策略。
@@ -241,7 +243,7 @@ flowchart TD
 | --- | --- |
 | `GET /memory/cards` | `limit`/`cursor` 分页，返回当前可用卡片的 ID、正文、生命周期、固定状态和合法来源；不能借列表看到范围外或已遗忘正文 |
 | `POST /memory/cards` | `content`（1–2000 字符）、`expected_memory_revision`、Idempotency-Key；返回 `command_id`、新 revision 和卡片 ID |
-| `POST /memory/cards/{card_id}/pin` | 明确卡片 ID、预期 revision 和幂等键；返回独立控制收据，固定不改变来源权限 |
+| `POST /memory/cards/{card_id}/pin` | 明确卡片 ID、`pinned` 布尔值、预期 revision 和幂等键；固定/取消固定均返回独立控制收据，不改变来源权限 |
 | `POST /memory/cards/{card_id}/forget` | 明确卡片 ID、预期 revision 和幂等键；成功后立即退出上下文，收据不包含被遗忘正文 |
 
 新增运行错误必须进入统一安全错误表，不能被宽泛 `except` 掩盖为 `MODEL_UNAVAILABLE`：
@@ -256,6 +258,25 @@ flowchart TD
 | `AGENT_EXECUTION_INTERRUPTED` | 不确定调用已发送，Run.failed，保留调用账本 | 不自动重放；用户明确提交新消息才使用新预算 |
 
 消息 POST 成功接收后的错误继续通过既有 Run/SSE 暴露，不把异步执行失败伪装成 POST 的同步 HTTP 错误。幂等重放先查原响应/收据，再判断当前空间 readiness。
+
+### 3.11 检查点、整轮身份与依赖的补充契约（第三轮复核）
+
+**整轮身份：** Web 使用 `turn_id = learning_messages.id`，一轮包含该记录的 user 输入和最终 assistant 回答；条目 ID 仍由 turn_id 与 role 确定性生成。工具结果、推理、provisional 文本和失败回答不成为独立历史轮。该 ID 必须覆盖在线写入、backfill、冷恢复、L3 晋升和上下文装配。旧通用调用者无 turn_id 时保留默认行为，Web 不根据相邻位置猜测配对。
+
+**整轮选择：** L1 容量、近期保护按轮计算；驱逐、冷恢复、L3 晋升、ContextEngine 去重和预算裁剪均以完整合格问答为原子组，保持 user→assistant 顺序。命中任一成员可累计该轮召回资格，晋升时必须补齐另一成员；任一成员不合格时整轮不得进入近期对话。预算不足则整组省略或压缩为明确标注的摘要，不能留下孤立回答，也不能截断当前问题或权威证据来强塞保护轮。超过硬输入限额按预算错误结束。
+
+**检查点边界与恢复顺序：**
+
+1. 检查点只保存 L1 热条目、L2 摘要/有界待压缓冲、L3 稳定引用与命中/TTL、已提交轮次和维护计数；不得复制全空间 L0、L4、L5、向量或原始来源 metadata。
+2. Task 5 在同一已提交 revision/删除代数下加载合格卡片与冷存储/向量适配器，再解析检查点的热条目及引用；后端按需加载，不能为恢复 L3 扫描整个空间。
+3. 同 ID 内容与来源身份须匹配权威条目；资格、删除与 superseded 状态以当前已提交状态为准，检查点不能重新激活条目。热度和轮次计数来自同 revision 检查点，工作副本中的 L1/L3/L5 同 ID 对象通过统一身份映射访问，不能出现互不更新的状态副本。
+4. 未知 schema、内容漂移或损坏检查点先完整验证再拒绝，不能部分替换、清空后继续或触发写库/tick。来源失效则按依赖规则失效/重建热状态，不能绕过资格恢复旧摘要。
+
+**快照与维护：** Web 工厂只允许同步 tick。通用异步模式的 export/restore 必须在无在途 tick 的静止边界执行，否则明确拒绝；tick 调度、计数变更及快照边界共用同步约束，不能仅给序列化加锁。恢复不触发冷归档、向量写入、卡片晋升或模型调用。Task 2 明确使用通用 `CheckpointBusy` / `InvalidCheckpoint` 异常；Web 将静止边界违规视为执行失败、未知 schema 映射为版本不兼容，不静默重试。
+
+**依赖有界且完整：** 检查点只存去重的稳定依赖 ID/集合引用和校验版本；完整反向依赖保存在 `learning_memory_dependencies`，不嵌入来源正文或整份 metadata。摘要 flush、reconcile、更正、显式/自动 remember、种子/热度晋升及可选 KG 都继承输入依赖。每个检查点和待压缓冲设置字节/条目硬上限；超限时将完整依赖外置为事务内集合引用，或失效并在预算内重建摘要，不能截断依赖后继续使用。无法完成时返回 `MEMORY_CAPACITY_EXCEEDED`。删除任一依赖后，不能证明剩余摘要独立有效时整体失效重建。
+
+**固定与取消固定：** `/memory/cards/{card_id}/pin` 接受显式 `pinned: true|false`，两种操作均复用修订号、幂等键及独立收据，防止管理界面只能固定而不能撤销。固定仅影响衰减/淘汰；仍受来源、容量和上下文预算限制。
 
 ## 4. 历史迁移、删除和回滚
 
@@ -352,18 +373,20 @@ flowchart TD
 
 ### Task 1：基座注入接口和外部提交
 
+**执行记录：** 基座代码已提交 `a3879e5`；定向/共享调用者回归 117 passed，新 Agent 套件 62 passed，包导入 9 passed。external 的完整持久隔离退出门禁需 Task 5 工作副本接通后验证；首项中此部分保持未勾选，不将关闭 finalizer 等同于所有层不写库。
+
 **修改：** `core/agent.py`、`agents/function_call_agent.py`、`memory/manager.py`、`memory/playbook/store.py`。  
 **新增：** `core/turn.py`、`core/model_port.py`、`memory/contracts.py`、`learning/agent_runtime/contracts.py`。  
 **新增测试：** `test_web_agent_injection.py`。
 
 - [ ] 先写测试：注入记忆时不额外创建第二个管理器；原调用者保持默认自动收尾；外部提交模式返回后不改变持久记忆；异常/取消不会执行自动写入。
-- [ ] 按第 3.1 节先建立通用协议和学习 DTO，确定字段、所有权、版本和序列化方式，后续任务只引用这一组类型；用导入边界测试禁止 core/memory 反向导入 learning。
-- [ ] 构造器增加可选记忆与卡片存储依赖，默认行为兼容现有 Agent；明确资源所有权，关闭时不重复关闭调用方资源。
-- [ ] 将每轮生成与提交分离；Web 选择 external，普通基座默认 automatic。不要用临时替换 `_finalize_turn` 的方式实现。
-- [ ] 在基座增加可注入模型端口，默认路径继续兼容已有 SDK；Web 选择有预算的调用策略。保留现有 tool calling 与回调能力，禁止通过新 SDK 外壳让 `.client.chat.completions` 再绕开端口。
-- [ ] Web 模式的预算耗尽、空回答、取消和致命回调信号返回明确失败，不额外触发无预算 fallback；未选择 Web 策略的调用者按原契约回归。
-- [ ] 定向运行新增测试与 `test_agent_runtime.py`、`test_function_call_cancel.py`、`test_function_call_parallel.py`、`test_memory_task_turn.py`。
-- [ ] 提交：`refactor(agent): inject memory and support externally committed turns`。
+- [x] 按第 3.1 节先建立通用协议和学习 DTO，确定字段、所有权、版本和序列化方式，后续任务只引用这一组类型；用导入边界测试禁止 core/memory 反向导入 learning。
+- [x] 构造器增加可选记忆与卡片存储依赖，默认行为兼容现有 Agent；明确资源所有权，关闭时不重复关闭调用方资源。
+- [x] 将每轮生成与提交分离；Web 选择 external，普通基座默认 automatic。不要用临时替换 `_finalize_turn` 的方式实现。
+- [x] 在基座增加可注入模型端口，默认路径继续兼容已有 SDK；Web 选择有预算的调用策略。保留现有 tool calling 与回调能力，禁止通过新 SDK 外壳让 `.client.chat.completions` 再绕开端口。
+- [x] Web 模式的预算耗尽、空回答、取消和致命回调信号返回明确失败，不额外触发无预算 fallback；未选择 Web 策略的调用者按原契约回归。持久化调用账本和限额策略仍由 Task 7 提供，当前仅验证基座执行策略。
+- [x] 定向运行新增测试与 `test_agent_runtime.py`、`test_function_call_cancel.py`、`test_function_call_parallel.py`、`test_memory_task_turn.py`。
+- [x] 提交：`refactor(agent): inject memory and support externally committed turns`。
 
 建议显式配置：
 
@@ -380,7 +403,7 @@ class TurnCommitMode(StrEnum):
 ### Task 2：完整检查点与上下文策略
 
 **新增：** `memory/checkpoint.py`、`learning/agent_runtime/context.py`。  
-**修改：** `memory/manager.py`、`memory/summary.py`、`memory/recall_buffer.py`。  
+**修改：** `memory/manager.py`、`memory/summary.py`、`memory/recall_buffer.py`、`memory/working.py`、`memory/item.py`、`context/engine.py`；通用调用者默认契约保持兼容。  
 **新增测试：** `test_web_agent_checkpoint.py`、`test_web_agent_context.py`。
 
 - [ ] 先写 round-trip 测试：L1 条目和顺序、L2 正文/缓冲/来源、L3 命中计数/TTL、轮次计数全部一致；未知版本拒绝加载。
@@ -388,6 +411,9 @@ class TurnCommitMode(StrEnum):
 - [ ] 增加上下文策略注入；Web 将记忆作为类型化数据，基座原有渲染默认兼容。
 - [ ] 为每个派生摘要和 L0 卡片保存来源集合，层间晋升不丢失依赖。
 - [ ] 按整轮处理 L1 驱逐、保护与恢复；L3 换进程后继续累计，TTL 用已提交轮次计算。
+- [ ] 落实第 3.11 节 turn_id 与原子组契约，同时覆盖 ContextEngine 内容去重、输入裁剪和 L3 晋升；补齐同轮另一成员后才进入 L1，缺失/失效成员不装成完整近期轮。
+- [ ] 检查点只含热状态及稳定依赖引用；新增损坏数据原子拒绝、同 ID 状态一致、无恢复副作用和异步 tick 静止边界测试。检查点字节与缓冲条目上限显式配置，不随历史无界增长。
+- [ ] 分别验证 flush/reconcile/remember/晋升的依赖继承，不能仅验证摘要首次生成；SQL 外置依赖与跨 Worker 恢复在 Task 3/5 集成验收前保持未验收。
 - [ ] 运行新测试及 `test_l2_reconcile.py`、`test_l3_buffer.py`、`test_context_engine.py`、`test_l0_sources.py`。
 - [ ] 提交：`feat(memory): add complete checkpoints and scoped context rendering`。
 
@@ -396,15 +422,15 @@ class TurnCommitMode(StrEnum):
 ```python
 def test_checkpoint_round_trip(memory_pair):
     original, restored = memory_pair
-    original.write("我希望先看到具体例子", role="user")
-    original.write("我们先看一个递归例子。", role="assistant")
+    original.write("我希望先看到具体例子", role="user", metadata={"turn_id": "turn-1"})
+    original.write("我们先看一个递归例子。", role="assistant", metadata={"turn_id": "turn-1"})
     original.tick()
     checkpoint = original.export_checkpoint()
     restored.restore_checkpoint(checkpoint)
     assert restored.export_checkpoint() == checkpoint
 ```
 
-`memory_pair` 在本任务测试文件中创建两个隔离管理器，使用同样配置和固定时间；检查点不包含非确定性的客户端或锁对象。
+`memory_pair` 在本任务测试文件中创建两个隔离管理器，使用同样配置和固定时间；检查点不包含非确定性的客户端或锁对象。此 round-trip 只证明通用热状态；Task 5 还须验证先加载合格存储、再解析引用和同 ID 合并的真实 SQL 恢复，不能用该测试代替。
 
 ### Task 3：SQL 模型、仓库和存储适配
 
@@ -415,7 +441,8 @@ def test_checkpoint_round_trip(memory_pair):
 - [ ] 先写 SQLite/内存仓库一致性、唯一约束、事务回滚、删除级联和 Alembic 升降级测试。
 - [ ] 实现第 3.2 节的八张表、按空间/来源/模型版本检索索引和稳定主键；外键和复合索引遵循现有 MySQL 支持边界。调用账本独立提交，记忆工作副本不能借账本路径持久化正文。
 - [ ] 实现冷存储、向量与 Playbook 存储适配，复用当前业务 UnitOfWork；工作副本存储不得自行 commit。
-- [ ] SQL 原文作为 L4/L5 权威来源，检查点只持热数据与引用。所有完成问答写入 L4，不依赖是否触发驱逐。
+- [ ] `learning_messages` 是正文权威；SQL L4 为受资格约束的原文投影，L5 为可重建索引，检查点只持热数据与引用。所有完成问答写入 L4，不依赖是否触发驱逐。
+- [ ] 按第 3.11 节存储规范化依赖集合及反向边，检查点只保存稳定引用；外置集合与热检查点同事务提交，回滚后不能存在悬空依赖集合。
 - [ ] 为工作副本导出/应用 `MemoryMutation`；SQL 与内存实现提供相同语义。
 - [ ] 以原始消息日志校验 L4 正文，检测不一致时先隔离并从原始消息修复，再重建 L5；修复不能绕过 tombstone 或恢复已删除来源。
 - [ ] 在临时 SQLite 完成 `upgrade → 写入 → downgrade → upgrade`；在独立 MySQL 验证 JSON、索引、唯一约束和事务行为。
@@ -449,6 +476,7 @@ def test_checkpoint_round_trip(memory_pair):
 - [ ] 先写故障注入：候选生成后进程停止、提交事务失败、租约失效、同消息重复执行、删除与提交竞争、同空间两会话争用。
 - [ ] 实现空间执行短租约、续约、修订号比较和删除代数检查；同空间按接收序号执行，等待项不占住单 Worker、不消耗模型尝试次数，取消/失败的前序项不会堵塞队列。
 - [ ] 在模型调用前加载工作副本；访问计数、L0 续命、remember、摘要和 tick 都计入变更集，失败时一起丢弃。
+- [ ] 按第 3.11 节执行同 revision 存储加载、引用解析和统一身份映射；验证重启后真实 L3 命中晋升整轮、热度不丢、不复活已失效项。Task 1 的“external 零持久写入”与 Task 2 的“SQL 恢复”门禁在本任务关闭。
 - [ ] 在已有发布事务中提交消息、记忆、来源辅助审计、收据和完成事件；统一锁顺序与现有资料/空间命令一致。
 - [ ] 对原消息使用稳定记忆 ID；重复发布命中收据直接返回，不重复触发晋升或模型调用。
 - [ ] 验证不同空间可并行，同空间等待不消耗模型调用预算，超时/取消能退出等待。
@@ -493,6 +521,7 @@ def test_checkpoint_round_trip(memory_pair):
 - [ ] 自动安装的通用 remember/recall 工具必须替换为受限适配版本，避免重复工具名称和 `scope=user` 跨空间旁路。
 - [ ] 实现总调用次数、模型输入/输出、工具结果大小和 Worker 截止时间预算；费用统计覆盖路由、摘要、校正、重答。
 - [ ] 每次物理调用发送前持久化调用预留，SDK 自动重试和空回答翻倍重试同样经过预算；unknown 调用不自动重放，跨 Worker 尝试不重置预算。
+- [ ] 覆盖“调用成功落账后、候选/回答提交前 crash”的恢复窗口；没有成功回答收据时，不因调用状态已是 succeeded/failed 而允许从头重放已发生调用。
 - [ ] Web 记忆工具串行；仅实际只读的资料工具允许独立 Session 并行。致命 LeaseLost/预算/范围异常必须穿透广泛异常捕获；超时后台任务不能再修改变更集或发布事件。
 - [ ] 测试循环耗尽、超长工具返回和取消时没有额外 fallback 调用；无模型文本不能被当作成功答案写入记忆。
 - [ ] 提交：`feat(agent): assemble bounded learning tools and model adapters`。
@@ -543,6 +572,7 @@ def test_checkpoint_round_trip(memory_pair):
 
 - [ ] 先写记住/列出/固定/忘记、资料删除、空间删除、维护并发和晚到 Worker 的端到端测试。
 - [ ] 按第 3.10 节实现 API，使用现有本地鉴权、严格 schema、幂等键和修订号；卡片 ID 必须属于当前空间且当前可用，固定不扩展权限。
+- [ ] pin 请求必须明确 `pinned` 布尔值；覆盖取消固定、重复请求、过期 revision 和失效卡片，管理面板与工具查询都不能因固定而越过来源资格。
 - [ ] 控制命令在独立短事务立即提交、撤销旧执行 token、提升记忆修订号；取消或生成失败不撤销控制收据，不让忘记操作等待模型结束。
 - [ ] 忘记传播到所有检索和摘要派生路径；保留不含正文的 tombstone 防止 backfill 或晋升复活。
 - [ ] 删除资料时按依赖清除卡片、摘要、缓冲、向量和待提交候选；清理失败保持现有可重试删除状态，不报告已彻底完成。
@@ -637,7 +667,7 @@ def test_checkpoint_round_trip(memory_pair):
 | A23 | 不同空间共享原文且测评仍活动 | 对话记忆不跨空间；原有跨空间辅助审计仍准确生效，reset 不撤销已看到的帮助 |
 | A24 | 资料范围 A→B→A，或自动全部→显式全部 | 分配新的 context_epoch；旧 A 只可有范围地召回，不冒充紧邻历史，B 内容不进入 A |
 | A25 | 忘记/固定已成功后聊天取消或校验失败 | 独立控制收据与效果保持；旧候选因 revision/token 变化退出，无需等待模型结束 |
-| A26 | 模型已可能发送后 crash / Worker 重试 | 预算预留不回滚；unknown 调用终止且不自动重复，commit 不确定先查询成功收据 |
+| A26 | 模型已可能发送后 crash / Worker 重试 | 预算预留不回滚；sent/unknown 及已记 succeeded/failed 但候选丢失均不从头重放；commit 不确定先查询成功收据 |
 | A27 | 流式/工具回调发生 LeaseLost 或预算错误 | 致命信号穿透通用忽略异常逻辑，不再执行新工具、模型或可见交付 |
 | A28 | 工具超时后原线程继续返回 | 迟到结果无可提交工作副本/Session/发布权限，不能修改已冻结的变更集 |
 | A29 | 新旧 API/Worker、旧 outbox 或 checkpoint 版本混用 | readiness 和运行时版本门禁拒绝不兼容工作，不能静默重解释任务或清空状态 |
@@ -650,10 +680,14 @@ def test_checkpoint_round_trip(memory_pair):
 | A36 | 普通/阅读页面的记忆管理面板 | 直接调用管理 API；分页、版本冲突、固定/遗忘状态正确，聊天失败不回滚操作 |
 | A37 | audit/verify/backfill dry-run | 无 schema/租约/水位/正文写入、无网络调用；报告只含安全统计与身份 |
 | A38 | 已结束学习会话、归档空间或失效讲义 | 按既有入口可用性契约处理；应拒绝的请求不触发模型或记忆晋升 |
+| A39 | 整轮预算选择/去重、冷恢复与 L3 晋升 | 使用同一 turn_id；完整问答原子选择，不出现孤立 assistant；无合格配对则整轮不进入近期历史 |
+| A40 | 同 revision 检查点恢复、损坏输入与异步 tick | 同 ID 热度/状态一致；未知或损坏状态原子拒绝、零副作用；在途异步 tick 不产生半快照 |
+| A41 | 长历史摘要、校正与依赖容量 | 检查点/缓冲受硬限额约束；依赖完整且可反向失效，不嵌入整份历史 metadata，不因截断而丢来源 |
+| A42 | 固定后取消固定、重试或来源失效 | true/false 均幂等、revision 正确；取消固定恢复衰减资格，固定状态不豁免来源与预算 |
 
 必须全部满足以下条件，才能报告任务完成：
 
-- [ ] A01–A38 均有可执行测试或独立验收记录，没有用跳过替代必要能力证明。
+- [ ] A01–A42 均有可执行测试或独立验收记录，没有用跳过替代必要能力证明。
 - [ ] L0–L5 六层和晋升、衰减、冲突、摘要、召回、冷存储、向量索引均被真实触发并验证。
 - [ ] 无 failed/cancelled/stale 候选进入记忆，无删除后复活，无跨范围读取。
 - [ ] API、后台 Worker、阅读侧栏与讲义问答都使用统一工厂和运行时。
@@ -678,6 +712,10 @@ def test_checkpoint_round_trip(memory_pair):
 | 消息权威、迁移和索引修复 | 1.4、3.2、4.1 | 3、4、11、12 | A16、A17、A20、A30、A33、A37 |
 | 发布版本与受支持回滚 | 4.3 | 4、9、11–13 | A20、A22、A29、A30 |
 | 用户可操作的记忆管理 | 3.6、3.10 | 10、12 | A25、A36 |
+| 整轮身份与全路径原子组 | 3.11 | 2、5、8、11、12 | A03、A04、A39 |
+| 恢复顺序、身份一致与静止快照 | 3.11 | 2、3、5、12 | A05、A15、A40 |
+| 有界检查点与完整派生依赖 | 3.11 | 2、3、5、7、10、12 | A15、A16、A41 |
+| 可逆固定操作 | 3.10、3.11 | 10、12 | A25、A36、A42 |
 
 执行时为每个验收编号分配测试函数/独立验收记录，写入执行记录；只有文本场景而没有测试或记录链接的不算通过。
 
@@ -722,6 +760,10 @@ Task 编号与提交 ID
 ## 9. 依赖、里程碑和主要风险
 
 **依赖顺序：** `0 → 1 → 2 → 3 → 4 → 5 → 6 → 7 → 8 → 9 → 10 → 11 → 12 → 13`。这是默认串行执行顺序，不自动创建并行 Agent。
+
+**依赖与验收边界补充：** Task 1/2 的接口和本地测试可先完成；“完整持久隔离”和“真实 SQL 恢复”必须由 Task 5 关闭，M1 不得宣称这两项已通过。Task 3/4 的临时 schema/R0 构建属于开发顺序，不代表部署顺序；实际发布仍须先部署通过验收的 R0，再对目标数据库升级和 backfill。Task 9 仅在隔离环境切换验证，目标环境的默认切换必须等待 Task 10/11 的控制、删除和迁移闭环及 Task 12 验收。Task 13 删旧分支后必须重新通过 A01/A21/A22/A29/A30/A31 及受影响回归，更新最终验收报告，不能只引用删代码前的 Task 12 结果。
+
+本轮只复核计划；已存在的隔离实现和未提交实验代码不构成全量接入完成证据。执行进度以隔离工作区的执行记录和实际测试产物为准。
 
 | 里程碑 | 包含任务 | 可审阅交付 |
 | --- | --- | --- |
