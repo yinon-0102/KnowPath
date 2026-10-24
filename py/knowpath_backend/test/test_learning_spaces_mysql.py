@@ -136,14 +136,17 @@ def test_mysql_space_creation_reads_version_published_after_old_snapshot(mysql_w
             graph = publishing.app.state.learning_state.graph_service
             candidate = next(row for row in graph._history(material_id)
                              if row["run_id"] == uploaded.json()["run_id"])
+            resolutions = [{"conflict_id": conflict["conflict_id"], "action": "use_new",
+                            "reason": "Accept the reviewed Parameters title in the new version"}
+                           for conflict in candidate["diff"]["conflicts"]]
             published = graph.publish(material_id, candidate["id"],
-                                      {"expected_graph_version": 1, "resolutions": []},
+                                      {"expected_graph_version": 1, "resolutions": resolutions},
                                       label + "-publish-v2")
             assert published["graph_version"] == 2
         finally:
             upload_done.set()
         response = pending.result(timeout=10)
-    assert response.status_code == 201
+    assert response.status_code == 201, response.json().get("error")
     version_id = uploaded.json()["material_version_id"]
     assert response.json()["bindings"][0]["material_version_id"] == version_id
 

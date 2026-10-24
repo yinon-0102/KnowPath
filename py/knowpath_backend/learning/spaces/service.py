@@ -152,7 +152,10 @@ class SpaceService:
             if binding.get("graph_revision_id"):
                 if self.graphs is None:
                     raise DomainConflict("BOUND_VERSION_UNAVAILABLE", "图谱快照不可用")
-                revision = self.graphs.repository.get_record("graph_revisions", binding["graph_revision_id"], lock=False)
+                # A command may bind a revision published after its repeatable-
+                # read snapshot. Match the current reads of material/version
+                # and history; outside a transaction this remains a plain read.
+                revision = self.graphs.repository.get_record("graph_revisions", binding["graph_revision_id"])
                 if (revision["material_id"] != binding["material_id"] or revision["material_version_id"] != version.id
                         or revision["graph_version"] != binding["graph_version"] or revision["status"] not in {"published", "superseded"}):
                     raise DomainConflict("BOUND_VERSION_UNAVAILABLE", "图谱快照绑定不匹配")
