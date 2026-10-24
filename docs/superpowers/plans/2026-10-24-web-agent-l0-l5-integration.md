@@ -325,6 +325,7 @@ flowchart TD
 | `core/model_port.py`、`core/turn.py`、`memory/contracts.py` | 新增 | 与学习领域无关的模型/提交/记忆协议；禁止反向依赖 learning |
 | `memory/manager.py`、`memory/config.py` | 修改 | 可注入卡片存储、上下文策略、明确维护与恢复接口 |
 | `memory/checkpoint.py` | 新增 | L1/L2/L3 与计数的版本化导出/恢复 |
+| `memory/dependencies.py` | 新增 | 有界规范化来源身份、范围结构校验与完整传递依赖合并 |
 | `memory/playbook/store.py` | 修改 | 明确存储协议，默认实现继续兼容 |
 | `learning/agent_runtime/contracts.py` | 新增 | 请求、候选、预算与提交协议 |
 | `learning/agent_runtime/factory.py` | 新增 | 学习 Agent 装配，不调用本地工作区工厂 |
@@ -409,21 +410,24 @@ class TurnCommitMode(StrEnum):
 
 ### Task 2：完整检查点与上下文策略
 
-**新增：** `memory/checkpoint.py`、`learning/agent_runtime/context.py`。  
-**修改：** `memory/manager.py`、`memory/summary.py`、`memory/recall_buffer.py`、`memory/working.py`、`memory/item.py`、`context/engine.py`；通用调用者默认契约保持兼容。  
+**执行记录：** 已提交 `6aadffa`，独立规格/质量各 90 passed；root 最终 Agent 152 passed，兼容 1472 passed / 88 skipped。这里的完成仅指通用热检查点、整轮和不可信上下文策略；SQL 外置依赖、合格存储同 revision 恢复及完整持久隔离仍由 Task 3/5 验收。
+
+**新增：** `memory/checkpoint.py`、`memory/dependencies.py`、`learning/agent_runtime/context.py`。
+
+**修改：** `memory/manager.py`、`memory/config.py`、`memory/summary.py`、`memory/recall_buffer.py`、`memory/working.py`、`memory/item.py`、`memory/semantic.py`、`context/engine.py`；通用调用者默认契约保持兼容。
 **新增测试：** `test_web_agent_checkpoint.py`、`test_web_agent_context.py`。
 
-- [ ] 先写 round-trip 测试：L1 条目和顺序、L2 正文/缓冲/来源、L3 命中计数/TTL、轮次计数全部一致；未知版本拒绝加载。
-- [ ] 增加公开 `export_checkpoint()` / `restore_checkpoint()`，不让学习层读取和修改管理器私有字段。
-- [ ] 增加上下文策略注入；Web 将记忆作为类型化数据，基座原有渲染默认兼容。
-- [ ] 为每个派生摘要和 L0 卡片保存来源集合，层间晋升不丢失依赖。
-- [ ] 按整轮处理 L1 驱逐、保护与恢复；L3 换进程后继续累计，TTL 用已提交轮次计算。
-- [ ] 落实第 3.11 节 turn_id 与原子组契约，同时覆盖 ContextEngine 内容去重、输入裁剪和 L3 晋升；补齐同轮另一成员后才进入 L1，缺失/失效成员不装成完整近期轮。
-- [ ] 检查点只含热状态及稳定依赖引用；新增损坏数据原子拒绝、同 ID 状态一致、无恢复副作用和异步 tick 静止边界测试。检查点字节与缓冲条目上限显式配置，不随历史无界增长。
-- [ ] 身份核对覆盖 source_scopes 与生命周期双向冲突；Web 构造参数不能关闭整轮/来源策略。按第 3.11 节验证原子拒绝，不以某一层副本覆盖另一层解决冲突。
-- [ ] 分别验证 flush/reconcile/remember/晋升的依赖继承，不能仅验证摘要首次生成；SQL 外置依赖与跨 Worker 恢复在 Task 3/5 集成验收前保持未验收。
-- [ ] 运行新测试及 `test_l2_reconcile.py`、`test_l3_buffer.py`、`test_context_engine.py`、`test_l0_sources.py`。
-- [ ] 提交：`feat(memory): add complete checkpoints and scoped context rendering`。
+- [x] 先写 round-trip 测试：L1 条目和顺序、L2 正文/缓冲/来源、L3 命中计数/TTL、轮次计数全部一致；未知版本拒绝加载。
+- [x] 增加公开 `export_checkpoint()` / `restore_checkpoint()`，不让学习层读取和修改管理器私有字段。
+- [x] 增加上下文策略注入；Web 将记忆作为类型化数据，基座原有渲染默认兼容。
+- [x] 为每个派生摘要和 L0 卡片保存来源集合，层间晋升不丢失依赖。
+- [x] 按整轮处理 L1 驱逐、保护与恢复；L3 换进程后继续累计，TTL 用已提交轮次计算。
+- [x] 落实第 3.11 节 turn_id 与原子组契约，同时覆盖 ContextEngine 内容去重、输入裁剪和 L3 晋升；补齐同轮另一成员后才进入 L1，缺失/失效成员不装成完整近期轮。
+- [x] 检查点只含热状态及稳定依赖引用；新增损坏数据原子拒绝、同 ID 状态一致、无恢复副作用和异步 tick 静止边界测试。检查点字节与缓冲条目上限显式配置，不随历史无界增长。
+- [x] 身份核对覆盖 source_scopes 与生命周期双向冲突；Web 构造参数不能关闭整轮/来源策略。按第 3.11 节验证原子拒绝，不以某一层副本覆盖另一层解决冲突。
+- [x] 分别验证 flush/reconcile/remember/晋升的依赖继承，不能仅验证摘要首次生成；SQL 外置依赖与跨 Worker 恢复在 Task 3/5 集成验收前保持未验收。
+- [x] 运行新测试及 `test_l2_reconcile.py`、`test_l3_buffer.py`、`test_context_engine.py`、`test_l0_sources.py`。
+- [x] 提交：`feat(memory): add complete checkpoints and scoped context rendering`。
 
 **关键测试表达：**
 

@@ -1,6 +1,6 @@
 # Web Agent / L0–L5 接入执行记录
 
-本记录对应 [完整计划](../superpowers/plans/2026-10-24-web-agent-l0-l5-integration.md)。目标仍是所有对话入口使用通用 Agent 与完整 L0–L5，保留业务服务权威。当前已完成测试基础设施、基座注入改造与一项接入前范围缺陷修复，尚未实现 Web 运行时替换，不能据此宣称全量接入或性能达标。
+本记录对应 [完整计划](../superpowers/plans/2026-10-24-web-agent-l0-l5-integration.md)。目标仍是所有对话入口使用通用 Agent 与完整 L0–L5，保留业务服务权威。当前已完成测试基础设施、基座注入改造、通用热检查点/整轮策略与一项接入前范围缺陷修复，尚未实现 Web 运行时替换，不能据此宣称全量接入或性能达标。
 
 ## 执行环境与隔离
 
@@ -76,7 +76,7 @@ Task 1 的 external 只控制自动收尾。其“持久 L0–L5 不变”的广
 | 任务 | 状态 / 下一项依赖 |
 | --- | --- |
 | Task 1 基座注入与外部提交 | 接口与定向回归已验证；持久隔离退出门禁待 Task 5 |
-| Task 2 完整检查点 | 最终 Agent 113 项通过，独立规格复审 51 项通过；质量审查中，未提交，SQL 集成仍待 Task 3/5 |
+| Task 2 完整检查点 | 已提交 6aadffa；独立规格/质量各 90 passed，root Agent 152 passed、兼容 1472 passed / 88 skipped；SQL 集成仍待 Task 3/5 |
 | Task 3 SQL 存储 | 未实施 |
 | Task 4 范围/来源依赖 | 未实施 |
 | Task 5 工作副本/租约/原子发布 | 未实施，需独立 MySQL 竞争验证 |
@@ -118,3 +118,19 @@ SQL 合格集合、外置依赖、同 revision 恢复以及完整 request-local 
 第四轮计划复核已同步主工作区及隔离工作区，保留已完成勾选；补充独立 R0 制品、旧历史范围分段、来源身份和 MySQL 基线门禁。此轮文档静态验证为 14 个任务、42 个连续验收编号、22 项审查发现，非功能验收证据。
 
 专用 MySQL 测试实例本轮重新确认存活：PID 34088，mysqld 路径与独立实例相符，127.0.0.1:33317 处于监听；不重启或操作日常 MySQL 服务。
+
+### Task 2 质量审查闭环（提交前）
+
+质量审查独立 probe 确认一项 Important：摘要输入自身为派生条目时，merge_sources 丢失其 source_item_ids/source_scopes。新增 flush/reconcile/direct merge 与容量/类型回滚场景，先 **12 failed / 1 passed**（`agent-vpqsdgje`），修正直接 probe 后单独 **1 failed**（`agent-t44wm4cf`），最小修复后 **13 passed**（`agent-28g8rgeu`）。现在传递三类来源数组、直接 ID 和当前范围，去重且不共享输入容器；超限/损坏在调用模型或修改摘要前拒绝。
+
+随后的规格复审通过原 64 项，但独立确认 canonical source_scopes 的 scope payload 接受非对象/任意原 metadata。再新增 flush/reconcile、三类热层恢复、嵌套字段和合法嵌套兼容场景，**25 failed / 1 passed → 26 passed**（`agent-84zvdj7j` → `agent-6_pwsyi9`）。修复限定 scope 容器及递归 scope 字段白名单，不扩展到 Task 4 的 binding/material 领域解析；通用 raw metadata 保持原表示。
+
+- 最终实现者指定回归 **146 passed**（`agent-du3jysxr`），全 Agent **152 passed**（`agent-e_xmq2c8`）。
+- 独立规格复审 **90 passed**（`agent-bi_wobwk`），另以 probe 确认嵌套范围拒绝、恢复原子性、传递依赖及 generic 兼容，结论 spec pass。
+- root 最终 `--suite agent`：**152 passed**，11.25s，`agent-nskt6onm`，退出码 0。
+- root 中间兼容回归：**1472 passed / 88 skipped / 1 warning**，176.97s，`compatibility-ed018d_8`；不覆盖最后 scope 校验，不能当最终结果。源码冻结后的最终兼容回归 `compatibility-n3p7v8j2`：**1472 passed / 88 skipped / 1 既有 warning**，203.44s，退出码 0。
+- 独立质量复审 **90 passed**（`agent-5tl9kr6s`），结论无剩余已确认阻断；Task 2 代码已提交 **6aadffa**。SQL 外置依赖、同 revision 合格存储恢复与完整持久隔离仍待 Task 3/5。
+
+## 下一项：真实 MySQL 基线兼容修复
+
+已派单一实现者按 TDD 修复前述 confidence JSON 往返哈希问题及旧审核 fixture，要求保留合法旧 snapshot/manifest hash 和原有审核门禁。此项是 Task 0 数据库基线补充及 Task 3/5 前置，不增加业务范围；Task 3–13 仍未实施。
