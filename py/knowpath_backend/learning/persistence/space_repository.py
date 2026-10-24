@@ -44,6 +44,11 @@ class InMemorySpaceRepository:
     def delete(self, space_id):
         with self.materials._lock:
             self.materials.learning_spaces.pop(space_id, None)
+            # Mirror learning_memory_spaces ON DELETE CASCADE. Resolve current
+            # containers each time: a transaction rollback may rebind them.
+            for table in self.materials.agent_memory_data.values():
+                for key in [key for key, row in table.items() if row['space_id'] == space_id]:
+                    del table[key]
 
     def replay(self, key, fingerprint):
         with self.materials._lock:

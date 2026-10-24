@@ -3,10 +3,12 @@ import json
 
 _ID_KEYS = {'id', 'space_id', 'conversation_id', 'message_id', 'item_id', 'material_id',
             'material_version_id', 'version_id', 'source_id', 'source_ref', 'chunk_id',
-            'fragment_id', 'section_id', 'dependency_id', 'document_id', 'lesson_id'}
+            'fragment_id', 'section_id', 'dependency_id', 'document_id', 'lesson_id',
+            'retrieval_version_id', 'scope_snapshot_id', 'artifact_hash', 'block'}
 _VALUE_KEYS = _ID_KEYS | {'kind', 'version', 'material_version', 'source_version', 'scope_version',
                         'context_epoch', 'content_hash', 'source_hash', 'chunk_hash',
-                        'fingerprint', 'context_fingerprint', 'lesson_fingerprint'}
+                        'fingerprint', 'context_fingerprint', 'lesson_fingerprint',
+                        'citation_schema_version', 'start', 'end', 'page'}
 _SCOPE_KEYS = {'scope', 'space_id', 'conversation_id', 'context_epoch', 'context_fingerprint',
                'scope_version', 'material_ids', 'material_versions', 'binding', 'answer_mode'}
 
@@ -19,6 +21,23 @@ def canonical_dependency(record):
             or any(v is not None and type(v) not in (str, int) for v in record.values())
             or len(json.dumps(record).encode('utf-8')) > 2048):
         raise InvalidCheckpoint('Dependency requires a bounded canonical ID/version record')
+    if 'artifact_hash' in record:
+        value = record['artifact_hash']
+        if type(value) is not str or len(value) != 64 or any(c not in '0123456789abcdef' for c in value):
+            raise InvalidCheckpoint('Invalid immutable artifact hash')
+    for key in ('retrieval_version_id', 'scope_snapshot_id', 'block'):
+        if key in record and record[key] is not None and (type(record[key]) is not str or not 0 < len(record[key]) <= 128):
+            raise InvalidCheckpoint('Invalid canonical retrieval/span identifier')
+    if 'start' in record or 'end' in record:
+        if (not {'material_version_id', 'artifact_hash', 'start', 'end'} <= record.keys()
+                or type(record['material_version_id']) is not str or not 0 < len(record['material_version_id']) <= 128
+                or type(record['start']) is not int or type(record['end']) is not int
+                or record['start'] < 0 or record['end'] <= record['start']):
+            raise InvalidCheckpoint('Invalid canonical source span')
+    if 'page' in record and record['page'] is not None and (type(record['page']) is not int or record['page'] < 1):
+        raise InvalidCheckpoint('Invalid canonical source page')
+    if 'citation_schema_version' in record and (type(record['citation_schema_version']) is not int or record['citation_schema_version'] not in (1, 2)):
+        raise InvalidCheckpoint('Invalid citation schema version')
     return record
 
 

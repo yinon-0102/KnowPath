@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 from datetime import datetime
 
-from sqlalchemy import JSON, Boolean, DateTime, Float, ForeignKey, Integer, LargeBinary, String, Text, UniqueConstraint, create_engine
+from sqlalchemy import JSON, Boolean, DateTime, Float, ForeignKey, Index, Integer, LargeBinary, String, Text, UniqueConstraint, create_engine
 from sqlalchemy.engine import make_url
 from sqlalchemy.dialects.mysql import LONGBLOB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
@@ -299,6 +299,7 @@ class SessionEventRow(Base):
 
 class ConversationRow(Base):
     __tablename__ = "learning_conversations"
+    __table_args__ = (Index('uq_conversation_space_id', 'space_id', 'id', unique=True),)
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     space_id: Mapped[str] = mapped_column(ForeignKey("learning_spaces.id"), nullable=False, index=True)
     learning_session_id: Mapped[str | None] = mapped_column(ForeignKey("learning_sessions.id"), nullable=True)
@@ -307,7 +308,8 @@ class ConversationRow(Base):
 
 class LearningMessageRow(Base):
     __tablename__ = "learning_messages"
-    __table_args__ = (UniqueConstraint("conversation_id", "sequence", name="uq_message_sequence"),)
+    __table_args__ = (UniqueConstraint("conversation_id", "sequence", name="uq_message_sequence"),
+                      Index('uq_message_space_id', 'space_id', 'id', unique=True))
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     space_id: Mapped[str] = mapped_column(ForeignKey("learning_spaces.id"), nullable=False, index=True)
     conversation_id: Mapped[str] = mapped_column(ForeignKey("learning_conversations.id"), nullable=False, index=True)
@@ -478,3 +480,4 @@ def init_db(engine) -> None:
 
 # Register additive RAG tables after Base and the legacy schema are defined.
 from knowpath_backend.learning.persistence import rag_models as _rag_models  # noqa: E402,F401
+from knowpath_backend.learning.agent_memory import models as _agent_memory_models  # noqa: E402,F401

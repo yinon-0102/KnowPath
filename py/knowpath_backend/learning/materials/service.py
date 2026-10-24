@@ -164,19 +164,25 @@ class InMemoryMaterialRepository:
         self.assessment_data = {name: {} for name in ("assessments", "attempts", "states", "evidence", "resets", "plans", "tasks", "sessions", "session_events", "conversations", "messages", "graph_revisions", "outbox", "corrections", "notebooks", "note_chapters", "note_revisions", "note_generations", "study_lessons", "budget_comparisons", "plan_adjustments", "policy_recommendations")}
         self.planner_idempotency: dict[str, tuple[str, str, dict]] = {}
         self.export_data: dict[str, dict] = {}
+        self.agent_memory_data = {key: {} for key in ('spaces', 'items', 'cards', 'sessions', 'dependencies', 'commits', 'tombstones', 'calls')}
+        from contextvars import ContextVar
+        self._transaction_active = ContextVar(f'materials_transaction_{id(self)}', default=False)
         self._lock = RLock()
 
     @contextmanager
     def transaction(self):
         with self._lock:
             previous = copy.deepcopy((self.materials, self.versions, self.raw_files, self.by_content_hash,
-                                      self.idempotency, self.idempotency_runs, self.idempotency_responses, self.learning_spaces, self.assessment_data, self.planner_idempotency, self.export_data))
+                                      self.idempotency, self.idempotency_runs, self.idempotency_responses, self.learning_spaces, self.assessment_data, self.planner_idempotency, self.export_data, self.agent_memory_data))
+            token = self._transaction_active.set(True)
             try:
                 yield
             except BaseException:
                 (self.materials, self.versions, self.raw_files, self.by_content_hash,
-                 self.idempotency, self.idempotency_runs, self.idempotency_responses, self.learning_spaces, self.assessment_data, self.planner_idempotency, self.export_data) = previous
+                 self.idempotency, self.idempotency_runs, self.idempotency_responses, self.learning_spaces, self.assessment_data, self.planner_idempotency, self.export_data, self.agent_memory_data) = previous
                 raise
+            finally:
+                self._transaction_active.reset(token)
 
     def get_idempotency(self, key: str) -> tuple[str, str, str] | None:
         with self._lock:
