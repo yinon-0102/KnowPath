@@ -198,6 +198,22 @@ Task 3 闭环文档提交 ad8f39e 后，派新的单一实现者实施 Task 4（
 接收代码复核确认 MessageService.send 保留同会话 MESSAGE_IN_PROGRESS：第六轮“多个同会话请求全部先排队”的措辞会意外扩大产品能力，现已更正。实际验收为 A 完成→B 接收后取消/失败→A 再接收，仍有三个 epoch；不同会话可以使用同空间队列。allocator 独立协议可预排，但不能据此修改既有 HTTP 多在途限制。
 
 Task 4 的全层共用资格接口需要解析外置完整依赖集合，不只检查 payload 前 512 项；纯偏好独立证明由服务端可信流程提供，不以模型可写标记豁免资料资格。实际新运行时/HTTP/Worker 接线仍由后续任务按退出门禁验收。
-### Task 4 最终规格/质量闭环
+### Task 4 阶段结果与重新打开的验收缺口
 
-Task 4 已提交 0fa11ba；范围指纹、同事务接收冻结、全局序号、A→B→A 分段、L0/recall 与 L1/L2/L3 分层、外置依赖/tombstone fail-closed、LearningState 同 UoW 装配均已验证。35 项范围/协议测试通过；独立规格 SPEC PASS、质量 QUALITY PASS。旧消息缺少新字段时安全拒绝召回，Task 11 负责迁移；真实 R0 制品仍是发布门禁。Task 5–13 尚未完成。
+Task 4 已提交 0fa11ba。35 项范围/协议测试通过，覆盖部分范围指纹、接收冻结、全局序号和 epoch 协议；这不是全层生产集成验收。此前独立规格/质量的 PASS 属只读审查并引用 root 测试，不能作为独立功能验证，也不足以证明本任务退出条件。Task 4 保持未完成，Task 5–13 尚未完成。
+
+重新读取当前源码后，以下事项必须以真实仓库和业务路径的正反向测试关闭：
+
+- 来源存在性仍由反向依赖边非空推断，不能证明资料、版本、chunk、hash 和 owner 当前有效；需要真实来源解析。
+- 历史投影依赖 snapshot.source_dependencies，但生产写入闭环尚未证明；须验证合法历史可召回，再验证来源删除后不能召回，不能以永久拒绝所有历史代替资格检查。
+- 同会话旧 epoch 的 recall 与近期 L1/L2/L3 需分别验证；lesson 分支重建历史可能绕过统一门禁。
+- 持久投影 provenance 的 scope 与 EligibilityPolicy 所需 memory_scope 字段尚未形成一致契约；嵌套 span 的父来源继承、空间身份与指纹合法性也需集成验证。
+- R0 当前仅有 manifest/read helper；尚无从冻结旧基线独立构建的制品、哈希及升级前后 schema 演练，不满足 Task 4 的独立 R0 条件。
+
+Task 5 正在实现真实仓库租约、请求副本与原子发布。未取得最终测试结果前，不将设计、委派消息或阶段绿灯计作完成证据。
+
+### Task 5 首批租约行为证据（中间结果）
+
+真实 memory/SQLite 仓库测试 test_web_agent_memory_concurrency.py 已落盘。agent-7ac8ozz6 为 4 failed，缺少 acquire_execution_lease；生产仓库新增 acquire/check/renew/release 后，agent-p42k1b0q 为 4 passed、exitstatus=0、collection_errors=[]，root 已独立读取两份 results.json。覆盖同空间独占、新 UUID token、旧 token 不能释放新持有者、过期后无新持有者及已被新持有者替换均不能续回。
+
+这不是 Task 5 最终验收。即时审计要求继续补 SQL 外层事务写门禁、消息所属空间、数据库更新时的过期判断、发布 fencing、真实 MySQL 双连接竞争和完整工作副本恢复；回答与记忆原子发布尚未验证。

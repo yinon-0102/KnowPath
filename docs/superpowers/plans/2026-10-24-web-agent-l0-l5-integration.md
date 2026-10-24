@@ -490,6 +490,8 @@ def test_checkpoint_round_trip(memory_pair):
 
 ### Task 4：范围过滤、来源依赖和隔离
 
+**验收更正：** 0fa11ba 已提交部分范围协议，但本任务尚未完成。35 项定向测试不能证明全层业务接线；来源真实解析、合法历史正向召回、旧 epoch recall、lesson 门禁及持久投影 scope 契约仍待集成验证。此前只读规格/质量 PASS 不作为这些行为的独立验证。详见实施进度文档的重新打开项。
+
 **新增：** `learning/agent_memory/scope.py`、`rollback.py`。  
 **修改：** 过渡期 `conversations/context.py` 的旧投影资格门禁。  
 **复用：** `conversations/document_scope.py`、`materials/source_access.py`。  
@@ -497,10 +499,10 @@ def test_checkpoint_round_trip(memory_pair):
 
 - [x] 先写跨空间、跨资料集、范围 A→B→A、旧绑定、原文/讲义切换、general/material/auto 切换和缺失来源测试。
 - [x] 实现规范化指纹、单调 context_epoch 和候选资格函数；指纹输入排序和去重，但不合并“自动全部”和“显式选择全部”。A→B→A 创建新分段，回到 A 时只有历史 recall 能使用旧 A，L1/L2/L3 不冒充紧邻上下文。
-- [x] 所有 L0–L5 读取、显式 recall、隐式 recall、KG 和 hooks 共用资格检查；过滤发生在召回排序前。
+- [ ] 所有 L0–L5 读取、显式 recall、隐式 recall、KG 和 hooks 共用资格检查；过滤发生在召回排序前。
 - [x] 实现纯偏好卡与来源型卡的分类和依赖继承；无法证明来源独立的卡片按来源型处理。
 - [x] 测试固定卡也会因资料删除或版本失效退出上下文；恢复 A 的命名空间不把 B 的轮次当作连续历史。
-- [x] 给旧记忆投影补上 tombstone/派生依赖和来源资格过滤，记录 R0 manifest/read boundary；真实独立 R0 制品构建保留为发布门禁。验证 R0 保留原业务行为且遗忘后不会召回旧原文。原始未修补旧版不作为回滚目标。
+- [ ] 给旧记忆投影补上 tombstone/派生依赖和来源资格过滤，记录 R0 manifest/read boundary；真实独立 R0 制品构建保留为发布门禁。验证 R0 保留原业务行为且遗忘后不会召回旧原文。原始未修补旧版不作为回滚目标。
 - [ ] 按第 4.3 节从旧基线独立构建 R0，在新表缺失及启用后的两个阶段验证能力门禁；不能拿累计特性分支替代独立回滚制品。
 - [ ] 提交：`feat(memory): enforce source and conversation scope across all layers`。
 
