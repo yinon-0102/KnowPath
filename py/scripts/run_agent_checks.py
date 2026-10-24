@@ -27,6 +27,9 @@ BASELINE = (
 )
 COMPATIBILITY_PATTERNS = (
     "test_agent_runtime.py", "test_function_call_*.py", "test_memory_*.py",
+    "test_simple_agent.py", "test_react_agent.py", "test_reflection_agent.py",
+    "test_tdd_agent_wiring.py", "test_playbook.py", "test_kg_main_write_hook.py",
+    "test_package_installation.py",
     "test_l[0-5]_*.py", "test_context_engine.py", "test_learning_source_access.py",
     "test_*deletion*.py", "test_rag_*.py", "test_learning_model_task*.py",
     "test_learning_graph_worker.py", "test_study_lesson_streaming.py",

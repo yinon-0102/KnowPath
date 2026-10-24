@@ -81,6 +81,7 @@ class MemoryManager:
         reconciler: Optional[SummaryReconciler] = None,
         conflict_detector: Optional[ConflictDetector] = None,
         llm=None,
+        card_store=None,
     ):
         self.config = config or MemoryConfig()
         self.embedding = coerce_embedding(embedding)
@@ -100,7 +101,7 @@ class MemoryManager:
             reconciler=reconciler,
         )
         # L0 跨会话核心记忆
-        self.playbook = PlaybookStore(self.config.playbook_path())
+        self.playbook = card_store if card_store is not None else PlaybookStore(self.config.playbook_path())
         # L3 检索缓冲(纯内存,不持久化)
         self.recall_buffer = RecallBuffer(self.config)
         # 冲突检测器: 显式传入优先,否则按 config.conflict_strength 自动构造

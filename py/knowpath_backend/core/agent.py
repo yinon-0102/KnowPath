@@ -5,6 +5,7 @@ from .config import Config
 from .hooks import AgentHook, default_hooks
 from .llm import MyLLM
 from .message import Message
+from .turn import TurnCommitMode, TurnExecutionPolicy
 from knowpath_backend.memory import MemoryConfig, MemoryManager
 
 
@@ -30,6 +31,13 @@ HONESTY_CONTRACT = """## 关于诚实回答的协议
 
 
 class Agent(ABC):
+    """Agent lifecycle with borrowed or owned memory.
+
+    EXTERNAL skips conversation writes/tick. Context recall and memory tools can
+    still mutate the supplied manager: external callers must inject an isolated
+    request working copy with nonpersistent stores, and publish it themselves.
+    Model ports and injected managers/stores remain caller-owned.
+    """
     def __init__(
         self,
         name: str,
@@ -39,13 +47,29 @@ class Agent(ABC):
         memory_config: Optional[MemoryConfig] = None,
         hooks: Optional[List[AgentHook]] = None,
         honesty_contract: bool = True,
+        memory=None,
+        card_store=None,
+        model_port=None,
+        model_stream: bool = True,
+        context_policy=None,
+        commit_mode: TurnCommitMode = TurnCommitMode.AUTOMATIC,
+        execution_policy: Optional[TurnExecutionPolicy] = None,
     ):
         self.name = name
         self.llm = llm
         self.system_prompt = system_prompt
         self.config = config or Config()
-        self.memory = MemoryManager(memory_config)
-        self.hooks: List[AgentHook] = hooks if hooks is not None else default_hooks()
+        if memory is not None and card_store is not None:
+            raise ValueError('Inject card_store into the supplied memory manager')
+        self._owns_memory = memory is None
+        self.memory = memory if memory is not None else MemoryManager(memory_config, card_store=card_store)
+        self.model_port = model_port
+        self.model_stream = model_stream
+        self.context_policy = context_policy
+        self.commit_mode = TurnCommitMode(commit_mode)
+        self.execution_policy = execution_policy or TurnExecutionPolicy()
+        self.hooks: List[AgentHook] = (hooks if hooks is not None else
+                                      [] if self.execution_policy.strict else default_hooks())
         self.honesty_contract = honesty_contract
 
     @abstractmethod
@@ -113,12 +137,22 @@ class Agent(ABC):
         把"保存 user/assistant 消息"与"调 tick()"打包，避免每个 Agent
         都重复写一遍，也保证不会漏调 tick。
         """
+        if getattr(self, 'commit_mode', TurnCommitMode.AUTOMATIC) == TurnCommitMode.EXTERNAL:
+            return
         self.add_message(Message(user_input, "user"), task_turn=task_turn)
         # 空响应不写入：避免 thinking 模型耗尽 max_tokens 时污染历史，
         # 进而让下一轮 LLM 看到自己上轮"空消息"而产生奇怪的道歉行为。
         if response and response.strip():
             self.add_message(Message(response, "assistant"))
         self.memory.tick()
+
+    def close(self) -> None:
+        """Only close resources constructed by this agent, exactly once."""
+        if getattr(self, '_closed', False):
+            return
+        self._closed = True
+        if getattr(self, '_owns_memory', False):
+            self.memory.close()
 
     # ── Memory 相关工具的自动注册 ──────────────────────────
     def _install_memory_tools(self, tool_registry) -> None:

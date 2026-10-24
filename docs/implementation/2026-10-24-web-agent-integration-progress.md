@@ -1,6 +1,6 @@
 # Web Agent / L0–L5 接入执行记录
 
-本记录对应 [完整计划](../superpowers/plans/2026-10-24-web-agent-l0-l5-integration.md)。目标仍是所有对话入口使用通用 Agent 与完整 L0–L5，保留业务服务权威。当前仅完成测试基础设施与一项接入前范围缺陷修复，尚未实现 Web 运行时替换，不能据此宣称全量接入或性能达标。
+本记录对应 [完整计划](../superpowers/plans/2026-10-24-web-agent-l0-l5-integration.md)。目标仍是所有对话入口使用通用 Agent 与完整 L0–L5，保留业务服务权威。当前已完成测试基础设施、基座注入改造与一项接入前范围缺陷修复，尚未实现 Web 运行时替换，不能据此宣称全量接入或性能达标。
 
 ## 执行环境与隔离
 
@@ -13,7 +13,7 @@
 
 ## Task 0：基线与契约
 
-状态：基础设施与离线基线已验证；外部 MySQL 验证未执行。提交 ID：尚未提交。
+状态：基础设施与离线基线已验证；外部 MySQL 验证未执行。提交 ID：`c36bc6d`（`test(agent): establish isolated Web integration baseline`）。
 
 新增文件：
 
@@ -21,7 +21,7 @@
 - `py/knowpath_backend/test/web_agent_guard.py`：测试导入前网络保护、收集/执行/跳过结果记录。
 - `py/knowpath_backend/test/web_agent_support.py`：SDK 类型合法的脚本化 ChatCompletion/流式 tool_calls、假时钟/向量、真实 SQL LearningState 控制辅助器。
 - `test_web_agent_checks.py`、`test_web_agent_protocol.py`、`test_web_agent_source_boundary.py`、`test_web_agent_wire_contract.py` 与合成 wire fixture。
-- [兼容套件基线清单](2026-10-24-web-agent-baseline.json)：86 个文件、1,485 个收集节点，明确为仅收集，不作为执行通过结果。
+- [兼容套件基线清单](2026-10-24-web-agent-baseline.json)：初次 86 个文件、1,485 个收集节点，Task 1 扩展结果见下文；明确为仅收集，不作为执行通过结果。
 
 红绿证据：
 
@@ -52,10 +52,23 @@
 
 ## 后续任务状态
 
+Task 1 第一版经规格和质量两轮独立审查，发现并修复：hook 将有效回答改为空白；取消信号重复取样造成成功返回/自动写入；默认召回 hook 绕过模型端口；严格模式下旧 verify/TDD 回调吞异常；默认 SDK 端口取消行为与旧中断字符串契约不一致。严格策略默认 hooks 为空，构造时拒绝旧 verify/TDD；无效配置在创建记忆存储之前拒绝。保留普通调用者的默认 hooks 和中断文本。最后一项构造器检查补测为 2 failed → 2 passed。
+
+Task 1 交付：`core/turn.py`、`core/model_port.py`、`memory/contracts.py`、`learning/agent_runtime/contracts.py`；修改 Agent 构造与收尾、Function Calling 调用循环、MemoryManager 卡片存储注入。未给通用模块引入 learning 反向依赖；调用方注入的记忆和 SDK 客户端由调用方关闭。检查点契约目前只是版本化数据类型，完整导出/恢复属于 Task 2。
+
+独立执行结果（修复后的最终版本）：
+
+- 全部 `test_web_agent_*.py` 自动收集并执行：**62 passed**，9.98s，`agent-yvcgztqh`（35 项 Task 1 + 27 项 Task 0）。
+- Task 1 指定回归加 Simple/ReAct/Reflection/TDD/Playbook/KG-hook 调用者：**117 passed**，5.46s，`agent-9yxp8n9d`，其中包含 35 项 Task 1 新测试。
+- `test_package_installation.py`：**9 passed**，7.39s，`agent-stp15r66`；覆盖包导入、维护入口和迁移模块加载，不等于最终 wheel 验收。
+- 扩展 compatibility 套件至 93 个文件（补齐共享基类调用者与包导入），仅收集 **1,560** 项，0 collection errors，`compatibility-bsckk4gv`；[清单](2026-10-24-web-agent-baseline.json) 同时保留原 86/1,485 基线摘要。尚未执行完整兼容套件。
+
+Task 1 的 external 只控制自动收尾。其“持久 L0–L5 不变”的广义退出门禁必须在 Task 5 请求隔离工作副本接通后验证；不得把当前空历史测试作为完整持久化隔离证据。默认 hooks、verify/TDD 的 Web 关闭/适配约束也需由后续工厂检查，不能凭单个 port 测试宣称所有外部模型调用已受预算控制。
+
 | 任务 | 状态 / 下一项依赖 |
 | --- | --- |
-| Task 1 基座注入与外部提交 | 实施中；需定向测试和普通 Agent 回归 |
-| Task 2 完整检查点 | 待 Task 1 接口稳定 |
+| Task 1 基座注入与外部提交 | 接口与定向回归已验证；持久隔离退出门禁待 Task 5 |
+| Task 2 完整检查点 | 下一项；接口已稳定 |
 | Task 3 SQL 存储 | 未实施 |
 | Task 4 范围/来源依赖 | 未实施 |
 | Task 5 工作副本/租约/原子发布 | 未实施，需独立 MySQL 竞争验证 |

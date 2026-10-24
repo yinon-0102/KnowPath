@@ -49,6 +49,9 @@ def test_baseline_and_agent_selection_are_explicit_and_complete():
     assert set(baseline) <= set(compatible)
     assert len(compatible) == len(set(compatible))
     assert BACKEND / "knowpath_backend/test/test_function_call_cancel.py" in compatible
+    for filename in ('test_simple_agent.py', 'test_react_agent.py',
+                     'test_reflection_agent.py', 'test_playbook.py'):
+        assert BACKEND / 'knowpath_backend/test' / filename in compatible
 
 
 @pytest.mark.parametrize("url", ["sqlite:///daily.db", "mysql+pymysql://localhost/business",

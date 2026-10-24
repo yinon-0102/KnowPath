@@ -14,6 +14,7 @@
     "knowpath_backend/test/test_function_call_cancel.py",
     "knowpath_backend/test/test_function_call_parallel.py",
     "knowpath_backend/test/test_function_call_verify.py",
+    "knowpath_backend/test/test_kg_main_write_hook.py",
     "knowpath_backend/test/test_l0_sources.py",
     "knowpath_backend/test/test_l2_reconcile.py",
     "knowpath_backend/test/test_l3_buffer.py",
@@ -29,6 +30,8 @@
     "knowpath_backend/test/test_learning_space_deletion.py",
     "knowpath_backend/test/test_memory_maintenance.py",
     "knowpath_backend/test/test_memory_task_turn.py",
+    "knowpath_backend/test/test_package_installation.py",
+    "knowpath_backend/test/test_playbook.py",
     "knowpath_backend/test/test_rag_b15.py",
     "knowpath_backend/test/test_rag_b2_r1.py",
     "knowpath_backend/test/test_rag_b3.py",
@@ -89,13 +92,22 @@
     "knowpath_backend/test/test_rag_vector_v2.py",
     "knowpath_backend/test/test_rag_verification.py",
     "knowpath_backend/test/test_rag_verification_v2.py",
+    "knowpath_backend/test/test_react_agent.py",
     "knowpath_backend/test/test_reading_messages.py",
+    "knowpath_backend/test/test_reflection_agent.py",
+    "knowpath_backend/test/test_simple_agent.py",
     "knowpath_backend/test/test_study_lesson_streaming.py",
-    "knowpath_backend/test/test_study_lessons.py"
+    "knowpath_backend/test/test_study_lessons.py",
+    "knowpath_backend/test/test_tdd_agent_wiring.py"
   ],
-  "file_count": 86,
-  "collected_count": 1485,
-  "nodeids_sha256": "d2210ed33a3007ef333e549dd4d51f8ad5a0b89df7e6a9b2e9be62ce6fcf397d",
+  "file_count": 93,
+  "collected_count": 1560,
+  "nodeids_sha256": "c3183b612af78f03121bddd9a19c131175d57a3fdbaf9b43b69cde1adcc42d46",
   "collection_errors": [],
-  "execution": "collection_only_not_a_pass_result"
+  "execution": "collection_only_not_a_pass_result",
+  "initial_collection": {
+    "file_count": 86,
+    "collected_count": 1485,
+    "nodeids_sha256": "d2210ed33a3007ef333e549dd4d51f8ad5a0b89df7e6a9b2e9be62ce6fcf397d"
+  }
 }
