@@ -237,3 +237,18 @@ MemorySessionService/MemorySession 已落盘，复用通用 MemoryManager，捕�
 上述兼容阻断随后已修复：冷热条目的权威创建时间与完整 provenance 对齐，created_at/last_access 按 UTC 比较；业务 uid 与租约执行身份分离；prompt_data 同时从实际模型输入和预算中剥离服务端 memory_scope/source_dependencies。root 定向 agent-ccmpcyzi 为 64 passed / 28 MySQL opt-in skipped。root 完整兼容复验 compatibility-pof574u4 为 1472 passed / 88 skipped / 1 既有 warning，168.55s，exitstatus=0、collection_errors=0，关闭前述 23 项兼容失败。
 
 root 已独立读取实现者专用 MySQL 正常入口结果 agent-1pcwzs3v：6 passed，无 skip；故障验证 agent-wmyfob3c：4 passed / 2 MySQL opt-in skipped，均 exitstatus=0、collection_errors=0。后者覆盖外层发布事务失败与提交成功后连接异常的收据恢复；并非真实双连接竞争证明。完整 Task 5 仍待双连接锁序/fencing、按需恢复、检索 artifact/hash/span、派生依赖资格等门禁，源码尚未进入最终独立规格/质量审查。
+
+### Task 5 按需恢复、派生来源及发布边界复核（仍在实施）
+
+请求副本已改为启动加载 checkpoint 引用及完整 turn，历史 cold/vector 按需加载；资格检查移到 memory 短事务之外，避免持有 memory 锁再取 material 锁。上述为当前实现状态，不代表全部退出门禁通过。
+
+root 重新读取以下隔离结果，确认计数与退出状态；均无收集错误：
+
+- agent-k_4fy4uq：135 passed / 9 skipped、exitstatus=0。checkpoint 时间按 UTC 比较，但保留原 datetime 表示，修复无条件规范化破坏 round-trip 的问题。
+- agent-ori4nwi9：128 passed / 11 skipped、exitstatus=0。多轮摘要保留贡献来源；同 epoch 不同 receive_sequence 不再误判身份不同，混合 epoch 的祖先不能被后续来源洗掉。
+- agent-hgd9nwu2：12 passed / 4 后端不适用 skipped、exitstatus=0。专用 MySQL 双连接验证旧 token 在无替代持有者及有替代持有者时均不能发布；不覆盖共享资料发布、评分、删除竞争。
+- agent-antx867l：135 passed / 2 failed / 12 skipped、exitstatus=1。真实 item/message 的递归来源资格仍有缺口：依赖来自旧 material scope，候选声明当前 general scope 仍被接受。两个失败均为 test_transitive_dependency_requalifies_real_item_and_message_scope 的真实后端参数，当前属于阻断。
+
+本轮 root 对当前工作树重新运行 commit/checkpoint/protocol：agent-f5f515xd 为 135 passed / 2 failed / 12 skipped、退出码 1，原 session 95430 已确认终止；重复确认上述两个来源资格失败仍在，不能按已修复处理。专用 MySQL 未由 root 占用。
+
+本轮只读审计另确认：_publish_answer_once 的来源锁目前仅覆盖 bindings 与 snapshot.sources，尚未包含完整 consumed recall/cards 依赖；无 delivery_plan 路径还在来源锁之前读取锁定 message。需要先收集完整来源闭包，发布按 assessment→space→material/version→message→outbox→Run→memory 顺序锁定并再验资格，不得在末尾 session.publish 内反向取得业务锁。已交唯一实现者继续修复；Task 4/5 保持未完成，Task 6–13 与独立 R0 门禁继续保留。
