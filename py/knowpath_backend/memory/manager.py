@@ -240,7 +240,13 @@ class MemoryManager:
                 live = canonical[item.id]
                 for peer in [item, *peers]:
                     live.access_count = max(live.access_count, peer.access_count)
-                    live.last_access = max(live.last_access, peer.last_access)
+                    from datetime import timezone
+                    def utc(value):
+                        return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value.astimezone(timezone.utc)
+                    # Compare instants without rewriting the checkpoint's datetime
+                    # representation. Equal instants retain the canonical hot value.
+                    if utc(peer.last_access) > utc(live.last_access):
+                        live.last_access = peer.last_access
                     live.prior_score = max(live.prior_score, peer.prior_score)
                     live.supersedes = list(dict.fromkeys([*live.supersedes, *peer.supersedes]))
             items = [canonical[item.id] for item in items]
@@ -401,8 +407,12 @@ class MemoryManager:
         metadata: Optional[Dict] = None,
         task_turn: bool = False,
         turn_id: Optional[str] = None,
+        item_id: Optional[str] = None,
+        created_at=None,
     ) -> MemoryItem:
         item = MemoryItem(
+            **({'id': item_id} if item_id is not None else {}),
+            **({'created_at': created_at, 'last_access': created_at} if created_at is not None else {}),
             content=content,
             role=role,
             pinned=pinned,
@@ -601,6 +611,7 @@ class MemoryManager:
         system_prompt: Optional[str],
         effective_query: Optional[str],
         passive_recall_k: int,
+        *, candidate_filter=None,
     ) -> List[ContextSegment]:
         """从各记忆层收集候选片段(不做选择/裁剪,那是引擎的活)。
 
@@ -627,6 +638,8 @@ class MemoryManager:
 
         # 2) L0 卡片(逐卡成段;硬约束 floor=True,与核心卡同 source 渲染)
         for card in self.playbook.all_active():
+            if candidate_filter is not None and not candidate_filter(card, 'L0'):
+                continue
             rel = self._context_engine.relevance_fn(card.content, effective_query) \
                 if effective_query else 0.0
             effective = card.confidence + 0.3 * rel
@@ -647,7 +660,7 @@ class MemoryManager:
 
         # 3) L2 摘要
         summary = self.summary.current_summary()
-        if summary is not None:
+        if summary is not None and (candidate_filter is None or candidate_filter(summary, 'L2')):
             content = (
                 "## 对话梗概(背景叙事)\n"
                 "仅用于理解上下文脉络。关于用户的具体事实"
@@ -657,14 +670,14 @@ class MemoryManager:
             add("l2", "system", content, priority=0.45, floor=False, order=2, metadata=summary.metadata)
 
         # 4) KG 事实(逐条成段,便于按条去重/计预算)
-        if effective_query:
+        if effective_query and candidate_filter is None:
             for f in self.recall_facts(effective_query):
                 rel = self._context_engine.relevance_fn(f, effective_query)
                 add("kg", "system", f"- {f}", priority=max(0.3, rel),
                     floor=False, order=3)
 
         # 5) 被动 recall(先跑副作用,再逐条成段)
-        if effective_query and passive_recall_k > 0:
+        if effective_query and passive_recall_k > 0 and candidate_filter is None:
             self._run_passive_recall_side_effects(effective_query, passive_recall_k)
             l1_ids = {it.id for it in self.working.items()}
             for entry in self.recall_buffer.entries():
@@ -685,6 +698,8 @@ class MemoryManager:
         recent = complete[-self.config.l1_recent_turns:] if self.config.l1_recent_turns else []
         recent_ids = {group[0].id for group in recent}
         for group in groups:
+            if candidate_filter is not None and any(not candidate_filter(item, 'L1') for item in group):
+                continue
             if self.working.whole_turns:
                 validated = complete_turn(group)
                 if validated is None:
@@ -795,6 +810,7 @@ class MemoryManager:
         *,
         exclude_working: bool = True,
         include_superseded: bool = False,
+        candidate_filter=None,
     ) -> List[Tuple[MemoryItem, float]]:
         """语义检索。命中的项自动 touch(热度+1)。
 
@@ -802,7 +818,8 @@ class MemoryManager:
         - include_superseded=False 排除已被新记忆取代的旧版本(默认)
         """
         # 多取候选,过滤后仍能保证返回 k 条
-        results = self.semantic.search(query, k=max(k * 3, k))
+        options = {} if candidate_filter is None else {'candidate_filter': candidate_filter}
+        results = self.semantic.search(query, k=max(k * 3, k), **options)
         if not include_superseded:
             results = [(it, s) for it, s in results if it.is_active]
         if exclude_working:

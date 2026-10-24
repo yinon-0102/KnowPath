@@ -50,6 +50,7 @@ class TurnCandidate(VersionedContract):
     key_points: list[dict[str, Any]] = field(default_factory=list)
     citation_ids: list[str] = field(default_factory=list)
     delivered_sources: list[dict[str, Any]] = field(default_factory=list)
+    source_dependencies: list[dict[str, Any]] = field(default_factory=list)
     tool_trace: list[dict[str, Any]] = field(default_factory=list)
     usage: dict[str, Any] = field(default_factory=dict)
     memory_mutation: MemoryMutation | None = None

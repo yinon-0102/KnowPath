@@ -57,25 +57,36 @@ def project_memory(rows, space, conversation_id, query, *, request_scope=None, r
     # Transition gate: callers that have a current Task4 policy must qualify
     # every retained turn before history, recall, or summary is built. Legacy
     # callers continue the old projection until their request carries a policy.
+    adjacent_ids = {row['id'] for row in eligible}
     if eligibility_policy is not None:
         qualified = []
+        adjacent_ids = set()
         for row in eligible:
+            from knowpath_backend.learning.agent_memory.repository import projection_provenance
+            try:
+                metadata = projection_provenance(row)[1]
+                # This transition projection already has complete canonical
+                # dependencies; no external reference is required here.
+                metadata.pop('source_ref', None)
+            except (ValueError, TypeError, KeyError):
+                continue
             candidate = {'id': row['id'], 'lifecycle': 'active',
-                         'metadata': {'memory_scope': row.get('snapshot', {}).get('memory_scope'),
-                                      'source_dependencies': row.get('snapshot', {}).get('source_dependencies', []),
-                                      'source_message_id': row['id']}}
+                         'metadata': metadata}
             # Near history is conversation-local L1; older/cross-conversation
             # material is recall/L0 and must never be promoted to adjacency.
-            purpose = 'L1' if row.get('conversation_id') == conversation_id else 'recall'
-            if eligibility_policy.eligible(candidate, purpose=purpose): qualified.append(row)
+            if eligibility_policy.eligible(candidate, purpose='recall'):
+                qualified.append(row)
+                if (row.get('conversation_id') == conversation_id
+                        and eligibility_policy.eligible(candidate, purpose='L1')):
+                    adjacent_ids.add(row['id'])
         eligible = qualified
     # A follow-up refers to the immediately preceding turn, not an older turn
     # that happens to share today's scope after an A -> B -> A transition.
     preceding = [r for r in rows if r['space_id'] == space['id']
                  and r['conversation_id'] == conversation_id and r['status'] == 'completed' and r.get('response')]
     latest = max(preceding, key=lambda r: r['sequence'], default=None)
-    scope_changed = request_scope is not None and latest is not None and latest['id'] not in {r['id'] for r in eligible}
-    own = sorted([r for r in eligible if r["conversation_id"] == conversation_id], key=lambda r: r["sequence"])
+    scope_changed = request_scope is not None and latest is not None and latest['id'] not in adjacent_ids
+    own = sorted([r for r in eligible if r["conversation_id"] == conversation_id and r['id'] in adjacent_ids], key=lambda r: r["sequence"])
     recent = [] if scope_changed else own[-5:]
     recent_ids = {r["id"] for r in recent}
     history = [part for r in recent for part in (
@@ -188,7 +199,8 @@ def message_source_refs(message, rows=(), *, memo=None, visiting=None):
 
 def prompt_data(snapshot):
     return {k: v for k, v in snapshot.items() if k not in {"context_report", "profile_candidates", "retrieval_sources",
-                                                        "context_provenance", "delivered_source_refs"}}
+                                                        "context_provenance", "delivered_source_refs",
+                                                        "memory_scope", "source_dependencies"}}
 
 
 def prompt_tokens(snapshot):

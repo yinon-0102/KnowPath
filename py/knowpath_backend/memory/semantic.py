@@ -35,8 +35,10 @@ class SemanticIndex(MemoryTier):
         self._hot_items.pop(item_id, None)
         return self.backend.remove(item_id)
 
-    def search(self, query: str, k: int = 5) -> List[Tuple[MemoryItem, float]]:
-        return [(self._hot_items.get(item.id, item), score) for item, score in self.backend.search(query, k=k)]
+    def search(self, query: str, k: int = 5, *, candidate_filter=None) -> List[Tuple[MemoryItem, float]]:
+        options = {} if candidate_filter is None else {'candidate_filter': lambda item:
+            candidate_filter(self._hot_items.get(item.id, item))}
+        return [(self._hot_items.get(item.id, item), score) for item, score in self.backend.search(query, k=k, **options)]
 
     def bind_hot_items(self, items):
         """Overlay validated session objects without writes or embedding calls."""

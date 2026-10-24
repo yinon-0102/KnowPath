@@ -1,7 +1,7 @@
 """记忆条目的数据结构与元数据。"""
 import math
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field
@@ -78,7 +78,11 @@ class MemoryItem(BaseModel):
         默认权重 0.3 / 0.3 / 0.2 / 0.2 = 1.0,保持 importance ∈ [0, 1]。
         """
         now = now or datetime.now()
-        elapsed_days = max(0.0, (now - self.last_access).total_seconds() / 86400.0)
+        # SQL timestamps and legacy local items may differ in awareness. Treat
+        # legacy naive timestamps as UTC for deterministic persisted decay.
+        instant = now.replace(tzinfo=timezone.utc) if now.tzinfo is None else now
+        accessed = self.last_access.replace(tzinfo=timezone.utc) if self.last_access.tzinfo is None else self.last_access
+        elapsed_days = max(0.0, (instant - accessed).total_seconds() / 86400.0)
 
         access_score = math.log1p(self.access_count) / math.log1p(50)  # 归一到 [0, ~1]
         recency_score = math.exp(-elapsed_days / decay_tau_days)

@@ -179,3 +179,11 @@ def test_reception_rollback_leaves_no_segment_and_requires_transaction(reception
     with repo.transaction():
         add('m2'); received = api().freeze_reception(repo, 'm2', identity())
     assert received['context_epoch'] == received['receive_sequence'] == 1
+
+def test_scope_receipt_internal_space_must_match_identity():
+    value=candidate()
+    value['metadata']['memory_scope']['identity']['space_id']='foreign'
+    value['metadata']['memory_scope']['fingerprint']=api().scope_fingerprint(value['metadata']['memory_scope']['identity'])
+    current=frozen(value['metadata']['memory_scope']['identity'])
+    current['space_id']='s'
+    assert not policy(current).eligible(value,purpose='recall')

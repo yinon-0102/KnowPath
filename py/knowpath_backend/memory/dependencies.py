@@ -50,13 +50,40 @@ def validate_scope_payload(payload):
         validate_scope_payload(payload['scope'])
 
 
+def validate_receipt(value):
+    """Validate an opaque server receipt without importing a domain policy."""
+    from hashlib import sha256
+    from knowpath_backend.memory.checkpoint import InvalidCheckpoint
+    fields = {'space_id', 'conversation_id', 'context_epoch', 'receive_sequence', 'fingerprint', 'identity'}
+    if type(value) is not dict or set(value) != fields:
+        raise InvalidCheckpoint('Invalid source receipt fields')
+    if any(type(value[key]) is not str or not value[key] or len(value[key]) > 512
+           for key in ('space_id', 'conversation_id', 'fingerprint')):
+        raise InvalidCheckpoint('Invalid source receipt identity')
+    if any(type(value[key]) is not int or value[key] < 1
+           for key in ('context_epoch', 'receive_sequence')):
+        raise InvalidCheckpoint('Invalid source receipt sequence')
+    identity = value['identity']
+    if type(identity) is not dict or identity.get('space_id') != value['space_id']:
+        raise InvalidCheckpoint('Inconsistent source receipt space')
+    fingerprint = sha256(json.dumps(identity, ensure_ascii=False, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+    if value['fingerprint'] != fingerprint:
+        raise InvalidCheckpoint('Inconsistent source receipt fingerprint')
+    if len(json.dumps(value).encode('utf-8')) > 2048:
+        raise InvalidCheckpoint('Source receipt record limit exceeded')
+
+
 def validate_sources(metadata, *, max_dependencies):
     from knowpath_backend.memory.checkpoint import InvalidCheckpoint, json_copy
     result = json_copy(metadata)
-    for key in ('source_dependencies', 'source_item_ids', 'source_scopes'):
+    for key in ('source_dependencies', 'source_item_ids', 'source_scopes', 'source_receipts'):
         value = result.get(key, [])
         if type(value) is not list or len(value) > max_dependencies:
             raise InvalidCheckpoint('Derived dependency capacity exceeded')
+    for receipt in result.get('source_receipts', []):
+        validate_receipt(receipt)
+    if 'memory_scope' in result:
+        validate_receipt(result['memory_scope'])
     for record in result.get('source_dependencies', []):
         canonical_dependency(record)
     if any(type(value) is not str or not value or len(value) > 512 for value in result.get('source_item_ids', [])):
@@ -73,6 +100,28 @@ def validate_sources(metadata, *, max_dependencies):
 def merge_sources(metadata, sources, *, max_dependencies=512):
     from knowpath_backend.memory.checkpoint import InvalidCheckpoint, json_copy
     result = validate_sources(metadata, max_dependencies=max_dependencies)
+    sources = list(sources)
+    # Receive order varies within an epoch; it is not scope identity. Keep all
+    # contributor receipts while inheriting only a unanimous epoch identity.
+    receipts = [source.metadata.get('memory_scope') for source in sources]
+    if 'memory_scope' in result:
+        receipts.insert(0, result['memory_scope'])
+    receipts.extend(result.get('source_receipts', []))
+    for source in sources:
+        receipts.extend(source.metadata.get('source_receipts', []))
+    def receipt_identity(value):
+        return {key: item for key, item in value.items() if key != 'receive_sequence'} if isinstance(value, dict) else None
+    if receipts and receipts[0] is not None and all(receipt_identity(value) == receipt_identity(receipts[0]) for value in receipts):
+        result['memory_scope'] = json_copy(receipts[0])
+    elif receipts:
+        result.pop('memory_scope', None)
+    contributors = result.setdefault('source_receipts', [])
+    for source in sources:
+        for receipt in [*source.metadata.get('source_receipts', []), source.metadata.get('memory_scope')]:
+            if receipt is not None and receipt not in contributors:
+                contributors.append(json_copy(receipt))
+    if len(contributors) > max_dependencies:
+        raise InvalidCheckpoint('Derived receipt capacity exceeded')
     for key in ('source_dependencies', 'source_item_ids', 'source_scopes'):
         unique = []
         for record in result.get(key, []):
@@ -113,22 +162,25 @@ def merge_sources(metadata, sources, *, max_dependencies=512):
 
 def source_identity(item):
     """Immutable provenance only; checkpoint heat and pinning may differ."""
-    keys = _SCOPE_KEYS | {'source_dependencies', 'source_item_ids', 'source_scopes', 'source_ref',
+    keys = _SCOPE_KEYS | {'memory_scope', 'source_receipts', 'source_dependencies', 'source_item_ids', 'source_scopes', 'source_ref',
                           'source_message_id', 'origin_message_id', 'source_bindings'}
     provenance = {key: item.metadata[key] for key in keys if key in item.metadata}
+    from datetime import timezone
+    created = item.created_at
+    created = created.replace(tzinfo=timezone.utc) if created.tzinfo is None else created.astimezone(timezone.utc)
     return (item.content, item.role, item.turn_id or item.metadata.get('turn_id'),
-            item.created_at, provenance)
+            created, provenance)
 
 
 def has_provenance(metadata):
-    return bool(set(metadata) & (_SCOPE_KEYS | {'source_dependencies', 'source_item_ids', 'source_scopes',
+    return bool(set(metadata) & (_SCOPE_KEYS | {'memory_scope', 'source_dependencies', 'source_item_ids', 'source_scopes',
                                                'source_ref', 'source_message_id', 'origin_message_id'}))
 
 
 def canonical_metadata(metadata, *, max_dependencies, max_bytes, source_id=None):
     """Keep bounded provenance, never arbitrary raw history or model payloads."""
     from knowpath_backend.memory.checkpoint import InvalidCheckpoint, json_copy
-    keys = _SCOPE_KEYS | {'source_dependencies', 'source_item_ids', 'source_scopes', 'source_ref',
+    keys = _SCOPE_KEYS | {'memory_scope', 'source_receipts', 'source_dependencies', 'source_item_ids', 'source_scopes', 'source_ref',
                           'source_message_id', 'origin_message_id', 'source_bindings'}
     result = json_copy({key: metadata[key] for key in keys if key in metadata})
     if 'scope' in result:
@@ -138,7 +190,7 @@ def canonical_metadata(metadata, *, max_dependencies, max_bytes, source_id=None)
         if source_id not in ids:
             ids.append(source_id)
     for key, value in result.items():
-        if key not in {'source_dependencies', 'source_item_ids', 'source_scopes'} and len(json.dumps(value).encode('utf-8')) > 2048:
+        if key not in {'source_dependencies', 'source_item_ids', 'source_scopes', 'source_receipts'} and len(json.dumps(value).encode('utf-8')) > 2048:
             raise InvalidCheckpoint('Canonical source identity record limit exceeded')
     result = validate_sources(result, max_dependencies=max_dependencies)
     if len(json.dumps(result, ensure_ascii=False).encode('utf-8')) > max_bytes:

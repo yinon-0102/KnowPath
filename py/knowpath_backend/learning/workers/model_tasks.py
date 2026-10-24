@@ -93,6 +93,25 @@ class ModelLease:
             pass
 
     def renew(self):
+        if not self._renew_event(): return False
+        token = self.event['payload'].get('memory_lease_token')
+        if token:
+            factory = getattr(self.worker.repository, 'agent_memory_factory', None)
+            memory = factory(self.event['payload']['space_id']) if factory else None
+            # Separate short transaction: never hold a memory lock while
+            # acquiring outbox/Run locks in the renewal thread.
+            if memory is None:
+                self.lost.set()
+                return False
+            with memory.transaction():
+                renewed = memory.renew_execution_lease(token, self.event['aggregate_id'],
+                    self.event['lease_token'], seconds=min(300, self.worker.lease_seconds, max(0.001, self.remaining())))
+            if not renewed:
+                self.lost.set()
+                return False
+        return True
+
+    def _renew_event(self):
         if self.stopped.is_set() or self.lost.is_set():
             return False
         try:
@@ -309,10 +328,39 @@ class ModelTaskWorker:
                     log_event(logger, 'worker.retry.exhausted', level=logging.ERROR, job_id=event['id'],
                               run_id=run['id'], attempt=event['attempts'], error_code=error['code'])
                     return None
+                if event['event_type'] == 'message.generate':
+                    factory = getattr(self.repository, 'agent_memory_factory', None)
+                    receipt = resource.get('snapshot', {}).get('memory_scope')
+                    if factory is not None and receipt is not None:
+                        memory = factory(resource['space_id'])
+                        earlier = any(row['id'] != resource['id']
+                            and row['status'] in {'pending', 'generating'}
+                            and row.get('snapshot', {}).get('memory_scope', {}).get('receive_sequence', float('inf')) < receipt['receive_sequence']
+                            for row in self.repository.records('messages', space_id=resource['space_id']))
+                        state = memory._locked_space()
+                        # The outbox row is already locked and its previous
+                        # execution expired above. Revoke only that execution's
+                        # matching space token before a replacement is admitted.
+                        previous_memory = event['payload'].get('memory_lease_token')
+                        if (event['status'] == 'processing' and previous_memory
+                                and state['lease_token'] == previous_memory):
+                            memory.release_execution_lease(previous_memory, resource['id'], event['lease_token'])
+                            state = memory.get_space()
+                        occupied = (state['lease_token'] and state['lease_expires']
+                            and state['lease_expires'] > memory.execution_time())
+                        if occupied or earlier:
+                            event.update(status='pending', lease_token=None, lease_until=None,
+                                available_at=(instant + timedelta(seconds=1)).isoformat())
+                            self.repository.put_record('outbox', event)
+                            return None
                 if run["status"] == "queued":
                     self.runs.start(run["id"])
                 event.update(status="processing", attempts=event["attempts"] + 1,
                              lease_token=str(uuid4()), lease_until=(instant + timedelta(seconds=self.lease_seconds)).isoformat(), available_at=None)
+                if event['event_type'] == 'message.generate' and factory is not None and receipt is not None:
+                    execution = memory.acquire_execution_lease(resource['id'], event['lease_token'], seconds=min(300, self.lease_seconds))
+                    if execution is None: raise LeaseLost()
+                    event['payload']['memory_lease_token'] = execution['lease_token']
                 self.repository.put_record("outbox", event)
                 return event
         except DomainNotFound:

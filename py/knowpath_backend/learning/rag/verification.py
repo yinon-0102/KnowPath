@@ -639,6 +639,22 @@ class AnswerVerifier:
                 _messages(self.checker, {**data, 'draft':{}}, 'verification', short_ids))
 
     def answer(self, question, sources, *, deadline, max_generation_calls=2, max_verification_calls=2):
+        return self._run(question, sources, deadline=deadline,
+            max_generation_calls=max_generation_calls, max_verification_calls=max_verification_calls)
+
+    def verify_candidate(self, question, sources, candidate, *, deadline):
+        """Check an Agent-supplied draft once; the Agent owns any revision.
+
+        Draft instances carry authoritative full chunk IDs. WireDraft instances
+        carry the ordinary s1/s2 source aliases. Dictionary inputs retain the
+        configured generator protocol's existing draft contract.
+        """
+        return self._run(question, sources, deadline=deadline,
+            max_generation_calls=1, max_verification_calls=1,
+            supplied=True, supplied_candidate=candidate)
+
+    def _run(self, question, sources, *, deadline, max_generation_calls,
+             max_verification_calls, supplied=False, supplied_candidate=None):
         _deadline(deadline)
         if any(type(n) is not int or n < 1 for n in (max_generation_calls, max_verification_calls)):
             raise ValueError("positive call budgets required")
@@ -677,7 +693,11 @@ class AnswerVerifier:
             self.diagnostic_callback(event)
 
         def validate_draft(raw):
-            if _v2(self.generator):
+            canonical = isinstance(raw, Draft) and not isinstance(raw, WireDraft)
+            wire_candidate = isinstance(raw, WireDraft)
+            if isinstance(raw, Draft):
+                raw = raw.model_dump(exclude_none=True)
+            if wire_candidate or (_v2(self.generator) and not canonical):
                 wire = WireDraft.model_validate(_deduplicate_wire_ids(raw)).model_dump()
                 _check_draft_capacity(self.generator, wire)
                 raw = _map_citations(wire, full_ids)
@@ -723,20 +743,28 @@ class AnswerVerifier:
             # an unbound local must never mask the provider failure.
             raw = None
             try:
-                trace["generation_calls"] += 1
-                with bind_context(revision_index=attempt, stage_call_index=trace['generation_calls']):
-                    raw = _generate(self.generator, _messages(self.generator, data, 'generation', short_ids),
-                                    deadline, WireDraft)
+                if supplied:
+                    raw = supplied_candidate
+                else:
+                    trace["generation_calls"] += 1
+                    with bind_context(revision_index=attempt, stage_call_index=trace['generation_calls']):
+                        raw = _generate(self.generator, _messages(self.generator, data, 'generation', short_ids),
+                                        deadline, WireDraft)
                 diagnostic('generation', 'raw', raw)
                 # Stage the canonical checklist with the entire draft; failed
                 # citation or shape validation cannot commit new requirements.
                 draft, next_required = validate_draft(raw)
                 diagnostic('generation', 'validated', draft.model_dump())
-                trace["usage"].append({"stage": "generation", **(getattr(self.generator, "last_usage", None) or {})})
+                if not supplied:
+                    trace["usage"].append({"stage": "generation", **(getattr(self.generator, "last_usage", None) or {})})
                 required = next_required
-                _journal_validation(self.generator, 'generation')
+                if not supplied:
+                    _journal_validation(self.generator, 'generation')
             except VerificationError as error:
                 diagnostic('generation', 'rejected', error=error, categories=['provider_failure'])
+                if supplied:
+                    raise VerificationError(error.code, details={**error.details,
+                        'stage': 'candidate', 'call_index': 0}) from None
                 _journal_validation(self.generator, 'generation', error)
                 if (self._contract_retry_allowed(self.generator, attempt, attempts)
                         and self._retryable_contract_error(error)):
@@ -755,6 +783,10 @@ class AnswerVerifier:
                 raise VerificationError(error.code, details={**error.details,
                     'stage':'generation', 'call_index':trace['generation_calls']}) from None
             except Exception as error:
+                if supplied and isinstance(error, (ValidationError, _ContractViolation)):
+                    raise VerificationError('GENERATION_INVALID_RESPONSE', details={
+                        'stage': 'candidate', 'call_index': 0, 'failure_kind': 'response_schema',
+                        **_schema_details(error, self.generator)}) from None
                 diagnostic('generation', 'rejected', error=error, categories=[
                     'contract_invalid' if isinstance(error, (ValidationError, _ContractViolation)) else 'provider_failure'])
                 _journal_validation(self.generator, 'generation', error)
@@ -799,7 +831,7 @@ class AnswerVerifier:
                         'failure_kind':'response_schema', **_schema_details(error, self.generator)}) from None
             _deadline(deadline)
             trace["drafts"].append(draft.model_dump(exclude_none=True))
-            if not draft.claims and draft.required_points is None:
+            if not supplied and not draft.claims and draft.required_points is None:
                 return self._result([], draft.status, trace)
             try:
                 trace["verification_calls"] += 1

@@ -32,9 +32,37 @@ _REQUEST_SLOTS = BoundedSemaphore(16)
 _HTTP_WORKER_SLOTS = BoundedSemaphore(32)
 
 
+class RequestTurnBudget:
+    """One turn's nonrefundable spending, deadline and operation admission."""
+    def __init__(self, deadline, *, max_operations=8):
+        if type(deadline) not in (int, float) or not math.isfinite(deadline):
+            raise VerificationError('RAG_DEADLINE_INVALID')
+        if type(max_operations) is not int or max_operations < 1:
+            raise ValueError('positive operation budget required')
+        self.deadline, self.max_operations = deadline, max_operations
+        self.spending = RequestSpending(spending_configuration())
+        self.journal = RequestJournal(deadline)
+        self.operations = 0
+        self._active = Lock()
+        self._closed = False
+
+    def admit(self):
+        if not self._active.acquire(blocking=False):
+            raise VerificationError('RAG_STAGE_BUDGET_EXCEEDED')
+        if self._closed or self.operations >= self.max_operations:
+            self._active.release()
+            raise VerificationError('RAG_STAGE_BUDGET_EXCEEDED')
+        self.operations += 1
+
+    def finish(self, status='succeeded'):
+        self._closed = True
+        return self.journal.seal(status)
+
+
 class _Exchange:
-    def __init__(self, deadline):
+    def __init__(self, deadline, should_cancel=None):
         self.deadline = deadline
+        self.should_cancel = should_cancel
         self.events = Queue(maxsize=2)
         self.cancelled = Event()
         self.identifier = None
@@ -53,16 +81,27 @@ class _Exchange:
         return False
 
     def receive(self):
-        remaining = self.deadline - time.monotonic()
-        try:
+        while True:
+            if self.should_cancel and self.should_cancel():
+                self.cancelled.set()
+                from knowpath_backend.core.turn import TurnCancelled
+                raise TurnCancelled('Web turn cancelled during provider wait')
+            remaining = self.deadline - time.monotonic()
             if remaining <= 0:
-                raise Empty()
-            event = self.events.get(timeout=remaining)
+                self.cancelled.set()
+                raise VerificationError('RAG_DEADLINE_EXCEEDED')
+            try:
+                event = self.events.get(timeout=min(.05, remaining))
+            except Empty:
+                continue
             if time.monotonic() >= self.deadline:
-                raise Empty()
-        except Empty:
-            self.cancelled.set()
-            raise VerificationError('RAG_DEADLINE_EXCEEDED') from None
+                self.cancelled.set()
+                raise VerificationError('RAG_DEADLINE_EXCEEDED')
+            if self.should_cancel and self.should_cancel():
+                self.cancelled.set()
+                from knowpath_backend.core.turn import TurnCancelled
+                raise TurnCancelled('Web turn cancelled during provider wait')
+            break
         if event[0] == 'error':
             raise event[1]
         return event
@@ -106,10 +145,11 @@ def retrieval_budget_for_mode(mode):
 
 class DeadlineTransport(httpx.BaseTransport):
     """Bound every HTTP stage by the remaining request time, without retries."""
-    def __init__(self, deadline, spending=None, journal=None):
+    def __init__(self, deadline, spending=None, journal=None, *, should_cancel=None):
         self.deadline = deadline
         self.spending = spending
         self.journal = journal
+        self.should_cancel = should_cancel
         self._jobs = Queue(maxsize=1)
         self._stop = Event()
         self._start_lock = Lock()
@@ -123,8 +163,15 @@ class DeadlineTransport(httpx.BaseTransport):
             if self._started:
                 return
             slots = _HTTP_WORKER_SLOTS
-            if not slots.acquire(timeout=max(0, deadline-time.monotonic())):
-                raise VerificationError('RAG_DEADLINE_EXCEEDED')
+            while True:
+                if self.should_cancel and self.should_cancel():
+                    from knowpath_backend.core.turn import TurnCancelled
+                    raise TurnCancelled('Web turn cancelled before provider dispatch')
+                remaining = deadline-time.monotonic()
+                if remaining <= 0:
+                    raise VerificationError('RAG_DEADLINE_EXCEEDED')
+                if slots.acquire(timeout=min(.05, remaining)):
+                    break
             try:
                 worker = Thread(target=run_with_log_context, args=({}, self._run, slots), daemon=True, name='rag-http')
                 worker.start()
@@ -208,7 +255,7 @@ class DeadlineTransport(httpx.BaseTransport):
             if configured.get(key) is not None else remaining
             for key in ('connect', 'read', 'write', 'pool')}
         self._start(deadline)
-        exchange = _Exchange(deadline)
+        exchange = _Exchange(deadline, self.should_cancel)
         stage = 'retrieval'
         if self.journal:
             path = request.url.path
@@ -284,33 +331,66 @@ class ConfiguredPipeline:
         self.diagnostic_callback = None
 
     def answer(self, question, **kwargs):
+        return self._request(question, **kwargs)
+
+    def prepare_evidence(self, question, **kwargs):
+        return self._request(question, operation='prepare', **kwargs)
+
+    def verify_candidate(self, question, sources, candidate, *, deadline, **kwargs):
+        return self._request(question, operation='verify', deadline=deadline,
+            sources=deepcopy(sources), candidate=candidate, **kwargs)
+
+    def new_turn_budget(self, *, deadline=None, max_operations=8):
+        timeout = float(os.getenv('RAG_DEADLINE_SECONDS', '120'))
+        if not 0 < timeout <= 600:
+            raise ValueError('invalid RAG deadline')
+        return RequestTurnBudget(time.monotonic()+timeout if deadline is None else deadline,
+            max_operations=max_operations)
+
+    def _request(self, question, *, operation='answer', deadline=None, turn_budget=None, **kwargs):
         self.last_retrieval_snapshot = None
         timeout = float(os.getenv('RAG_DEADLINE_SECONDS', '120'))
         if not 0 < timeout <= 600:
             raise ValueError('invalid RAG deadline')
-        deadline = time.monotonic() + timeout
-        journal = RequestJournal(deadline)
-        if not _REQUEST_SLOTS.acquire(timeout=timeout):
+        owned = turn_budget is None
+        budget = turn_budget or self.new_turn_budget(deadline=deadline)
+        deadline = min(budget.deadline, time.monotonic()+timeout,
+            deadline if deadline is not None else budget.deadline)
+        journal = budget.journal
+        if kwargs.get('cancelled') is not None and kwargs['cancelled']():
+            raise VerificationError('RAG_CANCELLED')
+        if deadline <= time.monotonic():
+            raise VerificationError('RAG_DEADLINE_EXCEEDED')
+        budget.admit()
+        if not _REQUEST_SLOTS.acquire(timeout=max(0, deadline-time.monotonic())):
+            budget._active.release()
             error = VerificationError('RAG_DEADLINE_EXCEEDED')
-            error.call_journal = journal.seal('deadline')
+            error.call_journal = budget.finish('deadline')
             raise error
         outcome = []
         def execute():
             try:
                 journal.set_stage('initialization')
-                outcome.append((True, self._answer(question, deadline=deadline, journal=journal, **kwargs)))
+                outcome.append((True, self._answer(question, deadline=deadline, journal=journal,
+                    spending=budget.spending, operation=operation, **kwargs)))
             except Exception as error:
                 outcome.append((False, error))
             finally:
                 _REQUEST_SLOTS.release()
+                budget._active.release()
         worker = Thread(target=run_with_log_context, args=(context_fields(), execute), daemon=True, name='rag-request')
-        worker.start()
+        try:
+            worker.start()
+        except BaseException:
+            _REQUEST_SLOTS.release()
+            budget._active.release()
+            raise
         worker.join(max(0, deadline-time.monotonic()))
         if worker.is_alive() or time.monotonic() >= deadline:
             # A remote provider can finish an already submitted request later.
             # Its output has no path to message publication; no retry is issued.
             error = VerificationError('RAG_DEADLINE_EXCEEDED', details={'stage': journal.snapshot()['stage']})
-            error.call_journal = journal.seal('deadline')
+            error.call_journal = budget.finish('deadline')
             raise error
         success, value = outcome[0]
         if not success:
@@ -320,12 +400,14 @@ class ConfiguredPipeline:
             default_failure = {'RAG_DEADLINE_EXCEEDED':'deadline',
                 'RAG_STAGE_BUDGET_EXCEEDED':'stage_budget'}.get(getattr(value, 'code', None), 'internal_error')
             journal.fail_phase(details.get('failure_kind', default_failure))
-            value.call_journal = journal.seal('deadline' if getattr(value, 'code', None) == 'RAG_DEADLINE_EXCEEDED' else 'failed')
+            value.call_journal = budget.finish('deadline' if getattr(value, 'code', None) == 'RAG_DEADLINE_EXCEEDED' else 'failed')
             raise value
-        value.setdefault('trace', {})['call_journal'] = journal.seal('succeeded')
+        trace = value.setdefault('trace', {}) if isinstance(value, dict) else value.trace
+        trace['call_journal'] = budget.finish() if owned else journal.snapshot()
+        trace['spending_budget'] = budget.spending.trace()
         return value
 
-    def _answer(self, question, *, deadline, journal=None, **kwargs):
+    def _answer(self, question, *, deadline, journal=None, spending=None, operation='answer', **kwargs):
         model_budget = model_budget_configuration(self.settings)
         from .protocol_config import protocol_configuration
         protocol = protocol_configuration(self.settings)
@@ -333,8 +415,11 @@ class ConfiguredPipeline:
         timeout = max(.001, deadline-time.monotonic())
         # One client set per request prevents usage/deadline state leaking
         # between concurrent spaces. Endpoint credentials remain environment-only.
-        spending = RequestSpending(spending_configuration())
+        spending = spending or RequestSpending(spending_configuration())
         with httpx.Client(transport=DeadlineTransport(deadline, spending, journal), follow_redirects=False) as http:
+            if operation == 'verify':
+                return self._verify_candidate(question, deadline=deadline, journal=journal,
+                    http=http, model_budget=model_budget, **kwargs)
             embedder = embedding_model(self.settings, client=http)
             dense_client = QdrantClient(url=os.getenv('QDRANT_URL', 'http://127.0.0.1:6333'),
                 api_key=os.getenv('QDRANT_API_KEY') or None, timeout=timeout, check_compatibility=False,
@@ -376,11 +461,115 @@ class ConfiguredPipeline:
                     if self.retrieval_snapshot_callback is not None:
                         self.retrieval_snapshot_callback(deepcopy(value))
                 instance.retrieval_snapshot_callback = snapshot
-                result = instance.answer(question, **kwargs)
-                result['trace']['spending_budget'] = spending.trace()
+                allowed_sources = kwargs.pop('allowed_sources', None)
+                if operation == 'prepare':
+                    if allowed_sources is not None:
+                        self._check_allowed([], allowed_sources)
+                        originals = instance._originals
+                        def restricted(scope, manifests):
+                            admitted = []
+                            for row in originals(scope, manifests):
+                                try:
+                                    self._check_allowed([row], allowed_sources)
+                                except VerificationError:
+                                    continue
+                                admitted.append(row)
+                            return admitted
+                        instance._originals = restricted
+                    result = instance.prepare_evidence(question, **kwargs)
+                    self._check_allowed(result.sources, allowed_sources)
+                    result = deepcopy(result)
+                    result.deadline = min(result.deadline, deadline)
+                    result.trace['spending_budget'] = spending.trace()
+                else:
+                    result = instance.answer(question, **kwargs)
+                    result['trace']['spending_budget'] = spending.trace()
                 return result
             finally:
                 dense_client.close()
+
+    @staticmethod
+    def _check_allowed(sources, allowed_sources):
+        if allowed_sources is None:
+            return
+        from .contracts import SourceSpan
+        from .scope import covers
+        try:
+            allowed = []
+            for row in allowed_sources:
+                spans = [SourceSpan.model_validate(span) for span in row['source_spans']]
+                if not spans or not row.get('chunk_id'):
+                    raise ValueError()
+                # Retrieval IDs are immutable evidence identities. Original
+                # block IDs are authorization coordinates, never aliases for
+                # a retrieval row built from those same original spans.
+                if not row.get('retrieval_version_id') and (not row.get('material_id')
+                        or not row.get('material_version_id') or any(
+                            span.material_version_id != row['material_version_id']
+                            or span.block != row['chunk_id'] for span in spans)):
+                    raise ValueError()
+                allowed.append((row, spans))
+            for source in sources:
+                spans = [SourceSpan.model_validate(span) for span in source['source_spans']]
+                authorized = []
+                for row, coordinates in allowed:
+                    if row.get('retrieval_version_id'):
+                        match = (row['chunk_id'] == source['chunk_id']
+                            and row['retrieval_version_id'] == source.get('retrieval_version_id')
+                            and all(row.get(key) == source.get(key) for key in ('material_id', 'material_version_id')))
+                    else:
+                        match = all(row[key] == source.get(key) for key in ('material_id', 'material_version_id'))
+                    if match:
+                        authorized.extend(coordinates)
+                if not spans or any(not covers(span, authorized) for span in spans):
+                    raise ValueError()
+        except (KeyError, TypeError, ValueError):
+            raise VerificationError('RAG_SOURCE_INVALID') from None
+
+    def _verify_candidate(self, question, *, sources, candidate, space_id, deadline, journal, http,
+                          model_budget, cancelled=None, expected_scope_version=None,
+                          expected_bindings=None, expected_scope_snapshot_id=None,
+                          material_ids=None, allowed_sources=None):
+        from ..conversations.document_scope import resolve_document_scope, filter_document_sources
+        from ..errors import DomainConflict
+        instance = RagPipeline(self.repo, self.materials, self.spaces, None, None, None)
+        scope = instance._scope(space_id)
+        instance._guard(scope, deadline, cancelled)
+        if ((expected_scope_version is not None and scope.scope_version != expected_scope_version)
+                or (expected_scope_snapshot_id is not None and scope.scope_snapshot_id != expected_scope_snapshot_id)):
+            raise VerificationError('STALE_LEARNING_CONTEXT')
+        if expected_bindings is not None:
+            identity = lambda rows: sorted((r['material_id'], r['material_version_id'], r['graph_version']) for r in rows)
+            if identity(expected_bindings) != identity([b.model_dump() for b in scope.bindings]):
+                raise VerificationError('STALE_LEARNING_CONTEXT')
+        try:
+            request_scope = resolve_document_scope({'id': scope.space_id, 'scope_version': scope.scope_version,
+                'bindings': [b.model_dump() for b in scope.bindings]}, material_ids)
+        except DomainConflict:
+            raise VerificationError('RETRIEVAL_SCOPE_INVALID') from None
+        from ..persistence.rag_repository import RagIntegrityError, RagConflict
+        try:
+            manifests = instance.lifecycle.pin(scope, require_b1=self.mode in {'b1','b15','b2_r1','b3_unit','f','b4'})
+        except (RagIntegrityError, RagConflict):
+            raise VerificationError('RAG_INDEX_NOT_READY') from None
+        selected_versions = {b['material_version_id'] for b in request_scope['bindings']}
+        manifests = [m for m in manifests if m['material_version_id'] in selected_versions]
+        originals = {r['chunk_id']:r for r in filter_document_sources(instance._originals(scope, manifests), request_scope)}
+        keys = ('material_id', 'material_version_id', 'retrieval_version_id', 'source_text', 'source_spans')
+        if (len({r.get('chunk_id') for r in sources}) != len(sources) or any(
+                row.get('chunk_id') not in originals or any(row.get(k) != originals[row['chunk_id']].get(k) for k in keys)
+                for row in sources)):
+            raise VerificationError('RAG_SOURCE_INVALID')
+        self._check_allowed(sources, allowed_sources)
+        checker = BudgetedJsonModel(self.settings, client=http, journal=journal, stage='verification',
+            max_input_tokens=model_budget['model_input_tokens'], max_output_tokens=model_budget['model_output_tokens'])
+        verifier = AnswerVerifier(checker, checker, diagnostic_callback=self.diagnostic_callback)
+        instance._guard(scope, deadline, cancelled)
+        result = verifier.verify_candidate(question, deepcopy(sources), candidate, deadline=deadline)
+        instance._guard(scope, deadline, cancelled)
+        result['trace'].update(scope_snapshot_id=scope.scope_snapshot_id, request_scope=request_scope,
+            manifest_ids=[m['manifest_id'] for m in manifests])
+        return result
 
     def close(self):
         pass  # All owned clients are closed per request.

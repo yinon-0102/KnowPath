@@ -251,4 +251,49 @@ root 重新读取以下隔离结果，确认计数与退出状态；均无收集
 
 本轮 root 对当前工作树重新运行 commit/checkpoint/protocol：agent-f5f515xd 为 135 passed / 2 failed / 12 skipped、退出码 1，原 session 95430 已确认终止；重复确认上述两个来源资格失败仍在，不能按已修复处理。专用 MySQL 未由 root 占用。
 
+独立派生来源定向预审实际执行纯内存复现，确认两个额外阻断：validate_sources 接受 source_receipts 为字符串、[None] 或 513 个空对象，checkpoint 热层校验也未传入该字段；canonical_metadata 将整个 source_receipts 列表限制在 2048 字节。一个 material binding 的合法 receipt 在 1–4 轮分别为 487/974/1461/1948 字节，第 5 轮 2435 字节即报错，影响 SummaryMemory.flush 后 remember、L0 毕业/晋升。需补每条 receipt 的规范校验、列表容量与总字节限制及真实多轮 L0 重启正向测试。直接外置依赖读取保留完整集合，但多父级派生目前只合并 inline 依赖，完整外置集合合并仍须用超过 512 条且尾部失效的用例验证。该预审不修改源码、不使用数据库，不是最终规格验收。
+
+上述问题已固化为独立新增 test_web_agent_derived_receipts.py。隔离 agent-v7l5g2wk 为 17 failed、exitstatus=1、collection_errors=[]，root 已读取测试源码与结果 JSON。覆盖真实 8 轮摘要→remember 正向、4 类损坏收据拒绝，以及对应 L1/L2 summary/L2 buffer 共 12 项 checkpoint 原子恢复拒绝。当前失败均为实际行为缺陷，不是导入或收集失败；测试已交唯一生产源码实现者继续闭环。
+
+### 最小可靠接入阶段（用户已批准优先交付）
+
+执行补充见 docs/superpowers/plans/2026-10-25-web-agent-minimum.md。全部入口通用 Agent、持久 L0–L5、来源隔离与原子提交仍是首版要求；管理 UI、全量历史回填等后置，不将原完整计划标记完成。
+
+root 已修复收据列表规范校验与 checkpoint 恢复校验：agent-n67l6xbf 的派生收据/checkpoint/protocol 共 102 passed。随后修复真实 item/message 递归来源资格，agent-3_r5td3a 为 154 passed / 12 MySQL opt-in skipped。通过 authoritative item/projection 递归验证并检测循环，不以候选声明代替真实来源。
+
+旧 epoch recall 新增回归 agent-4hq65j02 先得到 2 failed / 1 MySQL opt-in skipped；将 recall 合格池与近期历史合格池分开后，agent-znc15gsd 的 epoch/commit/factory/evidence 组合为 69 passed / 13 MySQL opt-in skipped，原 session 81707 已结束。合法旧 epoch 可以召回，不进入紧邻历史或近期摘要。
+
+新 Agent factory/model 与 evidence 接口已落盘，仍未接入全部 Web 生产入口。工厂使用真实 MyFunctionCallAgent、external commit、严格预算和单次 HTTP 请求；检索准备从现有算法抽取，不调用最终回答生成。checker-only verify_candidate 与 scoped 工具仍在实施。以上离线绿灯不证明 MySQL 发布完整依赖 fence、所有入口替换或全计划完成。
+
 本轮只读审计另确认：_publish_answer_once 的来源锁目前仅覆盖 bindings 与 snapshot.sources，尚未包含完整 consumed recall/cards 依赖；无 delivery_plan 路径还在来源锁之前读取锁定 message。需要先收集完整来源闭包，发布按 assessment→space→material/version→message→outbox→Run→memory 顺序锁定并再验资格，不得在末尾 session.publish 内反向取得业务锁。已交唯一实现者继续修复；Task 4/5 保持未完成，Task 6–13 与独立 R0 门禁继续保留。
+
+### 最小版本实际接线与验收（2026-10-25）
+
+当前生产默认 API 与 Worker 已调用 WebAgentRuntime → 真实 MyFunctionCallAgent，覆盖普通、阅读、讲义与测评求助。显式注入的旧生成器保留兼容接缝，生产默认不进入旧回答链。接收阶段冻结 runtime_version，Agent 路径不再执行 project_memory 或手工讲义历史；新模型输入统一从请求记忆副本与限定工具产生。
+
+Agent、search 和声明核验使用同一回合预算；核验不另开生成器，partial 等真实状态保留。资料候选正文不会提前写入 SSE。HTTP/SSE、真实资料回答、跨服务重建的 remember/recall、运行时版本不匹配拒绝执行均有 Web 入口正向/反向回归。
+
+发布前展开消费与派生来源完整闭包，包括外置集合、卡片及 source_item_ids。业务资料锁与消息锁先于 memory 锁；在最终 memory 锁内使用 MySQL 当前读，覆盖资格检查后 delete_card 的撤销窗口。来源失效或预备容量错误不会写回答、完成事件、检查点、记忆条目或成功收据。未消费的旧记忆不会因保留在 checkpoint 而自动记为已向用户展示。
+
+实际多轮测试修复了投影来源的自身环、TF-IDF 无界分数写入 L3 的范围错误，以及派生摘要遗漏原始 item 撤销的缺口。默认维护改为同步，跨重启 L3 TTL 正向通过；额外模型反思与语义冲突维护仍关闭。新版检索保留独立 retrieval chunk 身份，以真实原文 SourceSpan 覆盖授权，不再强求原文 block ID 等于检索 chunk ID；真实 SQL/本地 Qdrant 的配置管线已通过 Web Agent 完整调用链回归。
+
+本轮 root 已运行并读取结果，均 exitstatus=0、collection_errors=[]：
+
+- agent-truae9yi：完整离线 Agent，462 passed / 45 skipped。
+- compatibility-f32n157n：完整离线兼容，1472 passed / 88 skipped / 1 既有弃用 warning。此前53项失败已逐项区分实际审计错误与旧夹具在入队后更换运行时的问题；夹具显式选择兼容运行时，原断言保留。
+- agent-qh_df7rv：独立 MySQL，50 passed / 9 后端不适用 skipped，含入口、双连接撤销、租约接管与 SQL 锁序。
+- agent-srab6t8j：独立规格复审，79 passed / 28 skipped，最小范围 PASS。
+
+代码质量复审发现两个新增收尾项，尚未计完成：完整祖先来源图递归资格检查存在指数重复读，需要仅在单次资格求值内缓存，下一次求值必须重新验证撤销；物理模型调用需受绝对回合 deadline 与取消约束，而非每次重置完整 HTTP 超时。两项正在红绿修复，修复后追加最终复验记录。
+
+原完整计划 Task 0–13、记忆管理 UI、全量历史回填、独立 R0 制品与目标环境部署门禁仍保持原状态。本阶段没有部署、调用在线模型或访问日常数据库；三个既存 frozen-inputs.zip 改动未纳入实现范围。
+
+### 最小版本质量收尾
+
+两项质量问题已按红绿回归修复。资格缓存使用单次顶层 eligible 求值的 ContextVar，嵌套递归共享、退出即丢弃，循环拒绝；独立复现的 5/10/15 层图读取从 15/511/16383 降为 4/9/14。真实仓库测试还验证下一次求值重新读取、同一 policy 在撤销后拒绝，以及循环修复后恢复正常。
+
+OneShotChatPort 绑定服务端绝对回合 deadline，生产物理 HTTP 复用有界 DeadlineTransport。等待响应、涓流正文和获取全局 worker 容量时均受绝对期限与取消约束；物理 I/O 未退出前保留 owner 与容量，不创建无界辅助线程。transport 不重复计费/记账，外层 JournalPort 保留唯一账本。模型限流与能力错误保留对应公开错误码，未将其一概覆盖为 MODEL_UNAVAILABLE。
+
+root 最终复验 agent-jl1dgw_5 为 478 passed / 50 skipped；独立 MySQL agent-x9dqryqa 为 65 passed / 9 后端不适用 skipped。独立质量复审 agent-2ld7zvwp 为 34 passed / 3 MySQL-only skipped，代码复审无剩余 P1/P2；上述结果均 exitstatus=0、collection_errors=[]。最终完整兼容复验仍在同一既有进程执行，未重复启动。
+
+最终完整兼容复验 compatibility-9cgz_phr 已结束：1472 passed / 88 skipped / 1 既有弃用 warning，190.80s，exitstatus=0、collection_errors=[]。至此执行补充定义的最小实现通过实现分支验收；不是原完整计划与部署验收。保留分支 codex/web-agent-l0-l5，不合并主分支，不发布线上变更；跳过的外部服务/后端环境门禁不算通过。既存三个 ZIP 差异保持未暂存、未纳入代码提交。

@@ -9,7 +9,8 @@ from functools import wraps
 from hashlib import sha256
 import json
 import math
-from uuid import NAMESPACE_URL, uuid5
+from uuid import NAMESPACE_URL, uuid5, uuid4
+from datetime import datetime, timedelta, timezone
 
 import sqlalchemy as sa
 from knowpath_backend.memory.checkpoint import json_copy
@@ -94,6 +95,11 @@ def projection_provenance(message, *, dependency_limit=None):
                 # have identical headers or share the same original spans.
                 record['source_ref'] = 'citation:' + digest({'record': record, 'spans': canonical_spans})
             record = canonical_dependency(record)
+            # The projection's origin is already source_message_id. Keeping
+            # its own request dependency as an edge creates a self cycle and
+            # makes every completed Agent turn ineligible for later recall.
+            if record == {'message_id': message['id']}:
+                continue
             if record not in dependencies: dependencies.append(record)
             parent = {k: record[k] for k in ('material_id', 'material_version_id', 'retrieval_version_id', 'chunk_id', 'citation_schema_version', 'source_ref') if k in record}
             for span in canonical_spans:
@@ -101,9 +107,12 @@ def projection_provenance(message, *, dependency_limit=None):
                 if linked not in dependencies: dependencies.append(linked)
     add_refs(bindings)
     add_refs(snapshot.get('delivered_source_refs', []))
+    add_refs(snapshot.get('source_dependencies', []))
     add_refs(response.get('citations', []))
     add_refs(response.get('source_dependencies', []))
     metadata = {'source_message_id': message['id'], 'source_dependencies': dependencies}
+    if type(snapshot.get('memory_scope')) is dict:
+        metadata['memory_scope'] = deepcopy(snapshot['memory_scope'])
     if known:
         metadata['scope'] = {'space_id': message['space_id'], 'scope_version': scope['scope_version'],
             'material_ids': list(scope['material_ids']), 'material_versions': bindings,
@@ -124,6 +133,62 @@ def projection_provenance(message, *, dependency_limit=None):
 
 
 class MemoryRepository:
+    def execution_time(self):
+        return datetime.now(timezone.utc).replace(tzinfo=None)
+
+    @staticmethod
+    def _lease_owner(message_id, owner):
+        if not isinstance(message_id, str) or not message_id or not isinstance(owner, str) or not owner:
+            raise ValueError('Lease requires message and executor identities')
+        return digest([message_id, owner])
+
+    @staticmethod
+    def _lease_duration(seconds):
+        if type(seconds) not in (int, float) or not math.isfinite(seconds) or not 0 < seconds <= 300:
+            raise ValueError('Lease duration must be positive and at most 300 seconds')
+        return timedelta(seconds=seconds)
+
+    def _lease_update(self, previous, values, *, live=False):
+        self._write()
+        self._put('spaces', dict(previous, **values))
+        return True
+
+    def acquire_execution_lease(self, message_id, owner, *, seconds=30):
+        self._write()
+        message = self._business_message(message_id)
+        if not message or message['space_id'] != self.space_id:
+            raise ValueError('Lease message belongs to another space or is missing')
+        duration = self._lease_duration(seconds)
+        identity = self._lease_owner(message_id, owner)
+        state = self._locked_space()
+        instant = self.execution_time()
+        if state['lease_token'] and state['lease_expires'] and state['lease_expires'] > instant:
+            return None
+        values = dict(lease_token=str(uuid4()), lease_owner=identity, lease_expires=instant + duration)
+        if not self._lease_update(state, values): return None
+        return dict(values, message_id=message_id, owner=owner)
+
+    def check_execution_lease(self, token, message_id, owner):
+        state = self._locked_space()
+        return bool(token and state['lease_token'] == token
+            and state['lease_owner'] == self._lease_owner(message_id, owner)
+            and state['lease_expires'] and state['lease_expires'] > self.execution_time())
+
+    def renew_execution_lease(self, token, message_id, owner, *, seconds=30):
+        duration = self._lease_duration(seconds)
+        state = self._locked_space()
+        instant = self.execution_time()
+        if not (token and state['lease_token'] == token
+                and state['lease_owner'] == self._lease_owner(message_id, owner)
+                and state['lease_expires'] and state['lease_expires'] > instant): return False
+        return self._lease_update(state, dict(lease_expires=instant + duration), live=True)
+
+    def release_execution_lease(self, token, message_id, owner):
+        state = self._locked_space()
+        if not (token and state['lease_token'] == token
+                and state['lease_owner'] == self._lease_owner(message_id, owner)): return False
+        return self._lease_update(state, dict(lease_token=None, lease_owner=None, lease_expires=None))
+
     def freeze_reception(self, message_id, identity):
         """Allocate scope receipt while the caller's business transaction is active."""
         from .scope import freeze_reception
@@ -545,6 +610,25 @@ class InMemoryMemoryRepository(MemoryRepository):
 
 
 class SqlAlchemyMemoryRepository(MemoryRepository):
+    def execution_time(self):
+        with self.unit_of_work.session() as session:
+            clock = sa.func.utc_timestamp(6) if session.bind.dialect.name == 'mysql' else sa.func.current_timestamp()
+            value = session.scalar(sa.select(clock))
+            if isinstance(value, str): value = datetime.fromisoformat(value)
+            return value.replace(tzinfo=None)
+
+    def _lease_update(self, previous, values, *, live=False):
+        self._write()
+        table = TABLES['spaces']
+        with self.unit_of_work.session() as session:
+            clock = sa.func.utc_timestamp(6) if session.bind.dialect.name == 'mysql' else sa.func.current_timestamp()
+            conditions = [table.c.lease_expires > clock] if live else []
+            result = session.execute(sa.update(table).where(*conditions, table.c.space_id == self.space_id,
+                table.c.lease_token == previous['lease_token'],
+                table.c.lease_owner == previous['lease_owner'],
+                table.c.lease_expires == previous['lease_expires']).values(**values))
+            return result.rowcount == 1
+
     def __init__(self, unit_of_work, space_id): self.unit_of_work, self.space_id = unit_of_work, space_id
     @property
     def active(self): return self.unit_of_work.active

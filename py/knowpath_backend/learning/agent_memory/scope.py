@@ -5,6 +5,7 @@ gate before scoring. Callbacks are trusted server adapters, never model tools.
 No policy callback may perform network IO while a business transaction is held.
 """
 from copy import deepcopy
+from contextvars import ContextVar
 
 from .repository import digest
 
@@ -101,7 +102,15 @@ def complete_dependencies(value, dependency_sets=None):
         dependencies = full
     if type(dependencies) is not list or any(type(dep) is not dict or not dep for dep in dependencies):
         raise ValueError('Dependencies are unknown')
-    return deepcopy(dependencies)
+    result = deepcopy(dependencies)
+    source_ids = metadata.get('source_item_ids', [])
+    if type(source_ids) is not list or any(type(value) is not str or not value for value in source_ids):
+        raise ValueError('Original memory identities are invalid')
+    for identifier in source_ids:
+        dependency = {'item_id': identifier}
+        if dependency not in result:
+            result.append(dependency)
+    return result
 
 
 class EligibilityPolicy:
@@ -122,13 +131,48 @@ class EligibilityPolicy:
         self.tombstone_checker = tombstone_checker
         self.dependency_sets = dependency_sets
         self.preference_verifier = preference_verifier or (lambda value: False)
+        # Context-local and evaluation-local: a reused policy must never retain
+        # an authorization decision after a source is revoked or forgotten.
+        self._evaluation = ContextVar('memory_scope_evaluation', default=None)
 
     def eligible(self, value, *, purpose):
+        evaluation = self._evaluation.get()
+        token = self._evaluation.set({}) if evaluation is None else None
+        try:
+            return self._eligible(value, purpose=purpose)
+        finally:
+            if token is not None:
+                self._evaluation.reset(token)
+
+    def qualify_reference(self, kind, identifier, resolve):
+        """Memoize one immutable reference within this evaluation's graph.
+
+        None marks an in-progress reference; encountering it is a cycle and
+        denies authorization. Nested eligible calls share the graph, while
+        later top-level checks and other execution contexts get fresh graphs.
+        """
+        cache = self._evaluation.get()
+        if cache is None:
+            return resolve() is True
+        key = (kind, identifier)
+        if key in cache:
+            return cache[key] is True
+        cache[key] = None
+        try:
+            cache[key] = resolve() is True
+            return cache[key]
+        except BaseException:
+            cache[key] = False
+            raise
+
+    def _eligible(self, value, *, purpose):
         if purpose not in self.PURPOSES: raise ValueError('Unknown memory read purpose')
         try:
             metadata = _metadata(value)
             origin = metadata.get('memory_scope')
             if not origin or origin['space_id'] != self.current['space_id']: return False
+            if origin['identity']['space_id'] != origin['space_id'] or self.current['identity']['space_id'] != self.current['space_id']:
+                return False
             if origin['fingerprint'] != scope_fingerprint(origin['identity']): return False
             if self.current['fingerprint'] != scope_fingerprint(self.current['identity']): return False
             if metadata.get('quarantined') or _field(value, 'lifecycle', 'active') != 'active': return False

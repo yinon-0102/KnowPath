@@ -102,7 +102,7 @@ def parse_checkpoint(checkpoint, config):
             # Canonical external provenance must be valid in every hot layer.
             # Other raw item metadata keeps its generic legacy representation.
             provenance = {key: item.metadata[key] for key in
-                          ('source_dependencies', 'source_item_ids', 'source_scopes') if key in item.metadata}
+                          ('source_dependencies', 'source_item_ids', 'source_scopes', 'source_receipts', 'memory_scope') if key in item.metadata}
             validate_sources(provenance, max_dependencies=config.summary_max_dependencies)
         if len(state['l3']) > config.l3_max_entries:
             raise InvalidCheckpoint('Checkpoint recall capacity exceeded')

@@ -15,6 +15,7 @@ from .contracts import Candidate, Citation, RetrievalBudget, RetrievalRequest, S
 from .lifecycle import ManifestLifecycle
 from .scope import covers, legacy_span
 from .verification import VerificationError
+from .evidence import PreparedEvidence, EvidenceRegistry
 from .queries import prepare_query
 from .plugins import OrdinaryPlugin
 from .registry import create_plugin
@@ -203,8 +204,8 @@ class RagPipeline:
             raise VerificationError("RAG_SOURCE_INVALID")
         return rows
 
-    @observed('rag.answer', ids=('space_id',))
-    def answer(self, question, *, space_id, expected_scope_version=None, expected_bindings=None, cancelled=None, history=(), material_ids=None):
+    @observed('rag.prepare_evidence', ids=('space_id',))
+    def prepare_evidence(self, question, *, space_id, expected_scope_version=None, expected_bindings=None, cancelled=None, history=(), material_ids=None):
         self.last_retrieval_snapshot = None
         started = time.monotonic()
         deadline = started + self.timeout_seconds
@@ -245,12 +246,12 @@ class RagPipeline:
         prepared = prepare_query(question, history)
         if prepared['status'] == 'clarify':
             self._guard(scope, deadline, cancelled)
-            return {'status': 'clarify', 'text': '请明确本轮问题指向的对象或资料范围。', 'citations': [],
-                'citation_ids': [], 'claims': [], 'sources': [], 'trace': {'query': prepared,
+            return PreparedEvidence(status='clarify', question=question, sources=[],
+                scope=scope, deadline=deadline, started=started, trace={'query': prepared,
                 'scope_snapshot_id': scope.scope_snapshot_id, 'request_scope': request_scope,
                 'manifest_ids': [m['manifest_id'] for m in manifests],
                 'retrieval_versions': [m['retrieval_version_id'] for m in manifests], 'generation_calls': 0,
-                'verification_calls': 0, 'revisions': 0, 'elapsed_seconds': time.monotonic()-started}}
+                'verification_calls': 0, 'revisions': 0, 'elapsed_seconds': time.monotonic()-started})
         resolved_question = prepared['query']
         request = RetrievalRequest(query=resolved_question, original_query=question, scope_snapshot_id=scope.scope_snapshot_id,
             manifest_ids=tuple(m["manifest_id"] for m in manifests), budget=self.budget, deadline=deadline)
@@ -326,16 +327,46 @@ class RagPipeline:
         self._snapshot(stage='context', context_ids=[r['chunk_id'] for r in context],
             context_sources=[{'chunk_id': r['chunk_id'], 'source_spans': r['source_spans']} for r in context],
             context_hash=hashlib.sha256(json.dumps(context, ensure_ascii=False, sort_keys=True, separators=(',', ':')).encode()).hexdigest())
+        trace = {'retrieval': retrieval_trace, 'query': prepared,
+            'rerank_usage': getattr(self.reranker, 'last_usage', None),
+            'rerank_calls': 1 if selected else 0,
+            'embedding_usage': retrieval_trace.get('embedding_usage'),
+            'candidate_ids': [c.chunk_id for c in candidates],
+            'candidate_sources': [{'chunk_id': c.chunk_id, 'source_spans': by_id[c.chunk_id]['source_spans']}
+                for c in candidates],
+            'reranked_sources': [{'chunk_id': r['chunk_id'], 'source_spans': r['source_spans']}
+                for r in ranked_leaf_rows],
+            'scope_snapshot_id': scope.scope_snapshot_id, 'request_scope': request_scope,
+            'manifest_ids': list(request.manifest_ids),
+            'retrieval_versions': [m['retrieval_version_id'] for m in manifests],
+            'reranked_ids': [r['chunk_id'] for r in ranked_leaf_rows],
+            'context_ids': [r['chunk_id'] for r in context],
+            'generation_calls': 0, 'verification_calls': 0,
+            'elapsed_seconds': time.monotonic() - started}
+        if capacity_trace is not None:
+            trace['protocol_capacity'] = capacity_trace
+        if anchor_repacking is not None:
+            trace['anchor_repacking'] = anchor_repacking
+        self._guard(scope, deadline, cancelled)
+        return PreparedEvidence(status='ready', question=resolved_question, sources=context,
+            trace=trace, scope=scope, deadline=deadline, started=started)
+
+    @observed('rag.answer', ids=('space_id',))
+    def answer(self, question, *, space_id, expected_scope_version=None, expected_bindings=None, cancelled=None, history=(), material_ids=None):
+        evidence = self.prepare_evidence(question, space_id=space_id,
+            expected_scope_version=expected_scope_version, expected_bindings=expected_bindings,
+            cancelled=cancelled, history=history, material_ids=material_ids)
+        if evidence.status == 'clarify':
+            return {'status': 'clarify', 'text': '请明确本轮问题指向的对象或资料范围。',
+                'citations': [], 'citation_ids': [], 'claims': [], 'sources': [], 'trace': evidence.trace}
+        resolved_question, context = evidence.question, evidence.sources
+        scope, deadline, started = evidence.scope, evidence.deadline, evidence.started
         if context and getattr(self.verifier, 'capacity', None) is not None:
             self.verifier.capacity.admit_initial(resolved_question, context, deadline=deadline)
         with log_span(logger, 'rag.verify'):
             result = self.verifier.answer(resolved_question, context, deadline=deadline,
                 max_generation_calls=self.budget.max_generation_calls,
                 max_verification_calls=self.budget.max_verification_calls)
-        if capacity_trace is not None:
-            result['trace']['protocol_capacity'] = capacity_trace
-        if anchor_repacking is not None:
-            result['trace']['anchor_repacking'] = anchor_repacking
         self._guard(scope, deadline, cancelled)
         citations = []
         by_context = {s['chunk_id']:s for s in context}
@@ -354,20 +385,9 @@ class RagPipeline:
                 retrieval_version_id=source["retrieval_version_id"], chunk_id=identifier,
                 source_spans=source["source_spans"]).model_dump(mode="json"))
         log_event(logger, 'rag.result', status=result.get('status'), citation_count=len(citations),
-                  context_count=len(context), candidate_count=len(candidates),
-                  request_scope_id=request_scope['request_scope_id'],
+                  context_count=len(context), candidate_count=len(evidence.trace['candidate_ids']),
+                  request_scope_id=evidence.trace['request_scope']['request_scope_id'],
                   cited_material_ids=sorted({c['material_id'] for c in citations}))
         return {**result, "citations": citations, "sources": context,
-                "trace": {**result["trace"], "retrieval": retrieval_trace, 'query': prepared,
-                    'rerank_usage': getattr(self.reranker, 'last_usage', None),
-                    'rerank_calls': 1 if selected else 0,
-                    'embedding_usage': retrieval_trace.get('embedding_usage'),
-                    'candidate_ids': [c.chunk_id for c in candidates],
-                    'candidate_sources': [{'chunk_id': c.chunk_id, 'source_spans': by_id[c.chunk_id]['source_spans']}
-                        for c in candidates],
-                    'reranked_sources': [{'chunk_id': r['chunk_id'], 'source_spans': r['source_spans']}
-                        for r in ranked_leaf_rows],
-                    "scope_snapshot_id": scope.scope_snapshot_id, 'request_scope': request_scope, "manifest_ids": list(request.manifest_ids),
-                    "retrieval_versions": [m["retrieval_version_id"] for m in manifests],
-                    "reranked_ids": [r["chunk_id"] for r in ranked_leaf_rows], "context_ids": [r["chunk_id"] for r in context],
+                "trace": {**evidence.trace, **result["trace"],
                     "elapsed_seconds": time.monotonic() - started}}

@@ -81,8 +81,13 @@ class InMemoryVectorBackend(VectorBackend):
         query: str,
         query_vector: Optional[Sequence[float]] = None,
         k: int = 5,
+        candidate_filter=None,
     ) -> List[Tuple[MemoryItem, float]]:
         if not query or not self._items:
+            return []
+        items = (self._items if candidate_filter is None else
+                 {key: item for key, item in self._items.items() if candidate_filter(item)})
+        if not items:
             return []
 
         if query_vector is None and self.embedder is not None:
@@ -91,12 +96,16 @@ class InMemoryVectorBackend(VectorBackend):
         if query_vector is not None and self._embeddings:
             scored = []
             for item_id, vec in self._embeddings.items():
+                if item_id not in items:
+                    continue
                 sim = _cosine(query_vector, vec)
                 scored.append((self._items[item_id], sim))
             scored.sort(key=lambda kv: kv[1], reverse=True)
             return scored[:k]
 
-        return _tfidf_score(query, self._items, k, self._postings, self._doc_tokens)
+        if candidate_filter is not None:
+            return _tfidf_score(query, items, k)
+        return _tfidf_score(query, items, k, self._postings, self._doc_tokens)
 
 
 def _cosine(a: Sequence[float], b: Sequence[float]) -> float:
