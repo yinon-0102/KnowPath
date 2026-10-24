@@ -217,3 +217,23 @@ Task 5 正在实现真实仓库租约、请求副本与原子发布。未取得�
 真实 memory/SQLite 仓库测试 test_web_agent_memory_concurrency.py 已落盘。agent-7ac8ozz6 为 4 failed，缺少 acquire_execution_lease；生产仓库新增 acquire/check/renew/release 后，agent-p42k1b0q 为 4 passed、exitstatus=0、collection_errors=[]，root 已独立读取两份 results.json。覆盖同空间独占、新 UUID token、旧 token 不能释放新持有者、过期后无新持有者及已被新持有者替换均不能续回。
 
 这不是 Task 5 最终验收。即时审计要求继续补 SQL 外层事务写门禁、消息所属空间、数据库更新时的过期判断、发布 fencing、真实 MySQL 双连接竞争和完整工作副本恢复；回答与记忆原子发布尚未验证。
+
+### Task 5 请求副本恢复阶段验证
+
+MemorySessionService/MemorySession 已落盘，复用通用 MemoryManager，捕获 revision/删除代数，使用请求内本地后端，freeze 导出 MemoryMutation。SQL 外层事务及真实第二空间归属测试已补齐，不再以 FK 为理由跳过该用例。root agent-8q8445q8 为 14 passed / 2 failed，准确复现恢复后 vector backend 与 cold/hot 持有不同对象；修复本地 canonical 对象绑定后，root agent-47r5cei2 为 16 passed。包含 checkpoint/protocol 的 root 定向回归 agent-0g92nle4 为 103 passed、退出码 0。上述均为隔离内存/SQLite 测试，不包含真实 MySQL 双连接竞争。
+
+仍未关闭：按需加载而非全空间扫描、真实资格 resolver 和生产来源闭环、配置在读存储前拒绝、候选所有层变更集、SQL 重启后的整轮晋升、发布 fencing、回答/记忆/审计/事件原子提交、成功收据重放和 Worker 队列。Task 5 未完成，源码尚未提交或进入最终独立双阶段审查。
+
+生产接线阶段新增 MessageService 正常发布与 Worker 等待预算测试。root agent-8ob6yk53 为 18 passed / 2 failed / 1 MySQL opt-in skipped，准确复现回答成功但缺少 turn 收据；接入发布事务后，root agent-5u9f01ir 为 20 passed / 2 failed / 2 MySQL opt-in skipped，失败转为 Worker 等待仍消耗 attempt。继续修复后 root agent-ezlsdeay 为 24 passed / 3 MySQL opt-in skipped、退出码 0。该阶段仍不证明 claim/generate 竞态、真实来源资格、续约、MySQL 锁序或完整失败回滚；必须继续验收。Worker._locked 已预取业务/outbox/Run 锁，后续重复读取不自动等于反向新取锁，最终以实际 SQL 锁表与双连接测试判断。
+
+持久投影补入冻结 memory_scope，生产 resolver 开始读取真实 material/version/chunk，不再把反向依赖边存在当来源有效。root agent-cwvr9fde 对 commit/concurrency/scope 三文件回归为 40 passed / 3 MySQL opt-in skipped、退出码 0。普通来源正向已验证；检索 artifact/hash/span、空间授权和派生依赖递归资格仍未完整验证。此结果不关闭 Task 4 或 Task 5。
+
+扩大既有 Worker 回归 agent-xrppl0rm 得到 132 passed / 9 failed：outbox 与空间租约时钟不一致导致接管受阻、删除遗漏 memory_scope 引用、空间删除后 release 抛错。修复后 root 相同三文件 agent-g9jz21nm 为 141 passed。完整离线 Agent 中间回归 agent-43w5g0fc 为 296 passed / 14 skipped；其中 6 项要求显式 MySQL 配置，其余为后端不适用。
+
+完整兼容回归 compatibility-8r6ut2ok 为 1449 passed / 23 failed / 88 skipped、退出码 1，当前仍是阻断：多轮续聊 restore_checkpoint 检出冷热来源身份不一致，部分历史 recall 为空，bounded source retry 未正常重领。必须保留严格身份校验和现有业务断言，修复生产元数据/时间一致性及历史来源闭环后重验。不能引用 Agent 阶段绿灯宣称 Task 5 或整体兼容通过；源码未最终验收。
+
+兼容修复中的 root 定向复验 agent-6kpx_glr 为 133 passed / 21 failed / 49 skipped；后续 context/adaptive 两文件 agent-js_0pdtn 为 58 passed / 6 failed / 28 MySQL opt-in skipped。memory 历史召回正向已恢复；SQL 仍在合并 last_access 时出现 aware/naive TypeError，bounded source retry 两后端仍未正常重领。该中间结果只用于定位后续修复，不替代完整兼容复验。
+
+上述兼容阻断随后已修复：冷热条目的权威创建时间与完整 provenance 对齐，created_at/last_access 按 UTC 比较；业务 uid 与租约执行身份分离；prompt_data 同时从实际模型输入和预算中剥离服务端 memory_scope/source_dependencies。root 定向 agent-ccmpcyzi 为 64 passed / 28 MySQL opt-in skipped。root 完整兼容复验 compatibility-pof574u4 为 1472 passed / 88 skipped / 1 既有 warning，168.55s，exitstatus=0、collection_errors=0，关闭前述 23 项兼容失败。
+
+root 已独立读取实现者专用 MySQL 正常入口结果 agent-1pcwzs3v：6 passed，无 skip；故障验证 agent-wmyfob3c：4 passed / 2 MySQL opt-in skipped，均 exitstatus=0、collection_errors=0。后者覆盖外层发布事务失败与提交成功后连接异常的收据恢复；并非真实双连接竞争证明。完整 Task 5 仍待双连接锁序/fencing、按需恢复、检索 artifact/hash/span、派生依赖资格等门禁，源码尚未进入最终独立规格/质量审查。
