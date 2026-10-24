@@ -124,6 +124,10 @@ def projection_provenance(message, *, dependency_limit=None):
 
 
 class MemoryRepository:
+    def freeze_reception(self, message_id, identity):
+        """Allocate scope receipt while the caller's business transaction is active."""
+        from .scope import freeze_reception
+        return freeze_reception(self, message_id, identity)
     def _read_guard(self): return nullcontext()
     def _write(self):
         if not self.active: raise RuntimeError('Memory persistence requires an active outer transaction')
@@ -499,6 +503,13 @@ class InMemoryMemoryRepository(MemoryRepository):
     @consistent_read
     def _business_message(self, mid): return deepcopy(self.materials.assessment_data['messages'].get(mid))
     @consistent_read
+    def _business_messages(self, cid):
+        return [deepcopy(row) for row in self.materials.assessment_data['messages'].values()
+                if row['space_id'] == self.space_id and row['conversation_id'] == cid]
+    def _save_business_snapshot(self, mid, snapshot):
+        self._write()
+        self.materials.assessment_data['messages'][mid]['snapshot'] = deepcopy(snapshot)
+    @consistent_read
     def _business_conversation(self, cid): return self.materials.assessment_data['conversations'].get(cid, {}).get('space_id') == self.space_id
     @consistent_read
     def _rows(self, key, _limit=None, **filters):
@@ -545,6 +556,16 @@ class SqlAlchemyMemoryRepository(MemoryRepository):
         with self.unit_of_work.session() as session:
             row = session.get(LearningMessageRow, mid)
             return {c.name: deepcopy(getattr(row, c.name)) for c in row.__table__.columns} if row else None
+    def _business_messages(self, cid):
+        with self.unit_of_work.session() as session:
+            rows = session.scalars(sa.select(LearningMessageRow).where(LearningMessageRow.space_id == self.space_id,
+                LearningMessageRow.conversation_id == cid)).all()
+            return [{c.name: deepcopy(getattr(row, c.name)) for c in row.__table__.columns} for row in rows]
+    def _save_business_snapshot(self, mid, snapshot):
+        self._write()
+        with self.unit_of_work.session() as session:
+            session.execute(sa.update(LearningMessageRow).where(LearningMessageRow.id == mid,
+                LearningMessageRow.space_id == self.space_id).values(snapshot=deepcopy(snapshot)))
     def _business_conversation(self, cid):
         with self.unit_of_work.session() as session:
             return session.scalar(sa.select(ConversationRow.id).where(ConversationRow.id == cid, ConversationRow.space_id == self.space_id)) is not None

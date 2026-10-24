@@ -27,8 +27,37 @@ def uid():
 
 
 class MessageService:
+    @staticmethod
+    def _build_memory_policy(memory_repository, receipt):
+        """Construct the shared gate from the frozen receipt and repository.
+
+        Missing dependency/tombstone evidence fails closed; no model supplied
+        metadata is trusted as an exemption.
+        """
+        from knowpath_backend.learning.agent_memory.scope import EligibilityPolicy
+        def resolve(dep):
+            try:
+                if hasattr(memory_repository, 'dependents'):
+                    # A missing dependency is represented by an empty reverse
+                    # lookup, not None; only a concrete dependent edge proves
+                    # the canonical record exists in this space.
+                    return bool(memory_repository.dependents(dep))
+                return False
+            except Exception:
+                return False
+        def tombstone(kind, value):
+            try:
+                return bool(memory_repository._tombstoned(kind, value))
+            except Exception:
+                return True
+        return EligibilityPolicy(receipt, dependency_resolver=resolve, tombstone_checker=tombstone,
+                                 dependency_sets=getattr(memory_repository, 'get_dependency_set', None))
     def __init__(self, repository, spaces, assessments, runs, generator=None, retriever=None, context_settings=None, rag_pipeline=None):
         self.repository, self.spaces, self.assessments, self.runs = repository, spaces, assessments, runs
+        # Optional Task4 allocator adapter; deployments with the additive
+        # memory store expose this explicitly so receipt writes share the
+        # surrounding business transaction.
+        self.agent_memory_repository = getattr(repository, 'agent_memory_repository', None)
         self.generator = generator if generator is not None else DashScopeAnswerGenerator()
         self.commands = SpaceService(repository, spaces.materials)
         self.retriever = retriever if retriever is not None else configured_retriever()
@@ -87,9 +116,62 @@ class MessageService:
             for message in previous:
                 if message["status"] in {"pending", "generating"} and self.runs.get(message["run_id"])["status"] in ACTIVE_STATUSES:
                     raise DomainConflict("MESSAGE_IN_PROGRESS", "该会话已有生成中的消息")
+            # Freeze the request identity before any projection work.  Pending
+            # and cancelled receipts remain epoch boundaries, so A→B→A cannot
+            # reuse the original adjacency epoch.
+            scope_identity = dict(space_id=space_id, scope_version=space['scope_version'],
+                                  bindings=copy.deepcopy(space['bindings']), mode=request_scope['mode'],
+                                  material_ids=list(request_scope['material_ids']), entry_type=('reading' if reading else ('lesson' if lesson else 'chat')),
+                                  reading_context=copy.deepcopy(reading), lesson_fingerprint=(lesson.get('context_fingerprint') if lesson else None),
+                                  answer_mode=requested_answer_mode)
+            hint = self._hint(assessments, payload["message"])
+            run = self.runs.create("message", status="queued" if durable else "running")
+            identifier = uid()
+            # Establish the authoritative pending message before any projection
+            # or memory allocation.  freeze_reception requires this row to
+            # exist in the same transaction; the rich prompt snapshot is filled
+            # in only after the receipt is frozen.
+            snapshot = {"message": payload["message"], "sources": sources,
+                        "scope_version": space["scope_version"],
+                        "bindings": copy.deepcopy(space["bindings"]),
+                        "request_scope": request_scope,
+                        "requested_answer_mode": requested_answer_mode}
+            if lesson:
+                snapshot.update(lesson_id=lesson['id'],lesson_context_fingerprint=lesson['context_fingerprint'],lesson_source_keys=[list(k) for k in sorted(allowed)])
+            if reading:
+                snapshot['reading_context'] = copy.deepcopy(reading)
+            record = {"id": identifier, "space_id": space_id, "conversation_id": conversation["id"],
+                      "run_id": run["id"], "status": "pending", "message": payload["message"],
+                      "sequence": len(previous) + 1, "snapshot": snapshot, "response": None, "created_at": now()}
+            self.repository.put_record("messages", record)
+            # Persist the receipt through the memory repository in this same
+            # command transaction; its space lock provides global ordering.
+            factory = getattr(self.repository, 'agent_memory_factory', None)
+            memory_repository = factory(space_id) if factory else getattr(self.repository, 'agent_memory_repository', None)
+            if memory_repository is not None:
+                memory_repository.ensure_space()
+                receipt = memory_repository.freeze_reception(identifier, scope_identity)
+                record['snapshot']['memory_scope'] = receipt
+                self.repository.put_record('messages', record)
+            # Build the gate from the now-authoritative receipt.  A missing
+            # memory repository remains deny-by-default for legacy adapters.
+            from knowpath_backend.learning.agent_memory.scope import scope_fingerprint
+            provisional = {'space_id': space_id, 'conversation_id': conversation['id'],
+                           'context_epoch': 0, 'receive_sequence': 0,
+                           'fingerprint': scope_fingerprint(scope_identity), 'identity': scope_identity}
+            current_scope = record['snapshot'].get('memory_scope', provisional)
+            # Adapters without the additive memory store retain the previous
+            # deny-by-default transition gate; once a receipt exists, every
+            # candidate is qualified through the authoritative shared policy.
+            if memory_repository is not None:
+                policy = self._build_memory_policy(memory_repository, current_scope)
+            else:
+                from knowpath_backend.learning.agent_memory.scope import EligibilityPolicy
+                policy = EligibilityPolicy(provisional, dependency_resolver=lambda dep: False,
+                                           tombstone_checker=lambda kind, value: True)
             context = project_memory(self.repository.records("messages", space_id=space_id),
                                      space, conversation["id"], payload["message"], request_scope=request_scope,
-                                     reading_context=reading)
+                                     reading_context=reading, eligibility_policy=policy)
             if lesson:
                 # Scope changes discard previous/global prose as well as retrieval
                 # candidates: otherwise memory can disclose other node sources.
@@ -104,32 +186,17 @@ class MessageService:
                 if latest and latest['id'] not in {m['id'] for m,refs in safe}:safe=[]
                 safe=safe[-5:]
                 context={'history':[p for prior,refs in safe for p in ({'role':'user','content':prior['message']},{'role':'assistant','content':prior['response']['text']})], 'memory':{'summary':{},'recall':[]},'context_provenance':{'history':[refs for prior,refs in safe],'summary':[],'recall':{}}}
-                # Structured lesson prose is untrusted context. Carry exact
-                # original source provenance even if retrieval selects fewer.
                 selected_sources=filter_document_sources(lesson['snapshot']['sources'],request_scope)
-                # Model prose can depend on every source it saw, even when it
-                # cites only one. A narrower request cannot reuse mixed prose.
                 lecture=('\n\n'.join(s['kind']+'\n'+s['markdown'] for s in lesson['sections'])[:8000]
                          if selected_sources==lesson['snapshot']['sources'] else '')
                 if lecture:
                     context['memory']['summary']={'text':lecture,'method':'lesson_excerpt','style':lesson['style']}
                     context['context_provenance']['summary']=copy.deepcopy(selected_sources)
-            hint = self._hint(assessments, payload["message"])
-            run = self.runs.create("message", status="queued" if durable else "running")
-            identifier = uid()
-            snapshot = {"message": payload["message"], "sources": sources, **context,
-                        "scope_version": space["scope_version"], "bindings": copy.deepcopy(space["bindings"]), "hint": hint,
-                        "request_scope": request_scope, "requested_answer_mode": requested_answer_mode,
-                        "route_topics": [{"id": t["id"], "name": t["name"]} for t in self.spaces.bound_topics(space)],
-                        "route_assessments": [{"id": a["id"], "questions": [{"topic_id": q.get("topic_id"), "prompt": q.get("prompt")} for q in (reached_questions(a) if a["status"] != "generating" else [])]} for a in assessments if a["status"] in {"generating", "ready", "in_progress"}]}
-            if lesson:
-                snapshot.update(lesson_id=lesson['id'],lesson_context_fingerprint=lesson['context_fingerprint'],lesson_source_keys=[list(k) for k in sorted(allowed)])
-            if reading:
-                snapshot['reading_context'] = copy.deepcopy(reading)
-            record = {"id": identifier, "space_id": space_id, "conversation_id": conversation["id"],
-                      "run_id": run["id"], "status": "pending", "message": payload["message"],
-                      "sequence": len(previous) + 1, "snapshot": snapshot, "response": None, "created_at": now()}
-            self.repository.put_record("messages", record)
+            snapshot.update({"hint": hint, **context,
+                             "route_topics": [{"id": t["id"], "name": t["name"]} for t in self.spaces.bound_topics(space)],
+                             "route_assessments": [{"id": a["id"], "questions": [{"topic_id": q.get("topic_id"), "prompt": q.get("prompt")} for q in (reached_questions(a) if a["status"] != "generating" else [])]} for a in assessments if a["status"] in {"generating", "ready", "in_progress"}]})
+            record['snapshot'] = snapshot
+            self.repository.put_record('messages', record)
             log_event(logger, 'message.scope.frozen', message_id=identifier, run_id=run['id'], space_id=space_id,
                       request_scope_id=request_scope['request_scope_id'], material_ids=request_scope['material_ids'],
                       source_count=len(sources))

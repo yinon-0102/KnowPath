@@ -26,7 +26,8 @@ def _relevant_excerpt(text, query, limit=600):
     return max(windows, key=lambda part: bigram_relevance(part.casefold(), query.casefold()))
 
 
-def project_memory(rows, space, conversation_id, query, *, request_scope=None, reading_context=None):
+def project_memory(rows, space, conversation_id, query, *, request_scope=None, reading_context=None,
+                   eligibility_policy=None):
     """Only original completed turns enter the index; projections never recurse."""
     eligible = [r for r in rows if r["space_id"] == space["id"] and r["status"] == "completed"
                 and not r['snapshot'].get('request_scope_invalidated')
@@ -53,6 +54,21 @@ def project_memory(rows, space, conversation_id, query, *, request_scope=None, r
             # fresh answer. Original messages remain available for inspection.
             continue
     eligible = safe
+    # Transition gate: callers that have a current Task4 policy must qualify
+    # every retained turn before history, recall, or summary is built. Legacy
+    # callers continue the old projection until their request carries a policy.
+    if eligibility_policy is not None:
+        qualified = []
+        for row in eligible:
+            candidate = {'id': row['id'], 'lifecycle': 'active',
+                         'metadata': {'memory_scope': row.get('snapshot', {}).get('memory_scope'),
+                                      'source_dependencies': row.get('snapshot', {}).get('source_dependencies', []),
+                                      'source_message_id': row['id']}}
+            # Near history is conversation-local L1; older/cross-conversation
+            # material is recall/L0 and must never be promoted to adjacency.
+            purpose = 'L1' if row.get('conversation_id') == conversation_id else 'recall'
+            if eligibility_policy.eligible(candidate, purpose=purpose): qualified.append(row)
+        eligible = qualified
     # A follow-up refers to the immediately preceding turn, not an older turn
     # that happens to share today's scope after an A -> B -> A transition.
     preceding = [r for r in rows if r['space_id'] == space['id']
