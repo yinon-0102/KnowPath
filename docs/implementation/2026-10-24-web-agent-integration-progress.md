@@ -198,3 +198,6 @@ Task 3 闭环文档提交 ad8f39e 后，派新的单一实现者实施 Task 4（
 接收代码复核确认 MessageService.send 保留同会话 MESSAGE_IN_PROGRESS：第六轮“多个同会话请求全部先排队”的措辞会意外扩大产品能力，现已更正。实际验收为 A 完成→B 接收后取消/失败→A 再接收，仍有三个 epoch；不同会话可以使用同空间队列。allocator 独立协议可预排，但不能据此修改既有 HTTP 多在途限制。
 
 Task 4 的全层共用资格接口需要解析外置完整依赖集合，不只检查 payload 前 512 项；纯偏好独立证明由服务端可信流程提供，不以模型可写标记豁免资料资格。实际新运行时/HTTP/Worker 接线仍由后续任务按退出门禁验收。
+### Task 4 最终规格/质量闭环
+
+Task 4 已提交 0fa11ba；范围指纹、同事务接收冻结、全局序号、A→B→A 分段、L0/recall 与 L1/L2/L3 分层、外置依赖/tombstone fail-closed、LearningState 同 UoW 装配均已验证。35 项范围/协议测试通过；独立规格 SPEC PASS、质量 QUALITY PASS。旧消息缺少新字段时安全拒绝召回，Task 11 负责迁移；真实 R0 制品仍是发布门禁。Task 5–13 尚未完成。
