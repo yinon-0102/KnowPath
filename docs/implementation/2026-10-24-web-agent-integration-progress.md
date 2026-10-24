@@ -131,6 +131,21 @@ SQL 合格集合、外置依赖、同 revision 恢复以及完整 request-local 
 - root 中间兼容回归：**1472 passed / 88 skipped / 1 warning**，176.97s，`compatibility-ed018d_8`；不覆盖最后 scope 校验，不能当最终结果。源码冻结后的最终兼容回归 `compatibility-n3p7v8j2`：**1472 passed / 88 skipped / 1 既有 warning**，203.44s，退出码 0。
 - 独立质量复审 **90 passed**（`agent-5tl9kr6s`），结论无剩余已确认阻断；Task 2 代码已提交 **6aadffa**。SQL 外置依赖、同 revision 合格存储恢复与完整持久隔离仍待 Task 3/5。
 
-## 下一项：真实 MySQL 基线兼容修复
+## Task 0 补充：真实 MySQL 基线兼容修复（已验证并提交）
 
-已派单一实现者按 TDD 修复前述 confidence JSON 往返哈希问题及旧审核 fixture，要求保留合法旧 snapshot/manifest hash 和原有审核门禁。此项是 Task 0 数据库基线补充及 Task 3/5 前置，不增加业务范围；Task 3–13 仍未实施。
+提交：`14018c2`。只规范化 confidence 字段的确切整数 0/1，排除 bool，保留合法旧 float snapshot/manifest 的哈希字节；fixture 显式提交已有冲突的审核决议，不绕过发布门禁。
+
+真实 MySQL 竞争测试另暴露 RR read-view 缺陷：空间创建已通过 current-read 取得新发布版本，普通 revision 读取却回到旧快照而报 RESOURCE_NOT_FOUND。bound_topics 在活动 UoW 中改用现有锁读取，独立只读仍为普通 SELECT，保留版本校验及既有锁顺序。
+
+- digest 红灯：2 failed / 12 passed（`agent-ho7fi23e`），绿灯 14 passed（`agent-wll897k0`）。
+- 审核 fixture 红灯为 GRAPH_CONFLICTS_PENDING（`agent-td3tsypg`）；RR race 红灯为新 revision RESOURCE_NOT_FOUND（`agent-bkt3lqu8`）。
+- 实现者真实 MySQL 两文件：10 passed / 6 expected skipped（`agent-ifynxugd`）；离线相关回归 229 passed / 27 expected skipped（`agent-djl6qbrp`）。
+- root 独立 digest + 两 MySQL 文件：24 passed / 6 expected skipped / 1 既有 warning（`agent-qy4lvok5`）。6 项为 Worker fixture 的 memory/sql 参数组合不适用真实 MySQL，真实 MySQL 组合已执行。
+- 独立规格 21 passed（`agent-nwnhz7sl`），结论 SPEC PASS；独立质量 21 passed（`agent-ru4zzopj`），结论 QUALITY PASS。root 本轮重新读取三份结果 JSON：均 exitstatus=0、collection_errors=0，计数与以上一致。
+- 专用实例再次确认：127.0.0.1:33317，PID 34088。未操作日常数据库或在线模型。四个代码/测试文件 diff --check 通过后单独提交，三个 ZIP 未包含。
+
+## 第五轮计划复核与下一项
+
+第五轮仅修改计划/复核记录，新增 R23–R26：数据库时间与旧租约 token 隔离、索引作业独立条件写回/就绪状态、管理命令收据优先重放/分页资格、真实模型输入固定开销。维持 Task 0–13、A01–A42；主工作区与隔离工作区静态检查均通过，文档检查不是功能验收。
+
+Task 3 已启动单一实现者：八表、SQL/内存仓库、存储适配、依赖外置和增量迁移；要求先明确协议/失败测试，再走红绿与真实 MySQL 验收。Task 4–13 尚未实施。Task 5 仍负责关闭完整请求副本隔离与 SQL 同 revision 恢复门禁。
