@@ -44,7 +44,15 @@
 
 结果目录均位于工作区 `.runtime.local/agent-checks/`，包含 `selection.json` 与 `results.json`，后者区分 collect_only 和执行阶段，逐项记录跳过原因。49 项跳过来自独立 MySQL 未配置或 MySQL 事务调度要求，不属于已通过项目。唯一已见依赖警告为 Starlette TestClient 的 httpx 弃用提示。
 
-## 接入前缺陷：原文自动全部范围
+## 独立 MySQL 验收环境补充（2026-10-24）
+
+已在隔离工作区 `.runtime.local/agent-mysql-test/` 初始化独立 MySQL 5.7.43 实例，仅监听 `127.0.0.1:33317`，使用专用 `knowpath_agent_test` 数据库和测试用户；不使用日常 MySQL 服务、数据目录或凭据。现有 schema 已在此库从空库升级到 `0021_space_scope_options`。这是测试环境准备，不是日常数据库迁移。
+
+通过隔离启动器显式 `--mysql-url` 执行 `test_learning_spaces_mysql.py` 与 `test_learning_model_tasks_mysql.py`，结果目录 `agent-69a_f52_`：**3 passed / 6 skipped / 7 setup errors**。跳过的是 Worker 文件的 memory/sql 组合，真实 MySQL Worker 组合通过；7 个空间用例在资料准备阶段未完成，尚未进入其并发断言。正在定位具体异常，不能将此结果记为 MySQL 总体验收通过。后续新表与竞争验收仍须单独执行。
+
+只读诊断已确认：MySQL 5.7 JSON 将节点 `confidence: 1.0` 读回为整数 `1`，旧 JSON 字节哈希不一致，GraphWorker 在 PreparedBackend 调用前拒绝不可变快照。临时 runtime monkeypatch 仅将 schema 的 confidence 整数 0/1 恢复为浮点、保留合法旧 hash，验证 **9 passed / 6 expected skipped / 1 failed**；这不是已交付的源码修复。剩余一项旧空间 fixture 改标题后仍传空审核决议，被正确拒绝为 `GRAPH_CONFLICTS_PENDING`，须修 fixture 显式审核冲突，不放宽生产门禁。跟踪源码修复排在 Task 2 审查通过之后。
+
+## 接入前缺陷：原文自动全部范围（详细）
 
 两项原有基线测试 `test_reading_source_candidates_cover_document_beyond_lesson_node[capturing/vector]` 返回 `VECTOR_UNAVAILABLE`。根因是 SpaceService 创建空间时将有效主题列表填入 `topic_ids`，同时标记 `scope_mode=all`；MessageService 原文读取却把所有非空列表视为显式白名单，丢弃未映射原文，后续检索器找不到目标。
 
@@ -68,7 +76,7 @@ Task 1 的 external 只控制自动收尾。其“持久 L0–L5 不变”的广
 | 任务 | 状态 / 下一项依赖 |
 | --- | --- |
 | Task 1 基座注入与外部提交 | 接口与定向回归已验证；持久隔离退出门禁待 Task 5 |
-| Task 2 完整检查点 | 用户要求复核计划，已暂停；9 项失败测试已执行，首轮实验实现未跑绿灯/回归、未提交，不算完成；新增恢复/整轮/依赖边界须按第三轮计划补验 |
+| Task 2 完整检查点 | 最终 Agent 113 项通过，独立规格复审 51 项通过；质量审查中，未提交，SQL 集成仍待 Task 3/5 |
 | Task 3 SQL 存储 | 未实施 |
 | Task 4 范围/来源依赖 | 未实施 |
 | Task 5 工作副本/租约/原子发布 | 未实施，需独立 MySQL 竞争验证 |
@@ -78,7 +86,35 @@ Task 1 的 external 只控制自动收尾。其“持久 L0–L5 不变”的广
 | Task 9 全入口/Worker 切换 | 未实施 |
 | Task 10 管理/删除/维护 | 未实施 |
 | Task 11 backfill/修复 | 未实施 |
-| Task 12 全层/故障/性能验收 | 未实施，不能用基线测试代替 A01–A38 |
+| Task 12 全层/故障/性能验收 | 未实施，不能用基线测试代替 A01–A42 |
 | Task 13 默认切换/删除旧分支 | 未实施；R0 回滚制品也尚未构建 |
 
 未修改日常数据库、运行配置或启动在线模型；未发布、合并或删除旧管线。
+
+## Task 2：检查点与整轮策略执行证据（实施中）
+
+首轮实现新增热检查点、canonical 来源依赖和 Web 上下文策略，并修改 L1/L2/L3、SemanticIndex 及 ContextEngine。热检查点不复制 L0/L4/L5 或向量；包含有限 JSON/版本校验、容量约束和 async tick 静止边界。Web 数据包装保留 `source_role`，同 ID 恢复校验包含轮次、来源身份和当前 superseded 状态。
+
+- root 独立执行全部新 Agent 测试：**89 passed**，12.27s，`agent-aj1kvsao`；此运行早于最后两项构造门禁补测，不作为之后所有修改的最终结果。
+- 实现者最后一轮定向与计划指定旧测试：**85 passed**，`agent-_plveubx`，其中 Task 2 新测试 29 项。
+- 实现者 compatibility：**1472 passed / 88 skipped / 1 warning**，188.97s，`compatibility-z0nozy1d`。跳过来自未显式配置的外部 MySQL/Neo4j/Qdrant/真实模型条件，warning 为既有 Starlette/httpx 弃用提示；此套件没有使用本轮单独建立的 MySQL URL。
+
+独立规格审查实际复现以下缺陷，均在修复前保留未验收：L2 buffer 与 L1 的同 ID 内容漂移/对象分叉；Web 猜配对和不完整轮进入近期上下文；组选择绕过跨层去重；默认 generic 无来源摘要在第 513 条输入因新依赖限额失败；自动 L0 晋升复制完整 metadata。必须新增失败用例并修复，然后重新审查与定向验证；上述绿灯不能覆盖这些未测试边界。
+
+上述五项已集中新增回归并确认红灯：**13 failed / 29 passed**，`agent-a9x1jvin`。其中也覆盖 Web remember 的 metadata 约束，以及无效整轮的冷恢复/晋升。当时尚无该轮绿灯；后续修复与复审证据见下节，不将此前 compatibility 结果当作这些新增用例的通过证明。
+
+SQL 合格集合、外置依赖、同 revision 恢复以及完整 request-local 持久隔离仍归 Task 3/5，尚未证明。
+
+### Task 2 修复与独立复核（最新）
+
+首轮五项已修复。新增 Web 构造门禁用例 **2 failed → 2 passed**，禁止显式关闭 whole_turns/provenance；追加生命周期与来源身份用例 **2 failed → 通过**，任一方向 superseded_by 冲突均拒绝，source_identity 纳入 source_scopes。
+
+- 实现者最终定向及指定回归：**107 passed**，`agent-ncwoh71r`；全 Agent：**113 passed**，`agent-lzww__lm`。
+- root 在本轮重新运行 `scripts/run_agent_checks.py --suite agent`：**113 passed**，10.45s，`agent-2_5m5ohg`，退出码 0。
+- 独立规格复审者运行检查点和上下文测试：**51 passed**，`agent-ax2i4un2`；另以最小复现确认双向生命周期与 source_scopes 冲突抛出 InvalidCheckpoint，结论为 Task 2 spec pass。
+- 兼容套件 `compatibility-lkoz10us`：**1472 passed / 88 skipped / 1 既有 warning**，213.50s，退出码 0。此运行覆盖首轮五项修复，最后构造 guard/身份微改由最终 113 项套件覆盖；未将此套件标为覆盖所有最后修改。root 已只读核实 JSON 结果产物的计数、0 收集错误及退出状态。
+- 当前正在独立代码质量审查；未提交 Task 2，未宣称完整持久恢复或 Web 切换完成。
+
+第四轮计划复核已同步主工作区及隔离工作区，保留已完成勾选；补充独立 R0 制品、旧历史范围分段、来源身份和 MySQL 基线门禁。此轮文档静态验证为 14 个任务、42 个连续验收编号、22 项审查发现，非功能验收证据。
+
+专用 MySQL 测试实例本轮重新确认存活：PID 34088，mysqld 路径与独立实例相符，127.0.0.1:33317 处于监听；不重启或操作日常 MySQL 服务。
