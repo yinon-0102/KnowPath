@@ -6,7 +6,14 @@ import pytest
 
 from knowpath_backend.learning.rag.verification import VerificationError
 from knowpath_backend.learning.workers.model_tasks import ModelTaskWorker
-from knowpath_backend.test.test_rag_messages import build_workspace
+from knowpath_backend.test.test_rag_building import build_workspace as _indexed_build_workspace
+
+
+@pytest.fixture
+def build_workspace(_indexed_build_workspace):
+    # Failure diagnostics below are supplied by the legacy pipeline answer port.
+    _indexed_build_workspace[0].message_service.use_agent_runtime = False
+    return _indexed_build_workspace
 
 
 SAFE_DETAILS = {

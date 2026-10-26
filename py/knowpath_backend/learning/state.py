@@ -42,6 +42,8 @@ class LearningState:
             space_service = SpaceService(repository, self.material_repository)
         self.space_service = space_service
         learning_repository = SqlAlchemyLearningRepository(uow) if uow else InMemoryLearningRepository(self.material_repository, self.run_service)
+        from knowpath_backend.learning.agent_memory.repository import InMemoryMemoryRepository, SqlAlchemyMemoryRepository
+        learning_repository.agent_memory_factory = (lambda sid: SqlAlchemyMemoryRepository(uow, sid)) if uow else (lambda sid: InMemoryMemoryRepository(self.material_repository, sid))
         graph_repository = SqlAlchemyGraphRepository(uow) if uow else InMemoryGraphRepository(self.material_repository, self.run_service)
         self.graph_service = GraphReconciliationService(graph_repository, self.material_repository, self.run_service)
         from knowpath_backend.learning.materials.deletion import MaterialDeletionService

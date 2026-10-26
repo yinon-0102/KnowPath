@@ -2,6 +2,7 @@
 import copy
 import re
 import logging
+from contextvars import ContextVar
 from knowpath_backend.observability import log_event, span
 
 from uuid import uuid4
@@ -17,9 +18,11 @@ from knowpath_backend.learning.rag.retrieval import KeywordRetriever, RetrievalE
 from knowpath_backend.learning.config import LearningSettings
 from knowpath_backend.learning.conversations.context import bound_snapshot, project_memory, delivery_source_refs, message_source_refs
 from knowpath_backend.learning.rag.verification import VerificationError, safe_error_details
+from knowpath_backend.learning.providers.models import ModelError
 from knowpath_backend.learning.materials.source_access import SourceAccessService, AssistanceDeliveryChanged
 
 logger = logging.getLogger(__name__)
+_memory_execution = ContextVar('message_memory_execution', default=None)
 
 
 def uid():
@@ -27,14 +30,101 @@ def uid():
 
 
 class MessageService:
+    @staticmethod
+    def _build_memory_policy(memory_repository, receipt, materials=None):
+        """Construct the shared gate from the frozen receipt and repository.
+
+        Missing dependency/tombstone evidence fails closed; no model supplied
+        metadata is trusted as an exemption.
+        """
+        from knowpath_backend.learning.agent_memory.scope import EligibilityPolicy
+        def qualify_reference(kind, identifier):
+            def resolve_reference():
+                if kind == 'card':
+                    if memory_repository._tombstoned('card', identifier):
+                        return False
+                    candidate = memory_repository.get_card(identifier)
+                    return candidate is not None and policy.eligible(candidate, purpose='L0')
+                if kind == 'item':
+                    candidate = memory_repository.get_item(identifier)
+                    return candidate is not None and policy.eligible(candidate, purpose='recall')
+                row = memory_repository._business_message(identifier)
+                if not row or row['space_id'] != memory_repository.space_id or row['status'] != 'completed':
+                    return False
+                from knowpath_backend.learning.agent_memory.repository import projection_provenance
+                metadata = projection_provenance(row)[1]
+                # This projection contains the complete authoritative graph.
+                metadata.pop('source_ref', None)
+                return policy.eligible({'id': identifier, 'metadata': metadata, 'lifecycle': 'active'}, purpose='recall')
+            return policy.qualify_reference(kind, identifier, resolve_reference)
+        def resolve(dep):
+            try:
+                if dep.get('kind') == 'card':
+                    return bool(dep.get('id')) and qualify_reference('card', dep['id'])
+                if dep.get('message_id'):
+                    if not qualify_reference('message', dep['message_id']): return False
+                if dep.get('item_id') and not qualify_reference('item', dep['item_id']): return False
+                if dep.get('material_version_id'):
+                    if materials is None: return False
+                    version = materials.get_version(dep['material_version_id'])
+                    if version is None or version.status != 'ready' or (dep.get('material_id') and version.material_id != dep['material_id']): return False
+                    material = materials.get_material(version.material_id)
+                    if material is None or material.status == 'archived': return False
+                    chunk_id = dep.get('block') or dep.get('chunk_id')
+                    if chunk_id and not dep.get('retrieval_version_id') and not any(chunk.id == chunk_id for chunk in version.chunks): return False
+                    if dep.get('artifact_hash'):
+                        from knowpath_backend.learning.rag.scope import legacy_span, covers
+                        from knowpath_backend.learning.rag.contracts import SourceSpan
+                        chunk = next((chunk for chunk in version.chunks if chunk.id == dep.get('block')), None)
+                        if chunk is None: return False
+                        span = SourceSpan.model_validate({key: dep[key] for key in ('material_version_id', 'artifact_hash', 'start', 'end', 'page', 'block') if key in dep})
+                        if not covers(span, [legacy_span(version.id, chunk)]): return False
+                    if dep.get('retrieval_version_id'):
+                        uow = getattr(materials, 'unit_of_work', None)
+                        if uow is None: return False
+                        from knowpath_backend.learning.persistence.rag_repository import SqlRagRepository
+                        stored = SqlRagRepository(uow.engine).get_chunk(dep['retrieval_version_id'], dep.get('chunk_id'))
+                        if stored is None or stored['material_version_id'] != version.id: return False
+                        if dep.get('artifact_hash') and not covers(span, [SourceSpan.model_validate(value) for value in stored['source_spans']]): return False
+                    return True
+                return bool(dep.get('message_id') or dep.get('item_id'))
+            except Exception:
+                return False
+        def tombstone(kind, value):
+            try:
+                return bool(memory_repository._tombstoned(kind, value))
+            except Exception:
+                return True
+        policy = EligibilityPolicy(receipt, dependency_resolver=resolve, tombstone_checker=tombstone,
+                                   dependency_sets=getattr(memory_repository, 'get_dependency_set', None))
+        return policy
     def __init__(self, repository, spaces, assessments, runs, generator=None, retriever=None, context_settings=None, rag_pipeline=None):
         self.repository, self.spaces, self.assessments, self.runs = repository, spaces, assessments, runs
+        # Optional Task4 allocator adapter; deployments with the additive
+        # memory store expose this explicitly so receipt writes share the
+        # surrounding business transaction.
+        self.agent_memory_repository = getattr(repository, 'agent_memory_repository', None)
         self.generator = generator if generator is not None else DashScopeAnswerGenerator()
         self.commands = SpaceService(repository, spaces.materials)
         self.retriever = retriever if retriever is not None else configured_retriever()
         self.context_settings = context_settings or getattr(self.generator, "settings", None) or LearningSettings.from_env()
         self.rag_pipeline = rag_pipeline
         self.source_access = SourceAccessService(assessments)
+        self._agent_runtime_override = None
+        self.agent_model_port = None
+
+    @property
+    def use_agent_runtime(self):
+        # Production API composition supplies the configured default generator
+        # explicitly. Only an explicitly injected custom provider uses the
+        # compatibility seam; replacing that provider remains supported.
+        if self._agent_runtime_override is not None:
+            return self._agent_runtime_override
+        return isinstance(self.generator, DashScopeAnswerGenerator)
+
+    @use_agent_runtime.setter
+    def use_agent_runtime(self, value):
+        self._agent_runtime_override = bool(value)
 
     def send(self, space_id, payload, key=None, *, dispatch=None, durable=False):
         payload = SendMessage.model_validate(payload).model_dump()
@@ -87,10 +177,66 @@ class MessageService:
             for message in previous:
                 if message["status"] in {"pending", "generating"} and self.runs.get(message["run_id"])["status"] in ACTIVE_STATUSES:
                     raise DomainConflict("MESSAGE_IN_PROGRESS", "该会话已有生成中的消息")
-            context = project_memory(self.repository.records("messages", space_id=space_id),
-                                     space, conversation["id"], payload["message"], request_scope=request_scope,
-                                     reading_context=reading)
+            # Freeze the request identity before any projection work.  Pending
+            # and cancelled receipts remain epoch boundaries, so A→B→A cannot
+            # reuse the original adjacency epoch.
+            scope_identity = dict(space_id=space_id, scope_version=space['scope_version'],
+                                  bindings=copy.deepcopy(space['bindings']), mode=request_scope['mode'],
+                                  material_ids=list(request_scope['material_ids']), entry_type=('reading' if reading else ('lesson' if lesson else 'chat')),
+                                  reading_context=copy.deepcopy(reading), lesson_fingerprint=(lesson.get('context_fingerprint') if lesson else None),
+                                  answer_mode=requested_answer_mode)
+            hint = self._hint(assessments, payload["message"])
+            run = self.runs.create("message", status="queued" if durable else "running")
+            identifier = uid()
+            # Establish the authoritative pending message before any projection
+            # or memory allocation.  freeze_reception requires this row to
+            # exist in the same transaction; the rich prompt snapshot is filled
+            # in only after the receipt is frozen.
+            snapshot = {"message": payload["message"], "sources": sources,
+                        "scope_version": space["scope_version"],
+                        "bindings": copy.deepcopy(space["bindings"]),
+                        "request_scope": request_scope,
+                        "requested_answer_mode": requested_answer_mode,
+                        "runtime_version": "web-agent-v1" if self.use_agent_runtime else "injected-generator-v1"}
             if lesson:
+                snapshot.update(lesson_id=lesson['id'],lesson_context_fingerprint=lesson['context_fingerprint'],lesson_source_keys=[list(k) for k in sorted(allowed)])
+            if reading:
+                snapshot['reading_context'] = copy.deepcopy(reading)
+            record = {"id": identifier, "space_id": space_id, "conversation_id": conversation["id"],
+                      "run_id": run["id"], "status": "pending", "message": payload["message"],
+                      "sequence": len(previous) + 1, "snapshot": snapshot, "response": None, "created_at": now()}
+            self.repository.put_record("messages", record)
+            # Persist the receipt through the memory repository in this same
+            # command transaction; its space lock provides global ordering.
+            factory = getattr(self.repository, 'agent_memory_factory', None)
+            memory_repository = factory(space_id) if factory else getattr(self.repository, 'agent_memory_repository', None)
+            if memory_repository is not None:
+                memory_repository.ensure_space()
+                receipt = memory_repository.freeze_reception(identifier, scope_identity)
+                record['snapshot']['memory_scope'] = receipt
+                self.repository.put_record('messages', record)
+            # Build the gate from the now-authoritative receipt.  A missing
+            # memory repository remains deny-by-default for legacy adapters.
+            from knowpath_backend.learning.agent_memory.scope import scope_fingerprint
+            provisional = {'space_id': space_id, 'conversation_id': conversation['id'],
+                           'context_epoch': 0, 'receive_sequence': 0,
+                           'fingerprint': scope_fingerprint(scope_identity), 'identity': scope_identity}
+            current_scope = record['snapshot'].get('memory_scope', provisional)
+            # Adapters without the additive memory store retain the previous
+            # deny-by-default transition gate; once a receipt exists, every
+            # candidate is qualified through the authoritative shared policy.
+            if memory_repository is not None:
+                policy = self._build_memory_policy(memory_repository, current_scope, self.spaces.materials)
+            else:
+                from knowpath_backend.learning.agent_memory.scope import EligibilityPolicy
+                policy = EligibilityPolicy(provisional, dependency_resolver=lambda dep: False,
+                                           tombstone_checker=lambda kind, value: True)
+            context = ({'history': [], 'memory': {'summary': {}, 'recall': []},
+                        'context_provenance': {'history': [], 'summary': [], 'recall': {}}}
+                       if self.use_agent_runtime else project_memory(self.repository.records("messages", space_id=space_id),
+                                     space, conversation["id"], payload["message"], request_scope=request_scope,
+                                     reading_context=reading, eligibility_policy=policy))
+            if lesson and not self.use_agent_runtime:
                 # Scope changes discard previous/global prose as well as retrieval
                 # candidates: otherwise memory can disclose other node sources.
                 safe=[]
@@ -104,32 +250,17 @@ class MessageService:
                 if latest and latest['id'] not in {m['id'] for m,refs in safe}:safe=[]
                 safe=safe[-5:]
                 context={'history':[p for prior,refs in safe for p in ({'role':'user','content':prior['message']},{'role':'assistant','content':prior['response']['text']})], 'memory':{'summary':{},'recall':[]},'context_provenance':{'history':[refs for prior,refs in safe],'summary':[],'recall':{}}}
-                # Structured lesson prose is untrusted context. Carry exact
-                # original source provenance even if retrieval selects fewer.
                 selected_sources=filter_document_sources(lesson['snapshot']['sources'],request_scope)
-                # Model prose can depend on every source it saw, even when it
-                # cites only one. A narrower request cannot reuse mixed prose.
                 lecture=('\n\n'.join(s['kind']+'\n'+s['markdown'] for s in lesson['sections'])[:8000]
                          if selected_sources==lesson['snapshot']['sources'] else '')
                 if lecture:
                     context['memory']['summary']={'text':lecture,'method':'lesson_excerpt','style':lesson['style']}
                     context['context_provenance']['summary']=copy.deepcopy(selected_sources)
-            hint = self._hint(assessments, payload["message"])
-            run = self.runs.create("message", status="queued" if durable else "running")
-            identifier = uid()
-            snapshot = {"message": payload["message"], "sources": sources, **context,
-                        "scope_version": space["scope_version"], "bindings": copy.deepcopy(space["bindings"]), "hint": hint,
-                        "request_scope": request_scope, "requested_answer_mode": requested_answer_mode,
-                        "route_topics": [{"id": t["id"], "name": t["name"]} for t in self.spaces.bound_topics(space)],
-                        "route_assessments": [{"id": a["id"], "questions": [{"topic_id": q.get("topic_id"), "prompt": q.get("prompt")} for q in (reached_questions(a) if a["status"] != "generating" else [])]} for a in assessments if a["status"] in {"generating", "ready", "in_progress"}]}
-            if lesson:
-                snapshot.update(lesson_id=lesson['id'],lesson_context_fingerprint=lesson['context_fingerprint'],lesson_source_keys=[list(k) for k in sorted(allowed)])
-            if reading:
-                snapshot['reading_context'] = copy.deepcopy(reading)
-            record = {"id": identifier, "space_id": space_id, "conversation_id": conversation["id"],
-                      "run_id": run["id"], "status": "pending", "message": payload["message"],
-                      "sequence": len(previous) + 1, "snapshot": snapshot, "response": None, "created_at": now()}
-            self.repository.put_record("messages", record)
+            snapshot.update({"hint": hint, **context,
+                             "route_topics": [{"id": t["id"], "name": t["name"]} for t in self.spaces.bound_topics(space)],
+                             "route_assessments": [{"id": a["id"], "questions": [{"topic_id": q.get("topic_id"), "prompt": q.get("prompt")} for q in (reached_questions(a) if a["status"] != "generating" else [])]} for a in assessments if a["status"] in {"generating", "ready", "in_progress"}]})
+            record['snapshot'] = snapshot
+            self.repository.put_record('messages', record)
             log_event(logger, 'message.scope.frozen', message_id=identifier, run_id=run['id'], space_id=space_id,
                       request_scope_id=request_scope['request_scope_id'], material_ids=request_scope['material_ids'],
                       source_count=len(sources))
@@ -213,7 +344,10 @@ class MessageService:
             raise DomainConflict('BOUND_VERSION_UNAVAILABLE', '绑定原文已删除或不可用')
         topics = self.spaces.bound_topics(space)
         aliases = {t['id']: t.get('canonical_topic_id', t['id']) for t in topics}
-        selected = {aliases.get(t, t) for t in space['topic_ids']}
+        # Automatic-all stores the current effective topic IDs too. That list
+        # is a projection, not an explicit whitelist of original chunks.
+        selected = (set() if space.get('scope_mode') == 'all'
+                    else {aliases.get(t, t) for t in space['topic_ids']})
         excluded = {aliases.get(t, t) for t in space['excluded_topic_ids']}
         allowed, denied = {}, set()
         binding = next(b for b in space['bindings'] if b['material_id'] == reading['material_id'])
@@ -324,6 +458,41 @@ class MessageService:
         raise DomainConflict("STALE_LEARNING_CONTEXT", "学习范围已变化，请重新读取消息")
 
     def generate(self, identifier, *, job=None):
+        from knowpath_backend.learning.agent_memory.service import MemorySessionService, MemoryLease
+        factory = getattr(self.repository, 'agent_memory_factory', None)
+        if factory is None:
+            return self._generate(identifier, job=job)
+        try:
+            message = self.repository.get_record('messages', identifier, lock=False)
+        except DomainNotFound:
+            return
+        memory = factory(message['space_id'])
+        if memory.get_commit('turn:' + identifier) is not None:
+            return
+        scope = message['snapshot'].get('memory_scope')
+        if scope is None:
+            return self._generate(identifier, job=job)
+        lease = MemoryLease(memory, identifier, str(uuid4()), seconds=300)
+        if job is not None and job.event['payload'].get('memory_lease_token'):
+            lease.owner = job.event['lease_token']
+            lease.token = job.event['payload']['memory_lease_token']
+            if not lease.renew(): raise LeaseLost()
+        elif not lease.acquire():
+            raise LeaseLost()
+        session = None
+        token = None
+        try:
+            policy = self._build_memory_policy(memory, scope, self.spaces.materials)
+            session = MemorySessionService(memory).load(message['conversation_id'], scope['context_epoch'],
+                scope['fingerprint'], eligible=lambda item, purpose: policy.eligible(item, purpose=purpose))
+            token = _memory_execution.set((session, lease))
+            return self._generate(identifier, job=job)
+        finally:
+            if token is not None: _memory_execution.reset(token)
+            if session is not None: session.close()
+            lease.release()
+
+    def _generate(self, identifier, *, job=None):
         try:
             initial = self.repository.get_record("messages", identifier, lock=False)
             with self.repository.transaction():
@@ -336,7 +505,7 @@ class MessageService:
                 if self._terminal(current):
                     return
                 interrupted = current["snapshot"].get("rag_execution_started") is True
-                if interrupted or (self.rag_pipeline is not None and "requested_answer_mode" not in current["snapshot"] and not current["snapshot"].get('lesson_id') and not current['snapshot'].get('reading_context') and not current["snapshot"]["hint"]):
+                if interrupted or self.use_agent_runtime or (self.rag_pipeline is not None and "requested_answer_mode" not in current["snapshot"] and not current["snapshot"].get('lesson_id') and not current['snapshot'].get('reading_context') and not current["snapshot"]["hint"]):
                     # Commit the fence before any external call. A crashed
                     # attempt may have consumed its provider budget even when
                     # no result was saved; replay must fail closed, including
@@ -356,7 +525,16 @@ class MessageService:
         error_details = {}
         answer_status = None
         try:
-            if "requested_answer_mode" in snapshot:
+            runtime_version = snapshot.get('runtime_version')
+            expected_runtime = 'web-agent-v1' if self.use_agent_runtime else 'injected-generator-v1'
+            if runtime_version != expected_runtime and (self.use_agent_runtime or runtime_version == 'web-agent-v1'):
+                raise MessageGenerationError('AGENT_RUNTIME_VERSION_MISMATCH')
+            if self.use_agent_runtime:
+                text, citations, snapshot = self._agent_answer(identifier, snapshot, current, job=job)
+                if text is None:
+                    return
+                answer_status = snapshot.get('query_status')
+            elif "requested_answer_mode" in snapshot:
                 text, citations, snapshot = self._adaptive_answer(identifier, snapshot, current, job=job)
                 if text is None:
                     return
@@ -390,7 +568,7 @@ class MessageService:
             error_details = safe_error_details(exc.details)
             from knowpath_backend.learning.rag.diagnostics import safe_journal_snapshot
             snapshot['rag_failure_journal'] = safe_journal_snapshot(getattr(exc, 'call_journal', None))
-        except (MessageGenerationError, RetrievalError) as exc:
+        except (MessageGenerationError, RetrievalError, ModelError) as exc:
             log_event(logger, 'message.generation.failed', level=logging.WARNING, exc=exc, error_code=exc.code,
                       message_id=identifier, run_id=current['run_id'], space_id=current['space_id'])
             error = exc.code
@@ -413,6 +591,36 @@ class MessageService:
     def _assistance_scope(snapshot):
         from .adaptive import assistance_scope
         return assistance_scope(snapshot)
+
+    def _agent_answer(self, identifier, snapshot, current, *, job=None):
+        from knowpath_backend.learning.agent_runtime.web import run_web_turn
+        execution = _memory_execution.get()
+        if execution is None:
+            raise MessageGenerationError('MEMORY_UNAVAILABLE')
+        session, lease = execution
+        policy = self._build_memory_policy(session.repository, snapshot['memory_scope'], self.spaces.materials)
+        def cancelled():
+            if job is not None:
+                job.check()
+            return self.runs.get(current['run_id'])['status'] not in {'queued', 'running'}
+        candidate = run_web_turn(self, current, session, policy, job=job,
+            model_port=self.agent_model_port, should_cancel=cancelled)
+        mode = candidate.route['mode']
+        sources = copy.deepcopy(candidate.delivered_sources)
+        cited = set(candidate.citation_ids)
+        citations = [{key: source[key] for key in ('material_id', 'material_version_id',
+            'retrieval_version_id', 'chunk_id', 'source_spans', 'citation_schema_version') if key in source}
+            for source in sources if source['chunk_id'] in cited]
+        updated = {**snapshot, 'answer_mode': mode, 'sources': sources,
+            'source_dependencies': copy.deepcopy(candidate.source_dependencies),
+            'semantic_route': copy.deepcopy(candidate.route['semantic_route']),
+            'query_status': candidate.route.get('status', 'answered'),
+            'agent_usage': copy.deepcopy(candidate.usage), 'agent_tools': copy.deepcopy(candidate.tool_trace),
+            'history': [], 'memory': {'summary': {}, 'recall': []},
+            'context_provenance': {'history': [], 'summary': [], 'recall': {}}}
+        if not self._record_sources(identifier, updated, job=job, publish_sources=False):
+            return None, None, updated
+        return candidate.text, citations, updated
 
     def _page_assistance(self, rows):
         scopes=[self._assistance_scope(r['snapshot']) for r in rows if r.get('response')]
@@ -656,8 +864,58 @@ class MessageService:
                 if attempt==2:raise MessageGenerationError('STALE_LEARNING_CONTEXT') from None
 
     def _publish_answer(self, initial, identifier, snapshot, text, citations, error, answer_status, *, error_details=None, job=None):
+        execution = _memory_execution.get()
+        if error is None and execution is not None:
+            session, lease = execution
+            from knowpath_backend.learning.agent_memory.repository import projection_provenance, item_id_for
+            completed = copy.deepcopy(initial)
+            completed.update(status='completed', snapshot=copy.deepcopy(snapshot),
+                response={'text': text, 'citations': citations, 'request_scope': copy.deepcopy(snapshot.get('request_scope'))})
+            completed['snapshot']['delivered_source_refs'] = delivery_source_refs(snapshot)
+            if 'requested_answer_mode' in snapshot:
+                completed['response']['answer_mode'] = snapshot['answer_mode']
+            metadata = projection_provenance(completed)[1]
+            created = completed.get('created_at')
+            if isinstance(created, str):
+                from datetime import datetime
+                created = datetime.fromisoformat(created)
+            try:
+                for role, content in [('user', completed['message']), ('assistant', text)]:
+                    item = session.manager.write(content, role=role, turn_id=identifier,
+                        item_id=item_id_for(identifier, role), metadata=metadata, created_at=created)
+                    session.manager.cold.add(item)
+                session.manager.tick()
+                session.prepared_mutation = session.freeze(project_message_ids=[identifier])
+                session.publication_closure = session.publication_dependencies(
+                    snapshot.get('source_dependencies', []), current_message_id=identifier)
+                delivered = delivery_source_refs(snapshot)
+                for dep in session.publication_closure if 'source_dependencies' in snapshot else []:
+                    block = dep.get('block') or (dep.get('chunk_id') if not dep.get('retrieval_version_id') else None)
+                    if block and dep.get('material_id') and dep.get('material_version_id'):
+                        ref = {key: dep[key] for key in ('material_id', 'material_version_id')}
+                        ref['chunk_id'] = block
+                        if ref not in delivered: delivered.append(ref)
+                completed['snapshot']['delivered_source_refs'] = delivered
+                metadata = projection_provenance(completed)[1]
+                for role in ('user', 'assistant'):
+                    session.manager.cold.backend.items[item_id_for(identifier, role)].metadata = copy.deepcopy(metadata)
+                # Freeze the final audited provenance without replaying write,
+                # tick, tools, or model calls.
+                session.prepared_mutation = session.freeze(project_message_ids=[identifier])
+                session.publication_memory = session.memory_references(session.publication_closure)
+            except (ValueError, TypeError, KeyError):
+                session.publication_closure = None
+                error, error_details = 'STALE_LEARNING_CONTEXT', {}
         for attempt in range(3):
-            plan = self.source_access.prepare_delivery(delivery_source_refs(snapshot), initial["space_id"], assistance_scope=self._assistance_scope(snapshot)) if error is None else None
+            refs = delivery_source_refs(snapshot)
+            if execution is not None and 'source_dependencies' in snapshot:
+                for dep in getattr(execution[0], 'publication_closure', []) or []:
+                    block = dep.get('block') or (dep.get('chunk_id') if not dep.get('retrieval_version_id') else None)
+                    if block and dep.get('material_id') and dep.get('material_version_id'):
+                        ref = {key: dep[key] for key in ('material_id', 'material_version_id')}
+                        ref['chunk_id'] = block
+                        if ref not in refs: refs.append(ref)
+            plan = self.source_access.prepare_delivery(refs, initial["space_id"], assistance_scope=self._assistance_scope(snapshot)) if error is None else None
             try:
                 return self.commands._execute("message.publish", initial["space_id"], {}, None,
                     lambda: self._publish_answer_once(initial, identifier, snapshot, text, citations,
@@ -682,9 +940,40 @@ class MessageService:
                     assisted, space = self.source_access.lock_delivery(delivery_plan, initial["space_id"])
                 else:
                     space = self.spaces.repository.get(initial["space_id"])
-                current = self.repository.get_record("messages", identifier)
                 from knowpath_backend.learning.materials.source_access import lock_source_dependencies
-                lock_source_dependencies(self.spaces.materials, [*space['bindings'], *snapshot['bindings'], *snapshot['sources']])
+                execution = _memory_execution.get()
+                session = execution[0] if execution is not None else None
+                closure = getattr(session, 'publication_closure', []) if session is not None else []
+                # assessment -> space -> material/version -> messages -> Run ->
+                # memory. Authorization never acquires source locks after Run.
+                lock_source_dependencies(self.spaces.materials, [*space['bindings'], *snapshot['bindings'],
+                    *snapshot['sources'], *(closure or [])])
+                for mid in sorted({identifier, *(dep['message_id'] for dep in closure or [] if dep.get('message_id'))}):
+                    try:
+                        self.repository.get_record('messages', mid)
+                    except DomainNotFound:
+                        if mid == identifier: raise
+                        error, error_details = 'STALE_LEARNING_CONTEXT', {}
+                current = self.repository.get_record("messages", identifier)
+                if error is None and session is not None:
+                    try:
+                        fresh = session.publication_dependencies(snapshot.get('source_dependencies', []), current_message_id=identifier)
+                        if closure is None or sorted(map(repr, fresh)) != sorted(map(repr, closure)):
+                            raise ValueError('Consumed source graph changed')
+                        policy = self._build_memory_policy(session.repository, snapshot['memory_scope'], self.spaces.materials)
+                        qualified = []
+                        for dep in closure:
+                            # The pending current message is persisted as completed
+                            # later in this same transaction; its upstream refs
+                            # have already been expanded and are checked here.
+                            checked = {k: v for k, v in dep.items() if not (k == 'message_id' and v == identifier)}
+                            if not checked: continue
+                            qualified.append(checked)
+                        if qualified and not policy.eligible({'metadata': {'memory_scope': snapshot['memory_scope'],
+                                'source_dependencies': qualified}}, purpose='recall'):
+                            raise ValueError('Consumed source is no longer eligible')
+                    except (ValueError, TypeError, KeyError):
+                        error, error_details = 'STALE_LEARNING_CONTEXT', {}
                 if job is not None:
                     job.check()
                 if current["status"] != "generating" or self._terminal(current):
@@ -704,6 +993,7 @@ class MessageService:
                               "VECTOR_PROFILE_MISMATCH": "向量索引配置不匹配，需要重建索引",
                               "RETRIEVAL_VALIDATION_FAILED": "检索结果未通过来源校验"}
                     public["MESSAGE_ROUTING_FAILED"] = "暂未判断本次回答依据，请重试。"
+                    public['AGENT_RUNTIME_VERSION_MISMATCH'] = '任务执行版本已变化，请重新发送消息。'
                     public["CONTEXT_BUDGET_EXCEEDED"] = "当前问题与引用资料超过上下文预算，请缩短问题或调整预算"
                     public.update({
                         "RAG_INDEX_NOT_READY": "当前学习范围的内容索引尚未发布",
@@ -761,9 +1051,14 @@ class MessageService:
                     self.runs.append_event(current["run_id"], "message.completed", response)
                     self.runs.complete(current["run_id"], {"type": "message", "id": identifier, "space_id": current["space_id"]})
                     current.update(status="completed", response=response)
+                    current['snapshot']['source_dependencies'] = copy.deepcopy(snapshot.get('source_dependencies', []))
                     from knowpath_backend.learning.spaces.profile_candidates import infer_candidates
                     current["snapshot"]["profile_candidates"] = infer_candidates(current)
                 self.repository.put_record("messages", current)
+                execution = _memory_execution.get()
+                if current['status'] == 'completed' and execution is not None:
+                    session, lease = execution
+                    session.publish(identifier, lease, session.prepared_mutation)
                 if job is not None:
                     job.settle()
         except DomainNotFound:
@@ -791,7 +1086,9 @@ class MessageService:
             if lesson['status']!='completed' or self.lessons._stale(lesson) or lesson['context_fingerprint']!=current['snapshot']['lesson_context_fingerprint']:
                 return 'STALE_LEARNING_CONTEXT'
             allowed={tuple(k) for k in current['snapshot']['lesson_source_keys']}
-            if any((s['material_id'],s['material_version_id'],s['chunk_id']) not in allowed for s in snapshot['sources']):return 'RETRIEVAL_SCOPE_INVALID'
+            from knowpath_backend.learning.materials.source_access import original_source_refs
+            if any((s['material_id'],s['material_version_id'],s['chunk_id']) not in allowed
+                   for s in original_source_refs(snapshot['sources'])):return 'RETRIEVAL_SCOPE_INVALID'
         request_scope = current['snapshot'].get('request_scope')
         if request_scope is not None:
             if snapshot.get('request_scope') != request_scope:
@@ -847,9 +1144,9 @@ class MessageService:
             initial = self.repository.get_record("messages", identifier, lock=False)
             with self.repository.transaction():
                 space = self.spaces.repository.get(initial["space_id"])
-                current = self.repository.get_record("messages", identifier)
                 from knowpath_backend.learning.materials.source_access import lock_source_dependencies
                 lock_source_dependencies(self.spaces.materials, [*space['bindings'], *snapshot['bindings'], *snapshot['sources']])
+                current = self.repository.get_record("messages", identifier)
                 if job is not None:
                     job.check()
                 if current["status"] != "generating" or self._terminal(current):

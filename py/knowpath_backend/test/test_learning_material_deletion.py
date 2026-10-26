@@ -8,6 +8,7 @@ from knowpath_backend.learning.materials.service import InMemoryMaterialReposito
 from knowpath_backend.learning.persistence.material_repository import SqlAlchemyMaterialRepository
 from knowpath_backend.learning.state import LearningState
 from knowpath_backend.test.test_learning_state_persistence import FixedQuestions, create
+from knowpath_backend.test.test_learning_messages import FixedAnswer
 
 @pytest.fixture(params=['memory', 'sql'])
 def workspace(request, tmp_path):
@@ -16,7 +17,8 @@ def workspace(request, tmp_path):
         init_db(engine)
     memory = InMemoryMaterialRepository()
     def factory():
-        return LearningState(SqlAlchemyMaterialRepository(engine) if engine else memory, question_generator=FixedQuestions())
+        return LearningState(SqlAlchemyMaterialRepository(engine) if engine else memory,
+                             question_generator=FixedQuestions(), answer_generator=FixedAnswer())
     yield factory
     if engine:
         engine.dispose()

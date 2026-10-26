@@ -1,9 +1,18 @@
 """V2 RAG results use the durable message publication guards."""
 import pytest
 
-from knowpath_backend.test.test_rag_building import build_workspace
+from knowpath_backend.test.test_rag_building import build_workspace as _indexed_build_workspace
 from knowpath_backend.test.test_rag_pipeline import pipeline
 from knowpath_backend.learning.rag.verification import VerificationError
+
+
+@pytest.fixture
+def build_workspace(_indexed_build_workspace):
+    # These tests exercise the legacy RAG answer/publication boundary. Pin the
+    # explicit execution mode before acceptance; Agent entrypoints have separate
+    # integration coverage and do not interpret a later provider replacement.
+    _indexed_build_workspace[0].message_service.use_agent_runtime = False
+    return _indexed_build_workspace
 
 
 def test_message_publishes_verified_v2_answer_and_safe_source_event(build_workspace):

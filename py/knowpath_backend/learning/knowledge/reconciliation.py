@@ -15,7 +15,18 @@ from knowpath_backend.learning.knowledge.relations import extract_relations, con
 
 
 def digest(value):
-    return sha256(json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()).hexdigest()
+    def restore_confidence(item):
+        if isinstance(item, dict):
+            # Producers emit float confidence. MySQL JSON stores integral
+            # floats as ints; restore only this schema field so persisted
+            # snapshots/manifests retain their legacy hash bytes. Exclude bool.
+            return {key: float(child) if key == "confidence" and type(child) is int and child in (0, 1)
+                    else restore_confidence(child) for key, child in item.items()}
+        if isinstance(item, (list, tuple)):
+            return [restore_confidence(child) for child in item]
+        return item
+
+    return sha256(json.dumps(restore_confidence(value), sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()).hexdigest()
 
 
 def extract_snapshot(material_id, version):

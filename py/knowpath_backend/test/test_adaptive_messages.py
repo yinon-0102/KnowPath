@@ -300,6 +300,8 @@ def test_configured_material_section_stream_accepts_json_key_order(workspace,mon
     import knowpath_backend.learning.providers.models as providers
     from knowpath_backend.learning.conversations.generation import DashScopeAnswerGenerator
     state,model,sid,_=setup(workspace,document=True,educational=True,uncertain=True)
+    # This test targets the legacy provider section-stream parser specifically.
+    state.message_service.use_agent_runtime=False
     class Provider:
         def stream(self,messages,**kwargs):
             snapshot=json.loads(messages[-1]['content'])

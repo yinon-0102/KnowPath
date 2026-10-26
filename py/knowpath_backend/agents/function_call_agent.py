@@ -18,6 +18,10 @@ from knowpath_backend.core.agent import Agent
 from knowpath_backend.core.config import Config
 from knowpath_backend.core.llm import MyLLM
 from knowpath_backend.core.message import Message
+from knowpath_backend.core.turn import (
+    TurnCancelled, TurnBudgetExceeded, EmptyTurnResponse,
+)
+from knowpath_backend.core.model_port import SDKModelPort
 from knowpath_backend.tools.registry import ToolRegistry
 from knowpath_backend.verify.replan import make_plan
 from knowpath_backend.planning.todo import todo_system_message, TODO_HEADING
@@ -68,8 +72,10 @@ class MyFunctionCallAgent(Agent):
                  convergence_judge=None,
                  enable_tdd: bool = False,
                  **kwargs):
+        if getattr(kwargs.get('execution_policy'), 'strict', False) and (enable_verify or enable_tdd):
+            raise ValueError('strict execution requires verify and TDD off; their SDK paths are unbudgeted')
         super().__init__(name, llm, system_prompt, config, **kwargs)
-        if llm.provider not in MyLLM.OPENAI_COMPATIBLE_PROVIDERS:
+        if self.model_port is None and llm.provider not in MyLLM.OPENAI_COMPATIBLE_PROVIDERS:
             raise ValueError(
                 f"FunctionCallAgent 仅支持 OpenAI 兼容 provider，当前为: {llm.provider}"
             )
@@ -119,15 +125,24 @@ class MyFunctionCallAgent(Agent):
         should_cancel: 可选的取消信号函数。每次循环顶部 + 流式逐 chunk 均检查。
         返回 True 时立即中断,返回 "(已被用户中断 esc)" 标记字符串。
         """
-        _cancel = should_cancel or (lambda: False)
+        cancelled = False
+        cancel_signal = should_cancel or (lambda: False)
+
+        def _cancel():
+            nonlocal cancelled
+            cancelled = cancelled or bool(cancel_signal())
+            return cancelled
+        if self._strict_turn() and _cancel():
+            raise TurnCancelled('Turn cancelled before context assembly')
         _tdd = self._maybe_run_tdd(input_text)
         if _tdd is not None:
             return _tdd
         system_prompt = self._apply_honesty_contract(self.system_prompt)
         # query=input_text 让 memory 做 L0 query-aware 加权 + 被动 recall
+        policy = getattr(self, 'context_policy', None)
         messages: List[Dict[str, Any]] = list(
-            self.memory.assemble_context(system_prompt, query=input_text)
-        )
+            policy(self.memory, system_prompt, input_text) if policy is not None else
+            self.memory.assemble_context(system_prompt, query=input_text))
         messages.append({"role": "user", "content": input_text})
 
         tools = self._build_tool_schemas()
@@ -165,6 +180,8 @@ class MyFunctionCallAgent(Agent):
                 try:
                     on_text_chunk("".join(_text_buf))
                 except Exception:
+                    if self._strict_turn():
+                        raise
                     logger.exception("on_text_chunk 回调异常,忽略")
             _text_buf.clear()
 
@@ -174,6 +191,9 @@ class MyFunctionCallAgent(Agent):
         # 工具用得多时验证轮会被挤压,可能到不了 convergence_judge.hard_cap。Phase 2 再拆独立预算。
         for _ in range(self.max_steps):
             if _cancel():
+                cancelled = True
+                if self._strict_turn():
+                    raise TurnCancelled('Turn cancelled')
                 final_response = final_response or "(已被用户中断 esc)"
                 break
             self._refresh_todo_injection(messages)
@@ -190,6 +210,12 @@ class MyFunctionCallAgent(Agent):
                 **kwargs,
             )
             llm_elapsed = time.monotonic() - t_llm
+            cancelled = cancelled or bool(getattr(response, '_cancelled', False))
+            if cancelled and not self._strict_turn():
+                final_response = '(已被用户中断 esc)'
+                break
+            if self._strict_turn() and (getattr(response, '_cancelled', False) or _cancel()):
+                raise TurnCancelled('Turn cancelled during model call')
             # 把 usage (provider 可能没给) 拿出来,通过回调上报
             usage = getattr(response, "usage", None)
             pt = getattr(usage, "prompt_tokens", None) if usage else None
@@ -198,13 +224,18 @@ class MyFunctionCallAgent(Agent):
                 try:
                     on_llm_done(llm_elapsed, pt, ct)
                 except Exception:
+                    if self._strict_turn():
+                        raise
                     logger.exception("on_llm_done 回调异常,忽略")
 
             message = response.choices[0].message
             tool_calls = getattr(message, "tool_calls", None)
 
             if not tool_calls:
-                candidate = self._extract_message_content(message)
+                candidate = ((message.content or '').strip() if self._strict_turn() else
+                             self._extract_message_content(message))
+                if self._strict_turn() and not candidate:
+                    raise EmptyTurnResponse('Model produced no visible answer')
                 # 工具门控:本轮没动过【有副作用】工具(闲聊/纯问答/只读探索)→ 跳过验证,
                 # 零开销返回首答。只读任务不该被凭空生成 spec、逼模型凑关键词/重答。
                 if not self._should_run_verify(self._turn_mutated):
@@ -273,6 +304,9 @@ class MyFunctionCallAgent(Agent):
         if not final_response and getattr(self, "enable_verify", False) and _verify_best is not None:
             final_response = _verify_best.result
 
+        if not final_response and self._strict_turn():
+            raise TurnBudgetExceeded('Agent step budget exhausted without final answer')
+
         if not final_response:
             t_llm = time.monotonic()
             response = self._invoke_with_tools(
@@ -290,6 +324,8 @@ class MyFunctionCallAgent(Agent):
                 try:
                     on_llm_done(llm_elapsed, pt, ct)
                 except Exception:
+                    if self._strict_turn():
+                        raise
                     logger.exception("on_llm_done 回调异常,忽略")
             final_response = self._extract_message_content(response.choices[0].message)
             _answer_shown_live[0] = True   # 兜底调用走真 on_text_chunk 直接流式了
@@ -307,22 +343,34 @@ class MyFunctionCallAgent(Agent):
                     on_text_chunk(final_response)
                     _answer_shown_live[0] = True
                 except Exception:
+                    if self._strict_turn():
+                        raise
                     logger.exception("on_text_chunk 回调异常,忽略")
 
         final_response = self._run_response_hooks(input_text, final_response, messages)
+        if self._strict_turn() and not (final_response or '').strip():
+            raise EmptyTurnResponse('Response hooks produced no visible answer')
         # C: 候选被压制(未流式)且最终答案还没显示过 → 此刻一次性 emit 已验证的最终答案。
         if final_response and not _answer_shown_live[0] and on_text_chunk is not None:
             try:
                 on_text_chunk(final_response)
             except Exception:
+                if self._strict_turn():
+                    raise
                 logger.exception("on_text_chunk 回调异常,忽略")
         # TDD 子运行(_in_tdd)期间不在这里写 memory:由顶层 _run_tdd 统一补记一次,
         # 避免把实现阶段的子提示词("请写实现…")当成用户输入污染记忆。
-        if not getattr(self, "_in_tdd", False):
+        final_cancelled = _cancel()
+        if final_cancelled and self._strict_turn():
+            raise TurnCancelled('Turn cancelled before finalization')
+        if not getattr(self, "_in_tdd", False) and not final_cancelled:
             self._finalize_turn(input_text, final_response, task_turn=tool_call_count > 0)
         self.last_tool_call_count = tool_call_count
         logger.debug(f"{self.name} 响应完成")
         return final_response
+
+    def _strict_turn(self):
+        return bool(getattr(getattr(self, 'execution_policy', None), 'strict', False))
 
     @staticmethod
     def _emit_verify_start(cb) -> None:
@@ -569,6 +617,8 @@ class MyFunctionCallAgent(Agent):
                 try:
                     on_tool_call(name, args)
                 except Exception:
+                    if self._strict_turn():
+                        raise
                     logger.exception("on_tool_call 回调异常,忽略不影响主流程")
 
             plan = {"tc": tc, "name": name, "args": args,
@@ -597,6 +647,8 @@ class MyFunctionCallAgent(Agent):
                 try:
                     allowed = on_permission_request(name, args, preview)
                 except Exception:
+                    if self._strict_turn():
+                        raise
                     logger.exception("on_permission_request 异常,默认拒绝")
                     allowed = False
                 plan['action'].record('approval', required=True, decision='approved' if allowed else 'denied')
@@ -658,6 +710,8 @@ class MyFunctionCallAgent(Agent):
                                 p["result"] = fut.result()
                                 p["action"].returned(p["result"])
                             except Exception as e:
+                                if self._strict_turn():
+                                    raise
                                 p['action'].finish('failed', exc=e)
                                 p["result"] = f"❌ 工具 '{p['name']}' 执行异常: {e}"
                         else:
@@ -679,6 +733,8 @@ class MyFunctionCallAgent(Agent):
                 try:
                     on_tool_result(p["name"], str(p["result"]), p["elapsed"])
                 except Exception:
+                    if self._strict_turn():
+                        raise
                     logger.exception("on_tool_result 回调异常,忽略不影响主流程")
 
         return attempts
@@ -727,9 +783,12 @@ class MyFunctionCallAgent(Agent):
                            on_reasoning_chunk: Optional[ReasoningChunkCallback] = None,
                            should_cancel: Optional[Callable[[], bool]] = None,
                            **kwargs):
+        port = getattr(self, 'model_port', None)
         client = getattr(self.llm, "client", None)
-        if client is None:
+        if port is None and client is None:
             raise RuntimeError("MyLLM 客户端未初始化，无法执行函数调用。")
+        if port is None:
+            port = SDKModelPort(client)
 
         # NOTE: should_cancel is an explicit param and must NOT be in request_kwargs.
         request_kwargs = dict(kwargs)
@@ -746,8 +805,10 @@ class MyFunctionCallAgent(Agent):
         )
 
         with bind_context(provider=getattr(self.llm, 'provider', 'unknown'), attempt=1):
-            response = self._stream_chat_completion(
-                client, base_request, on_text_chunk, on_reasoning_chunk, should_cancel=should_cancel)
+            response = port.complete(
+                base_request, stream=getattr(self, 'model_stream', True),
+                on_text_chunk=on_text_chunk, on_reasoning_chunk=on_reasoning_chunk,
+                should_cancel=should_cancel, strict_callbacks=self._strict_turn())
 
         # 自救：撞 max_tokens 上限、content 又是空（thinking 模型把预算吃在
         # reasoning 阶段最常见的失败形态）→ 把预算翻倍重试一次。
@@ -755,7 +816,7 @@ class MyFunctionCallAgent(Agent):
         message = choice.message
         empty_content = not (getattr(message, "content", None) or "").strip()
         no_tool_calls = not getattr(message, "tool_calls", None)
-        if choice.finish_reason == "length" and empty_content and no_tool_calls:
+        if not self._strict_turn() and choice.finish_reason == "length" and empty_content and no_tool_calls:
             current_budget = request_kwargs.get("max_tokens") or self.llm.max_tokens or 8192
             bumped_request = dict(base_request)
             bumped_request["max_tokens"] = current_budget * 2
@@ -765,18 +826,20 @@ class MyFunctionCallAgent(Agent):
             )
             with bind_context(provider=getattr(self.llm, 'provider', 'unknown'), attempt=2,
                               retry_reason='empty_length_limit'):
-                response = self._stream_chat_completion(
-                    client, bumped_request, on_text_chunk, on_reasoning_chunk, should_cancel=should_cancel)
+                response = port.complete(
+                    bumped_request, stream=getattr(self, 'model_stream', True),
+                    on_text_chunk=on_text_chunk, on_reasoning_chunk=on_reasoning_chunk,
+                    should_cancel=should_cancel, strict_callbacks=self._strict_turn())
 
         return response
 
     @staticmethod
     def _stream_chat_completion(client, base_request, on_text_chunk,
-                                on_reasoning_chunk=None, should_cancel=None):
+                                on_reasoning_chunk=None, should_cancel=None, strict_callbacks=False):
         with model_call(logger, model=base_request.get('model'), stage='agent',
                         observation_scope='sdk') as fields:
             response = MyFunctionCallAgent._stream_chat_completion_raw(
-                client, base_request, on_text_chunk, on_reasoning_chunk, should_cancel)
+                client, base_request, on_text_chunk, on_reasoning_chunk, should_cancel, strict_callbacks)
             fields.update(response_metrics(response))
             fields['cancelled'] = response._cancelled
             response._model_call_id = fields['model_call_id']
@@ -789,6 +852,7 @@ class MyFunctionCallAgent(Agent):
         on_text_chunk: Optional[TextChunkCallback],
         on_reasoning_chunk: Optional[ReasoningChunkCallback] = None,
         should_cancel: Optional[Callable[[], bool]] = None,
+        strict_callbacks: bool = False,
     ):
         """开 stream=True 调 chat.completions, 累积出与非流式等价的 response 对象。
 
@@ -817,53 +881,63 @@ class MyFunctionCallAgent(Agent):
 
         cancelled = False
         stream = client.chat.completions.create(**stream_request)
-        for chunk in stream:
-            if should_cancel is not None and should_cancel():
-                cancelled = True
-                break
-            # usage 帧 (有的 provider 把它放在 choices 为空的最后一帧)
-            chunk_usage = getattr(chunk, "usage", None)
-            if chunk_usage is not None:
-                usage = chunk_usage
-            if not chunk.choices:
-                continue
-            choice = chunk.choices[0]
-            if getattr(choice, "finish_reason", None):
-                finish_reason = choice.finish_reason
+        try:
+            for chunk in stream:
+                if should_cancel is not None and should_cancel():
+                    cancelled = True
+                    break
+                # usage 帧 (有的 provider 把它放在 choices 为空的最后一帧)
+                chunk_usage = getattr(chunk, "usage", None)
+                if chunk_usage is not None:
+                    usage = chunk_usage
+                if not chunk.choices:
+                    continue
+                choice = chunk.choices[0]
+                if getattr(choice, "finish_reason", None):
+                    finish_reason = choice.finish_reason
 
-            delta = choice.delta
-            content = getattr(delta, "content", None) or ""
-            if content:
-                content_parts.append(content)
-                if on_text_chunk is not None:
-                    try:
-                        on_text_chunk(content)
-                    except Exception:
-                        logger.exception("on_text_chunk 回调异常,忽略不影响流式累积")
+                delta = choice.delta
+                content = getattr(delta, "content", None) or ""
+                if content:
+                    content_parts.append(content)
+                    if on_text_chunk is not None:
+                        try:
+                            on_text_chunk(content)
+                        except Exception:
+                            if strict_callbacks:
+                                raise
+                            logger.exception("on_text_chunk 回调异常,忽略不影响流式累积")
 
-            reasoning = getattr(delta, "reasoning_content", None) or ""
-            if reasoning:
-                reasoning_parts.append(reasoning)
-                if on_reasoning_chunk is not None:
-                    try:
-                        on_reasoning_chunk(reasoning)
-                    except Exception:
-                        logger.exception("on_reasoning_chunk 回调异常,忽略不影响流式累积")
+                reasoning = getattr(delta, "reasoning_content", None) or ""
+                if reasoning:
+                    reasoning_parts.append(reasoning)
+                    if on_reasoning_chunk is not None:
+                        try:
+                            on_reasoning_chunk(reasoning)
+                        except Exception:
+                            if strict_callbacks:
+                                raise
+                            logger.exception("on_reasoning_chunk 回调异常,忽略不影响流式累积")
 
-            for tc_chunk in getattr(delta, "tool_calls", None) or []:
-                idx = getattr(tc_chunk, "index", 0) or 0
-                entry = tool_acc.setdefault(idx, {"id": "", "name": "", "arguments": ""})
-                tc_id = getattr(tc_chunk, "id", None)
-                if tc_id:
-                    entry["id"] = tc_id
-                fn = getattr(tc_chunk, "function", None)
-                if fn is not None:
-                    fn_name = getattr(fn, "name", None)
-                    if fn_name:
-                        entry["name"] = fn_name
-                    fn_args = getattr(fn, "arguments", None)
-                    if fn_args:
-                        entry["arguments"] += fn_args
+                for tc_chunk in getattr(delta, "tool_calls", None) or []:
+                    idx = getattr(tc_chunk, "index", 0) or 0
+                    entry = tool_acc.setdefault(idx, {"id": "", "name": "", "arguments": ""})
+                    tc_id = getattr(tc_chunk, "id", None)
+                    if tc_id:
+                        entry["id"] = tc_id
+                    fn = getattr(tc_chunk, "function", None)
+                    if fn is not None:
+                        fn_name = getattr(fn, "name", None)
+                        if fn_name:
+                            entry["name"] = fn_name
+                        fn_args = getattr(fn, "arguments", None)
+                        if fn_args:
+                            entry["arguments"] += fn_args
+
+        finally:
+            close = getattr(stream, 'close', None)
+            if close is not None:
+                close()
 
         # 组装等价于非流式 message 的对象
         tool_calls_list = None

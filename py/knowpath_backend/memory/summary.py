@@ -1,4 +1,5 @@
 """L2 滚动摘要：被 L1 驱逐的消息压缩成一段摘要塞回 context。"""
+from copy import deepcopy
 from typing import Callable, List, Optional
 
 from knowpath_backend.memory.base import MemoryTier
@@ -142,7 +143,11 @@ class SummaryMemory(MemoryTier):
         summarizer: Optional[Summarizer] = None,
         max_tokens: int = 1000,
         reconciler: Optional[SummaryReconciler] = None,
+        max_dependencies: int = 512,
+        track_provenance: bool = False,
     ):
+        self.track_provenance = track_provenance
+        self.max_dependencies = max_dependencies
         self.flush_threshold = flush_threshold
         self.summarizer = summarizer or _default_summarizer
         self.max_tokens = max_tokens
@@ -168,7 +173,7 @@ class SummaryMemory(MemoryTier):
             self._summary_item.token_estimate = max(1, len(text) // 3)
         return self._summary_item
 
-    def reconcile(self, signal: str) -> Optional[MemoryItem]:
+    def reconcile(self, signal: str, *, sources=()) -> Optional[MemoryItem]:
         """L2 分层托管:让 reconciler 根据信号校正摘要,机械层兜底。
 
         - 没有摘要 → 无事可做,返回 None。
@@ -180,6 +185,7 @@ class SummaryMemory(MemoryTier):
             return None
         if self.reconciler is None:
             return self._summary_item
+        metadata = self._merge_metadata(self._summary_item.metadata, sources)
         try:
             new_text = self.reconciler(self._summary_item.content, signal)
         except Exception as exc:
@@ -188,7 +194,9 @@ class SummaryMemory(MemoryTier):
         new_text = (new_text or "").strip()
         if not new_text:
             return self._summary_item
-        return self._set_summary_text(new_text)
+        result = self._set_summary_text(new_text)
+        result.metadata = metadata
+        return result
 
     # ── MemoryTier 接口 ─────────────────────────────────────
     def add(self, item: MemoryItem) -> None:
@@ -217,6 +225,7 @@ class SummaryMemory(MemoryTier):
         if not self._buffer:
             return self._summary_item
 
+        metadata = self._merge_metadata(self._summary_item.metadata if self._summary_item else {'kind': 'summary'}, self._buffer)
         previous = self._summary_item.content if self._summary_item else ""
         new_text = self.summarizer(self._buffer, previous)
 
@@ -235,6 +244,7 @@ class SummaryMemory(MemoryTier):
             self._summary_item.content = new_text
             self._summary_item.token_estimate = max(1, len(new_text) // 3)
 
+        self._summary_item.metadata = metadata
         self._buffer.clear()
         return self._summary_item
 
@@ -244,3 +254,17 @@ class SummaryMemory(MemoryTier):
     def clear(self) -> None:
         self._summary_item = None
         self._buffer.clear()
+
+    def pending_items(self):
+        return list(self._buffer)
+
+    def restore_state(self, summary, buffer):
+        self._summary_item = summary
+        self._buffer = list(buffer)
+
+    def _merge_metadata(self, previous, sources):
+        from knowpath_backend.memory.dependencies import has_provenance, merge_sources
+        tracked = list(sources) if self.track_provenance else [item for item in sources if has_provenance(item.metadata)]
+        if not tracked:
+            return deepcopy(previous)
+        return merge_sources(previous, tracked, max_dependencies=self.max_dependencies)

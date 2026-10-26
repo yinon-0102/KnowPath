@@ -119,6 +119,8 @@ class MaterialDeletionService:
             snapshot['bindings'] = [b for b in snapshot['bindings'] if not references(b, material_id)]
             snapshot['history'] = []
             snapshot.pop('memory', None)
+            snapshot.pop('memory_scope', None)
+            snapshot.pop('source_dependencies', None)
             snapshot.pop('context_report', None)
             # A selection is an immutable historical boundary. Erasure
             # invalidates it; never silently reinterpret its remainder as all.

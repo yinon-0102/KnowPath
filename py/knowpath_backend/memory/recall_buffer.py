@@ -98,3 +98,6 @@ class RecallBuffer:
             for e in self.entries()
             if e.hit_count >= min_hits and e.hit_score >= min_score
         ]
+
+    def restore_entries(self, entries):
+        self._entries = {entry.item_id: entry.model_copy(deep=True) for entry in entries}
